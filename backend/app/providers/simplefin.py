@@ -427,7 +427,11 @@ class SimpleFinProvider(BankProvider):
                 AccountData(
                     external_id=account_id,
                     name=name,
-                    type="checking",  # SimpleFIN doesn't expose an account type
+                    # SimpleFIN exposes no account type; a non-empty holdings
+                    # list is the only signal of a brokerage/retirement
+                    # account. Create-time default only — sync never rewrites
+                    # a user's type override.
+                    type="investment" if raw.get("holdings") else "checking",
                     balance=balance,
                     currency=currency,
                     institution_external_id=inst_ext,
