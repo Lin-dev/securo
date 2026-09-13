@@ -24,7 +24,7 @@ from app.services._query_filters import (
 )
 from app.services.admin_service import get_credit_card_accounting_mode
 from app.services.recurring_transaction_service import get_occurrences_in_range
-from app.services.asset_service import get_asset_values_at
+from app.services.asset_service import split_asset_values_at
 from app.services.fx_rate_service import _resolve_rate, convert
 from app.models.user import User
 
@@ -430,11 +430,19 @@ async def get_summary(
 
     # Asset values — use cutoff so past months show historical values. Under a
     # collection filter, include only assets in the collection's wallets
-    # (asset_group_ids); a collection with no wallets → no assets.
-    assets_value, assets_value_primary = await get_asset_values_at(
+    # (asset_group_ids); a collection with no wallets → no assets. Synced
+    # holdings whose owning account is part of this total are already inside
+    # that account's balance: they are reported separately and NOT added
+    # again (issue #343).
+    counted_accounts = await _get_open_accounts(session, workspace_id, account_ids)
+    (
+        (assets_value, assets_value_primary),
+        (account_backed_assets_value, account_backed_assets_value_primary),
+    ) = await split_asset_values_at(
         session, workspace_id, as_of_date=cutoff, primary_currency=primary_currency,
         by_workspace=True,
         group_ids=(asset_group_ids or []) if filtered else None,
+        counted_account_ids=[account.id for account in counted_accounts],
     )
 
     # Add asset values to total balance
@@ -615,6 +623,8 @@ async def get_summary(
         pending_categorization_amount=pending_categorization_amount,
         assets_value=assets_value,
         assets_value_primary=round(assets_value_primary, 2),
+        account_backed_assets_value=account_backed_assets_value,
+        account_backed_assets_value_primary=round(account_backed_assets_value_primary, 2),
         primary_currency=primary_currency,
         pending_shares_net=round(pending_shares_net, 2),
     )

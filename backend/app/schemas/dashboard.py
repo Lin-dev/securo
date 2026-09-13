@@ -22,6 +22,11 @@ class DashboardSummary(BaseModel):
     pending_categorization_amount: float
     assets_value: dict[str, float] = Field(default_factory=dict)  # currency -> total asset value
     assets_value_primary: float = 0.0
+    # Synced holdings whose owning account is already counted in
+    # total_balance. Informational: their value sits inside that account's
+    # balance and is deliberately NOT added again (issue #343).
+    account_backed_assets_value: dict[str, float] = Field(default_factory=dict)
+    account_backed_assets_value_primary: float = 0.0
     primary_currency: str = "USD"
     # Net pending balance from group splits (in primary currency).
     # Negative = the user is a net debtor (others paid for them, debt
