@@ -537,6 +537,7 @@
     "allCategorized": "Alles erledigt!",
     "allCategorizedDesc": "Alle Transaktionen sind kategorisiert",
     "assetsValue": "Investiertes Vermögen",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Aufteilung nach Währung",
     "convertedFrom": "Umgerechnet von {{currency}}",
     "fxRateUsed": "Wechselkurs: {{rate}}",

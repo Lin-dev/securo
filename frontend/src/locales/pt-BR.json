@@ -537,6 +537,7 @@
     "allCategorized": "Tudo em dia!",
     "allCategorizedDesc": "Todas as transações estão categorizadas",
     "assetsValue": "Patrimônio investido",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Detalhamento por moeda",
     "convertedFrom": "Convertido de {{currency}}",
     "fxRateUsed": "Taxa de câmbio: {{rate}}",

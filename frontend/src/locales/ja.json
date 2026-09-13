@@ -537,6 +537,7 @@
     "allCategorized": "すべて完了!",
     "allCategorizedDesc": "すべての取引が分類されています",
     "assetsValue": "投資資産額",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "通貨別内訳",
     "convertedFrom": "{{currency}}から換算",
     "fxRateUsed": "為替レート: {{rate}}",

@@ -537,6 +537,7 @@
     "allCategorized": "Όλα ενημερωμένα!",
     "allCategorizedDesc": "Όλες οι συναλλαγές έχουν κατηγοριοποιηθεί",
     "assetsValue": "Επενδεδυμένα περιουσιακά στοιχεία",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Ανάλυση ανά νόμισμα",
     "convertedFrom": "Μετατράπηκε από {{currency}}",
     "fxRateUsed": "Συναλλαγματική ισοτιμία: {{rate}}",

@@ -537,6 +537,7 @@
     "allCategorized": "Всё в порядке!",
     "allCategorizedDesc": "Все транзакции категоризированы",
     "assetsValue": "Инвестированные активы",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Разбивка по валютам",
     "convertedFrom": "Конвертировано из {{currency}}",
     "fxRateUsed": "Курс: {{rate}}",

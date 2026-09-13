@@ -537,6 +537,7 @@
     "allCategorized": "All caught up!",
     "allCategorizedDesc": "All transactions are categorized",
     "assetsValue": "Invested assets",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Per-currency breakdown",
     "convertedFrom": "Converted from {{currency}}",
     "fxRateUsed": "FX rate: {{rate}}",

@@ -537,6 +537,7 @@
     "allCategorized": "Tout est à jour !",
     "allCategorizedDesc": "Toutes les transactions sont catégorisées",
     "assetsValue": "Actifs investis",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Répartition par devise",
     "convertedFrom": "Converti depuis {{currency}}",
     "fxRateUsed": "Taux de change : {{rate}}",

@@ -537,6 +537,7 @@
     "allCategorized": "Alles in orde!",
     "allCategorizedDesc": "Alle transacties zijn gecategoriseerd",
     "assetsValue": "Geïnvesteerde activa",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Uitsplitsing per valuta",
     "convertedFrom": "Geconverteerd van {{currency}}",
     "fxRateUsed": "Wisselkoers: {{rate}}",

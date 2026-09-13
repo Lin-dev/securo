@@ -537,6 +537,7 @@
     "allCategorized": "Усе гаразд!",
     "allCategorizedDesc": "Усі транзакції категоризовано",
     "assetsValue": "Інвестовані активи",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Розбивка за валютами",
     "convertedFrom": "Конвертовано з {{currency}}",
     "fxRateUsed": "Курс: {{rate}}",

@@ -696,6 +696,11 @@ export interface DashboardSummary {
   pending_categorization_amount: number
   assets_value: Record<string, number>
   assets_value_primary: number
+  // Synced holdings already counted inside a linked account's balance.
+  // Informational, not part of total_balance. Optional so an older
+  // backend still satisfies the type during a rollout.
+  account_backed_assets_value?: Record<string, number>
+  account_backed_assets_value_primary?: number
   primary_currency: string
   // Net pending balance from group splits in primary currency.
   // Negative = net liability, positive = net receivable. Already

@@ -537,6 +537,7 @@
     "allCategorized": "Tutto in ordine!",
     "allCategorizedDesc": "Tutte le transazioni sono categorizzate",
     "assetsValue": "Beni investiti",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Dettaglio per valuta",
     "convertedFrom": "Convertito da {{currency}}",
     "fxRateUsed": "Tasso di cambio: {{rate}}",

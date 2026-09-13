@@ -545,6 +545,7 @@
     "allCategorized": "Všetko hotové!",
     "allCategorizedDesc": "Všetky transakcie majú kategóriu",
     "assetsValue": "Investované aktíva",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "Rozpis podľa meny",
     "convertedFrom": "Prepočítané z {{currency}}",
     "fxRateUsed": "Kurz: {{rate}}",

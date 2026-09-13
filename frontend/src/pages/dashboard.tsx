@@ -392,11 +392,15 @@ export default function DashboardPage() {
   const projectedBalance = summary?.projected_balance_primary ?? Object.values(summary?.projected_balance ?? {}).reduce((a, b) => a + Number(b), 0)
   const hasProjectedBalance = Math.abs(projectedBalance - totalBalance) >= 0.01
   const assetsValue = summary?.assets_value_primary ?? Object.values(summary?.assets_value ?? {}).reduce((a, b) => a + b, 0)
+  // Holdings synced from a linked account are already inside that account's
+  // balance; the backend reports them separately and keeps them out of
+  // `total_balance`, so they are shown but never added here either.
+  const accountBackedAssetsValue = summary?.account_backed_assets_value_primary ?? 0
 
   // Available balance: checking/savings accounts only — what's actually
   // spendable today, as opposed to `totalBalance` (net worth: accounts +
-  // investments - open card bills). Scoped to the active Collection filter,
-  // same as the rest of the dashboard.
+  // investments not already inside a linked account - open card bills).
+  // Scoped to the active Collection filter, same as the rest of the dashboard.
   const availableBalanceAccounts = useMemo(() => {
     const all = accountsList ?? []
     const scoped = activeAccountIds ? all.filter((a) => activeAccountIds.includes(a.id)) : all
@@ -808,6 +812,12 @@ export default function DashboardPage() {
                       <div className="flex justify-between gap-3">
                         <span>{t('dashboard.assetsValue')}</span>
                         <span>{mask(formatCurrency(assetsValue, primaryCurrency, locale))}</span>
+                      </div>
+                    )}
+                    {accountBackedAssetsValue > 0 && (
+                      <div className="flex justify-between gap-3 opacity-70">
+                        <span>{t('dashboard.assetsInLinkedAccounts')}</span>
+                        <span>{mask(formatCurrency(accountBackedAssetsValue, primaryCurrency, locale))}</span>
                       </div>
                     )}
                     {creditCardBalance !== 0 && (

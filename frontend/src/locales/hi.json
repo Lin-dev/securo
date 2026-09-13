@@ -537,6 +537,7 @@
     "allCategorized": "सब हो गया!",
     "allCategorizedDesc": "सभी लेन-देन वर्गीकृत हैं",
     "assetsValue": "निवेशित संपत्तियाँ",
+    "assetsInLinkedAccounts": "Held in linked accounts (already counted)",
     "currencyBreakdown": "प्रति-मुद्रा ब्यौरा",
     "convertedFrom": "{{currency}} से बदला गया",
     "fxRateUsed": "FX दर: {{rate}}",
