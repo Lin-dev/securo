@@ -22,6 +22,7 @@ from app.services._query_filters import (
 )
 from app.services.admin_service import get_credit_card_accounting_mode
 from app.services.account_service import get_account_name
+from app.services.asset_service import is_account_backed
 from app.services.fx_rate_service import convert
 from app.schemas.report import (
     CategoryTrendItem,
@@ -169,7 +170,13 @@ async def _net_worth_at(
         asset_stmt = asset_stmt.where(Asset.group_id.in_(asset_group_ids or []))
     asset_result = await session.execute(asset_stmt)
     assets_total = 0.0
+    # Synced holdings whose owning account was just summed above are already
+    # inside that account's balance — counting them again would double the
+    # investment (issue #343). Their account row represents them.
+    counted_account_ids = {str(account.id) for account in accounts}
     for asset in asset_result.scalars().all():
+        if is_account_backed(asset, counted_account_ids):
+            continue
         val_result = await session.execute(
             select(AssetValue.amount)
             .where(AssetValue.asset_id == asset.id, AssetValue.date <= cutoff)
