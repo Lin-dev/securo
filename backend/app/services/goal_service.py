@@ -100,8 +100,15 @@ async def _resolve_current_amount(
             bal = Decimal(str(await _account_balance_at(session, acc, today)))
             total += await _convert_amount(session, bal, acc.currency, goal_currency)
 
-        # Add asset values (scoped by the goal's workspace).
-        assets_by_currency, _ = await get_asset_values_at(session, workspace_id, by_workspace=True)
+        # Add asset values (scoped by the goal's workspace). Holdings synced
+        # from one of the accounts summed above are already inside that
+        # account's balance and are skipped (issue #343).
+        assets_by_currency, _ = await get_asset_values_at(
+            session,
+            workspace_id,
+            by_workspace=True,
+            counted_account_ids=[acc.id for acc in accounts],
+        )
         total += await _sum_native_totals_in_currency(session, assets_by_currency, goal_currency)
 
         return total
