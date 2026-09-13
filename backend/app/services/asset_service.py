@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
+from collections.abc import Collection
 from typing import Any, Optional, cast
 
 from fastapi import HTTPException, status
@@ -23,6 +24,34 @@ from app.schemas.asset import AssetCreate, AssetUpdate, AssetValueCreate, AssetR
 from app.services.fx_rate_service import convert, stamp_primary_amount
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Account-backed holdings (issue #343)
+# ---------------------------------------------------------------------------
+# A holding synced from a bank connection is stored as an Asset, but the same
+# provider payload also reports the owning account's balance — and that
+# balance already contains the holding's value. Sync stamps the owning
+# Securo account id into `external_metadata` under this key (prefixed like
+# `_securo_provider_sell_date`, so it can never collide with provider data)
+# and the net-worth aggregations skip holdings whose owning account is being
+# summed into the same total. Portfolio views keep showing every holding.
+ACCOUNT_LINK_METADATA_KEY = "_securo_account_id"
+
+
+def linked_account_id(asset: Asset) -> Optional[str]:
+    """Return the id of the account whose balance already holds this asset."""
+    metadata = asset.external_metadata
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get(ACCOUNT_LINK_METADATA_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def is_account_backed(asset: Asset, counted_account_ids: Collection[str]) -> bool:
+    """True when the asset's value is already inside a counted account balance."""
+    linked = linked_account_id(asset)
+    return linked is not None and linked in counted_account_ids
+
 
 ValueRecord = tuple[date, Decimal, Optional[Decimal]]  # (date, amount, price_per_share)
 TxRecord = tuple[date, str, Decimal, Optional[Decimal]]  # (date, kind, quantity, price_per_share)
@@ -945,34 +974,21 @@ async def get_portfolio_trend(
     return {"assets": asset_meta, "trend": trend, "total": round(total, 2)}
 
 
-async def get_asset_values_at(
+async def _load_active_assets(
     session: AsyncSession,
     scope_id: uuid.UUID,
-    as_of_date: Optional[date] = None,
-    primary_currency: Optional[str] = None,
     *,
-    by_workspace: bool = False,
-    group_ids: Optional[list[uuid.UUID]] = None,
-) -> tuple[dict[str, float], float]:
-    """Return (per_currency_totals, primary_total) for all active assets.
-
-    `scope_id` is a workspace_id when `by_workspace=True` (preferred for
-    multi-tenant code paths), otherwise treated as a legacy user_id
-    filter. Both branches honor the `is_archived=False` + `sell_date is None`
-    filters.
-
-    - as_of_date=None: uses live prices (current view).
-    - as_of_date set: uses the latest AssetValue on or before that date,
-      falling back to purchase_price only if the asset existed by that date.
-    - primary_currency=None: primary_total is 0.0.
-    """
+    by_workspace: bool,
+    group_ids: Optional[list[uuid.UUID]],
+) -> list[Asset]:
+    """Active (not archived, not sold) assets in scope, optionally by wallet."""
     scope_filter = (
         Asset.workspace_id == scope_id if by_workspace else Asset.user_id == scope_id
     )
     # `group_ids` restricts to assets in a Collection's wallets (issue #105).
     # An empty list means "no wallets in this collection" → no assets.
     if group_ids is not None and len(group_ids) == 0:
-        return {}, 0.0
+        return []
     stmt = select(Asset).where(
         scope_filter,
         Asset.is_archived == False,
@@ -981,10 +997,20 @@ async def get_asset_values_at(
     if group_ids:
         stmt = stmt.where(Asset.group_id.in_(group_ids))
     result = await session.execute(stmt)
-    assets = list(result.scalars().all())
+    return list(result.scalars().all())
 
+
+async def _sum_asset_values(
+    session: AsyncSession,
+    assets: list[Asset],
+    as_of_date: Optional[date],
+    primary_currency: Optional[str],
+) -> tuple[dict[str, float], float]:
+    """Sum the given assets into (per_currency_totals, primary_total)."""
     totals: dict[str, float] = {}
     primary_total = 0.0
+    if not assets:
+        return totals, primary_total
 
     if as_of_date is not None:
         values_map = await _load_asset_native_values(session, assets, up_to_date=as_of_date)
@@ -1008,6 +1034,81 @@ async def get_asset_values_at(
             primary_total += float(converted)
 
     return totals, primary_total
+
+
+async def split_asset_values_at(
+    session: AsyncSession,
+    scope_id: uuid.UUID,
+    as_of_date: Optional[date] = None,
+    primary_currency: Optional[str] = None,
+    *,
+    by_workspace: bool = False,
+    group_ids: Optional[list[uuid.UUID]] = None,
+    counted_account_ids: Collection[uuid.UUID],
+) -> tuple[tuple[dict[str, float], float], tuple[dict[str, float], float]]:
+    """Partition active asset values into (counted, account_backed).
+
+    `counted_account_ids` are the accounts whose balances the caller adds to
+    the same total. A synced holding linked to one of them is already inside
+    that balance (issue #343), so it lands in the second partition and must
+    not be added again. Everything else — manual assets, holdings whose
+    account is closed, filtered out, or unknown — lands in the first.
+    Same date/currency semantics as `get_asset_values_at`.
+    """
+    assets = await _load_active_assets(
+        session, scope_id, by_workspace=by_workspace, group_ids=group_ids
+    )
+    counted_keys = {str(account_id) for account_id in counted_account_ids}
+    backed = [asset for asset in assets if is_account_backed(asset, counted_keys)]
+    counted = [asset for asset in assets if not is_account_backed(asset, counted_keys)]
+    return (
+        await _sum_asset_values(session, counted, as_of_date, primary_currency),
+        await _sum_asset_values(session, backed, as_of_date, primary_currency),
+    )
+
+
+async def get_asset_values_at(
+    session: AsyncSession,
+    scope_id: uuid.UUID,
+    as_of_date: Optional[date] = None,
+    primary_currency: Optional[str] = None,
+    *,
+    by_workspace: bool = False,
+    group_ids: Optional[list[uuid.UUID]] = None,
+    counted_account_ids: Optional[Collection[uuid.UUID]] = None,
+) -> tuple[dict[str, float], float]:
+    """Return (per_currency_totals, primary_total) for all active assets.
+
+    `scope_id` is a workspace_id when `by_workspace=True` (preferred for
+    multi-tenant code paths), otherwise treated as a legacy user_id
+    filter. Both branches honor the `is_archived=False` + `sell_date is None`
+    filters.
+
+    - as_of_date=None: uses live prices (current view).
+    - as_of_date set: uses the latest AssetValue on or before that date,
+      falling back to purchase_price only if the asset existed by that date.
+    - primary_currency=None: primary_total is 0.0.
+    - counted_account_ids set: the ids of the accounts whose balances the
+      caller adds to the same total; holdings synced from one of them are
+      already inside that balance and are skipped (issue #343). Leave it
+      None for portfolio views that must show every holding.
+    """
+    if counted_account_ids is not None:
+        counted, _backed = await split_asset_values_at(
+            session,
+            scope_id,
+            as_of_date,
+            primary_currency,
+            by_workspace=by_workspace,
+            group_ids=group_ids,
+            counted_account_ids=counted_account_ids,
+        )
+        return counted
+
+    assets = await _load_active_assets(
+        session, scope_id, by_workspace=by_workspace, group_ids=group_ids
+    )
+    return await _sum_asset_values(session, assets, as_of_date, primary_currency)
 
 
 # ============================================================================

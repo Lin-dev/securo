@@ -45,6 +45,7 @@ from app.services.asset_group_service import (
     _unique_default_name,
     ensure_group_for_connection,
 )
+from app.services.asset_service import ACCOUNT_LINK_METADATA_KEY
 from app.services.credit_card_service import apply_effective_date
 from app.services.rule_engine import merge_notes
 from app.services.rule_service import apply_rules_to_transaction, preview_rules_for_transaction
@@ -91,6 +92,29 @@ def _wallet_external_id(connection_external_id: str, account_key: Optional[str])
         return key
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     return f"{key[:214]}::{digest[:39]}"
+
+
+def _holding_metadata(
+    holding: HoldingData, account_id: Optional[uuid.UUID]
+) -> Optional[dict]:
+    """Provider metadata plus the owning-account link, always a fresh dict.
+
+    The link lets net worth skip a holding whose owning account balance
+    already contains it (issue #343). `Asset.external_metadata` is a plain
+    JSON column, so SQLAlchemy only notices a change when a new value is
+    assigned — callers must assign the result rather than mutate the old
+    dict in place. The key is Securo's own: a provider-supplied value under
+    the same name is discarded, and the key is dropped again when the
+    holding no longer names an imported account.
+    """
+    base = holding.metadata
+    metadata = dict(base or {})
+    metadata.pop(ACCOUNT_LINK_METADATA_KEY, None)
+    if account_id is not None:
+        metadata[ACCOUNT_LINK_METADATA_KEY] = str(account_id)
+    if not metadata and base is None:
+        return None
+    return metadata
 
 
 def _is_auto_wallet_name(name: str, institution_name: str) -> bool:
@@ -276,6 +300,23 @@ async def _sync_holdings(
     source = connection.provider
     today = date.today()
 
+    # This connection's accounts by provider account id. A holding that
+    # names its owning account (SimpleFIN) is stamped with the Securo
+    # account id so net worth can skip it — the balance the provider reports
+    # for that account already includes it (issue #343). Accounts are
+    # flushed before holdings run, so freshly imported ones are visible.
+    account_rows = await session.execute(
+        select(Account).where(
+            Account.connection_id == connection.id,
+            Account.external_id.is_not(None),
+        )
+    )
+    accounts_by_external: dict[str, Account] = {
+        account.external_id: account
+        for account in account_rows.scalars().all()
+        if account.external_id
+    }
+
     # Find-or-create the wallet(s) that own this connection's holdings. A
     # holding carrying its owning account (SimpleFIN — issue #345) gets one
     # wallet per investment account, named after it; the rest share the
@@ -342,16 +383,8 @@ async def _sync_holdings(
         if key not in groups_by_key:
             # The owning account's institution backs the wallet's
             # "Synced from …" subtitle (issue #345).
-            institution_id = (
-                await session.scalar(
-                    select(Account.institution_id).where(
-                        Account.connection_id == connection.id,
-                        Account.external_id == key,
-                    )
-                )
-                if key
-                else None
-            )
+            owning_account = accounts_by_external.get(key) if key else None
+            institution_id = owning_account.institution_id if owning_account else None
             wallet_key = _wallet_external_id(connection.external_id, key)
             default_name = (
                 _clean_institution_name(holding.account_name)
@@ -587,9 +620,15 @@ async def _sync_holdings(
         ):
             existing.sell_date = None
 
+        owning_account = (
+            accounts_by_external.get(holding.account_external_id)
+            if holding.account_external_id
+            else None
+        )
         asset = await _upsert_asset_from_holding(
             session, existing, holding, user_id, connection.id, source,
             workspace_id=connection.workspace_id,
+            account_id=owning_account.id if owning_account is not None else None,
         )
         if asset.group_id is not None:
             existing_group = await session.get(AssetGroup, asset.group_id)
@@ -679,6 +718,7 @@ async def _upsert_asset_from_holding(
     connection_id: uuid.UUID,
     source: str,
     workspace_id: uuid.UUID,
+    account_id: Optional[uuid.UUID] = None,
 ) -> Asset:
     """Create or update an Asset from a HoldingData payload.
 
@@ -687,6 +727,10 @@ async def _upsert_asset_from_holding(
     synced assets. Provider-reported withdrawal is handled by the caller
     via `sell_date`, not here, so this function only ever sees ACTIVE
     holdings and never flips `is_archived` on its own.
+
+    `account_id` is the Securo account whose provider balance already
+    contains this holding; it is stamped into the metadata so net worth
+    does not count the holding a second time (issue #343).
     """
     if asset is None:
         asset = Asset(
@@ -704,7 +748,7 @@ async def _upsert_asset_from_holding(
             isin=holding.isin,
             ticker=holding.ticker,
             maturity_date=holding.maturity_date,
-            external_metadata=holding.metadata,
+            external_metadata=_holding_metadata(holding, account_id),
             valuation_method="manual",
         )
         session.add(asset)
@@ -715,8 +759,9 @@ async def _upsert_asset_from_holding(
     asset.name = holding.name
     asset.currency = holding.currency
     asset.user_id = user_id
-    # external_metadata is a snapshot blob: we want the latest every time.
-    asset.external_metadata = holding.metadata
+    # external_metadata is a snapshot blob: we want the latest every time
+    # (a fresh dict, so the JSON column registers the change).
+    asset.external_metadata = _holding_metadata(holding, account_id)
     previous_connection_id = asset.connection_id
     asset.connection_id = connection_id
     # Only auto-unarchive when the holding moved to a different connection
