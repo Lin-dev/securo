@@ -964,6 +964,9 @@ export interface TransactionsSummary {
   // Absolute total of everything excluded from income/expense for the same
   // rows — transfers, treat_as_transfer categories and ignored items (#242).
   excluded: number
+  // Fork addition: contributions moved into investment accounts for the
+  // same rows, counted once per movement. Optional for older backends.
+  invested?: number
   currency: string
 }
 

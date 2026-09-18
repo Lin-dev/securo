@@ -645,6 +645,7 @@
     "summaryExpenses": "Ausgaben",
     "summaryNet": "Netto",
     "summaryExcluded": "Ausgeschlossen",
+    "summaryInvested": "Invested",
     "bulkCategorize": "Anwenden",
     "bulkSuccess": "{{count}} Transaktionen kategorisiert",
     "bulkDelete": "Auswahl löschen",

@@ -661,6 +661,7 @@
     "summaryExpenses": "Výdavky",
     "summaryNet": "Netto",
     "summaryExcluded": "Vylúčené",
+    "summaryInvested": "Invested",
     "bulkCategorize": "Použiť",
     "bulkSuccess": "{{count}} transakcií kategorizovaných",
     "bulkSuccess_one": "{{count}} transakcia kategorizovaná",

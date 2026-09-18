@@ -645,6 +645,7 @@
     "summaryExpenses": "Витрати",
     "summaryNet": "Чистий",
     "summaryExcluded": "Виключено",
+    "summaryInvested": "Invested",
     "bulkCategorize": "Застосувати",
     "bulkSuccess": "{{count}} транзакцій категоризовано",
     "bulkDelete": "Видалити вибрані",

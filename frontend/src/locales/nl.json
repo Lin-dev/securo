@@ -645,6 +645,7 @@
     "summaryExpenses": "Kosten",
     "summaryNet": "Netto",
     "summaryExcluded": "Uitgesloten",
+    "summaryInvested": "Invested",
     "bulkCategorize": "Toepassen",
     "bulkSuccess": "{{count}} transacties gecategoriseerd",
     "bulkDelete": "Geselecteerde verwijderen",

@@ -1502,6 +1502,103 @@ export default function TransactionsPage() {
       {/* Table / Mobile Cards */}
       {viewMode === 'list' && (
       <div className="bg-card rounded-xl border border-border shadow-sm overflow-hidden mb-4">
+        {/* Filtered summary (issue #185): income / expenses / net across
+            ALL rows matching the active filters — not just this page.
+            Rendered above the table so it is visible without scrolling. */}
+        {!isLoading && data?.summary && filteredItems.length > 0 && (
+          <div className="flex flex-col sm:flex-row flex-wrap sm:items-center gap-x-5 gap-y-1 border-b border-border bg-muted/30 px-4 py-2.5">
+            {/* Mobile: count + saldo on first line */}
+            <div className="flex items-center justify-between sm:hidden">
+              <span className="text-xs text-muted-foreground">
+                {t('transactions.summaryCount', { count: data.total })}
+              </span>
+              <span className="flex items-baseline gap-1.5 text-xs">
+                <span className="text-muted-foreground">{t('transactions.summaryNet')}</span>
+                <span
+                  className={`text-sm font-bold tabular-nums ${
+                    data.summary.net >= 0 ? 'text-emerald-600' : 'text-rose-500'
+                  }`}
+                >
+                  {mask(formatCurrency(data.summary.net, data.summary.currency, locale))}
+                </span>
+              </span>
+            </div>
+            {/* Mobile: receitas + despesas on second line */}
+            <div className="flex items-center justify-between sm:hidden">
+              <span className="flex items-baseline gap-1.5 text-xs">
+                <span className="text-muted-foreground">{t('transactions.summaryIncome')}</span>
+                <span className="text-sm font-semibold tabular-nums text-emerald-600">
+                  {mask(formatCurrency(data.summary.income, data.summary.currency, locale))}
+                </span>
+              </span>
+              <span className="flex items-baseline gap-1.5 text-xs">
+                <span className="text-muted-foreground">{t('transactions.summaryExpenses')}</span>
+                <span className="text-sm font-semibold tabular-nums text-rose-500">
+                  {mask(formatCurrency(data.summary.expense, data.summary.currency, locale))}
+                </span>
+              </span>
+            </div>
+            {/* Mobile: excluido on third line */}
+            {data.summary.excluded > 0 && (
+              <span className="flex items-baseline gap-1.5 text-xs sm:hidden">
+                <span className="text-muted-foreground">{t('transactions.summaryExcluded')}</span>
+                <span className="text-sm font-semibold tabular-nums text-muted-foreground">
+                  {mask(formatCurrency(data.summary.excluded, data.summary.currency, locale))}
+                </span>
+              </span>
+            )}
+            {(data.summary.invested ?? 0) > 0 && (
+              <span className="flex items-baseline gap-1.5 text-xs sm:hidden">
+                <span className="text-muted-foreground">{t('transactions.summaryInvested')}</span>
+                <span className="text-sm font-semibold tabular-nums text-sky-500">
+                  {mask(formatCurrency(data.summary.invested ?? 0, data.summary.currency, locale))}
+                </span>
+              </span>
+            )}
+            {/* Desktop: original horizontal layout */}
+            <span className="mr-auto text-xs text-muted-foreground hidden sm:inline">
+              {t('transactions.summaryCount', { count: data.total })}
+            </span>
+            {data.summary.excluded > 0 && (
+              <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
+                <span className="text-muted-foreground">{t('transactions.summaryExcluded')}</span>
+                <span className="text-sm font-semibold tabular-nums text-muted-foreground">
+                  {mask(formatCurrency(data.summary.excluded, data.summary.currency, locale))}
+                </span>
+              </span>
+            )}
+            {(data.summary.invested ?? 0) > 0 && (
+              <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
+                <span className="text-muted-foreground">{t('transactions.summaryInvested')}</span>
+                <span className="text-sm font-semibold tabular-nums text-sky-500">
+                  {mask(formatCurrency(data.summary.invested ?? 0, data.summary.currency, locale))}
+                </span>
+              </span>
+            )}
+            <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
+              <span className="text-muted-foreground">{t('transactions.summaryIncome')}</span>
+              <span className="text-sm font-semibold tabular-nums text-emerald-600">
+                {mask(formatCurrency(data.summary.income, data.summary.currency, locale))}
+              </span>
+            </span>
+            <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
+              <span className="text-muted-foreground">{t('transactions.summaryExpenses')}</span>
+              <span className="text-sm font-semibold tabular-nums text-rose-500">
+                {mask(formatCurrency(data.summary.expense, data.summary.currency, locale))}
+              </span>
+            </span>
+            <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
+              <span className="text-muted-foreground">{t('transactions.summaryNet')}</span>
+              <span
+                className={`text-sm font-bold tabular-nums ${
+                  data.summary.net >= 0 ? 'text-emerald-600' : 'text-rose-500'
+                }`}
+              >
+                {mask(formatCurrency(data.summary.net, data.summary.currency, locale))}
+              </span>
+            </span>
+          </div>
+        )}
         {isLoading ? (
           <div className="p-6 space-y-3">
             {Array.from({ length: 5 }).map((_, i) => (
@@ -1618,86 +1715,6 @@ export default function TransactionsPage() {
               )}
             </TableBody>
           </Table>
-          </div>
-        )}
-        {/* Filtered summary (issue #185): income / expenses / net across
-            ALL rows matching the active filters — not just this page. */}
-        {!isLoading && data?.summary && filteredItems.length > 0 && (
-          <div className="flex flex-col sm:flex-row flex-wrap sm:items-center gap-x-5 gap-y-1 border-t border-border bg-muted/30 px-4 py-2.5">
-            {/* Mobile: count + saldo on first line */}
-            <div className="flex items-center justify-between sm:hidden">
-              <span className="text-xs text-muted-foreground">
-                {t('transactions.summaryCount', { count: data.total })}
-              </span>
-              <span className="flex items-baseline gap-1.5 text-xs">
-                <span className="text-muted-foreground">{t('transactions.summaryNet')}</span>
-                <span
-                  className={`text-sm font-bold tabular-nums ${
-                    data.summary.net >= 0 ? 'text-emerald-600' : 'text-rose-500'
-                  }`}
-                >
-                  {mask(formatCurrency(data.summary.net, data.summary.currency, locale))}
-                </span>
-              </span>
-            </div>
-            {/* Mobile: receitas + despesas on second line */}
-            <div className="flex items-center justify-between sm:hidden">
-              <span className="flex items-baseline gap-1.5 text-xs">
-                <span className="text-muted-foreground">{t('transactions.summaryIncome')}</span>
-                <span className="text-sm font-semibold tabular-nums text-emerald-600">
-                  {mask(formatCurrency(data.summary.income, data.summary.currency, locale))}
-                </span>
-              </span>
-              <span className="flex items-baseline gap-1.5 text-xs">
-                <span className="text-muted-foreground">{t('transactions.summaryExpenses')}</span>
-                <span className="text-sm font-semibold tabular-nums text-rose-500">
-                  {mask(formatCurrency(data.summary.expense, data.summary.currency, locale))}
-                </span>
-              </span>
-            </div>
-            {/* Mobile: excluido on third line */}
-            {data.summary.excluded > 0 && (
-              <span className="flex items-baseline gap-1.5 text-xs sm:hidden">
-                <span className="text-muted-foreground">{t('transactions.summaryExcluded')}</span>
-                <span className="text-sm font-semibold tabular-nums text-muted-foreground">
-                  {mask(formatCurrency(data.summary.excluded, data.summary.currency, locale))}
-                </span>
-              </span>
-            )}
-            {/* Desktop: original horizontal layout */}
-            <span className="mr-auto text-xs text-muted-foreground hidden sm:inline">
-              {t('transactions.summaryCount', { count: data.total })}
-            </span>
-            {data.summary.excluded > 0 && (
-              <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
-                <span className="text-muted-foreground">{t('transactions.summaryExcluded')}</span>
-                <span className="text-sm font-semibold tabular-nums text-muted-foreground">
-                  {mask(formatCurrency(data.summary.excluded, data.summary.currency, locale))}
-                </span>
-              </span>
-            )}
-            <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('transactions.summaryIncome')}</span>
-              <span className="text-sm font-semibold tabular-nums text-emerald-600">
-                {mask(formatCurrency(data.summary.income, data.summary.currency, locale))}
-              </span>
-            </span>
-            <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('transactions.summaryExpenses')}</span>
-              <span className="text-sm font-semibold tabular-nums text-rose-500">
-                {mask(formatCurrency(data.summary.expense, data.summary.currency, locale))}
-              </span>
-            </span>
-            <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('transactions.summaryNet')}</span>
-              <span
-                className={`text-sm font-bold tabular-nums ${
-                  data.summary.net >= 0 ? 'text-emerald-600' : 'text-rose-500'
-                }`}
-              >
-                {mask(formatCurrency(data.summary.net, data.summary.currency, locale))}
-              </span>
-            </span>
           </div>
         )}
       </div>

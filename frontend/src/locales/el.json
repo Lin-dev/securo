@@ -822,6 +822,7 @@
     "summaryExpenses": "Έξοδα",
     "summaryNet": "Καθαρό",
     "summaryExcluded": "Εξαιρέθηκαν",
+    "summaryInvested": "Invested",
     "bulkCategorize": "Εφαρμογή",
     "bulkSuccess": "{{count}} συναλλαγές κατηγοριοποιήθηκαν",
     "bulkDelete": "Διαγραφή επιλεγμένων",

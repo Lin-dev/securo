@@ -645,6 +645,7 @@
     "summaryExpenses": "खर्च",
     "summaryNet": "निवल",
     "summaryExcluded": "बाहर रखे गए",
+    "summaryInvested": "Invested",
     "bulkCategorize": "लागू करें",
     "bulkSuccess": "{{count}} लेन-देन वर्गीकृत किए गए",
     "bulkDelete": "चयनित हटाएँ",

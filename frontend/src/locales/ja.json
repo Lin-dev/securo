@@ -645,6 +645,7 @@
     "summaryExpenses": "支出",
     "summaryNet": "純額",
     "summaryExcluded": "除外",
+    "summaryInvested": "Invested",
     "bulkCategorize": "適用",
     "bulkSuccess": "{{count}}件の取引を分類しました",
     "bulkDelete": "選択を削除",
