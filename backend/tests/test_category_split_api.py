@@ -353,3 +353,170 @@ async def test_deleting_the_parent_removes_its_lines(client, auth_headers, sessi
     assert await _rows_under(session, tx["id"]) == []
     assert await session.get(Transaction, uuid.UUID(tx["id"])) is None
     assert await _balance(client, auth_headers, account["id"]) == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Totals and filters see the lines, never the parent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_summary_counts_lines_not_parent(client, auth_headers):
+    account, _, _, tx, lines = await _vul(client, auth_headers)
+    await _split(client, auth_headers, tx["id"], lines)
+
+    resp = await client.get(
+        f"/api/transactions?account_id={account['id']}&include_summary=true",
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200
+    summary = resp.json()["summary"]
+    assert summary["income"] == pytest.approx(0)
+    assert summary["expense"] == pytest.approx(250)
+    # The invested line is transfer-like, so it is the only excluded money;
+    # the hidden parent does not show up as another 500.
+    assert summary["excluded"] == pytest.approx(250)
+    assert summary["invested"] == pytest.approx(250)
+
+
+@pytest.mark.asyncio
+async def test_uncategorized_filter_skips_split_parent(client, auth_headers):
+    account, insurance, _, tx, _ = await _vul(client, auth_headers)
+    await _split(client, auth_headers, tx["id"], [
+        {"category_id": insurance["id"], "amount": "250.00"},
+        {"category_id": None, "amount": "250.00"},
+    ])
+
+    resp = await client.get(
+        f"/api/transactions?account_id={account['id']}&uncategorized=true",
+        headers=auth_headers,
+    )
+
+    items = resp.json()["items"]
+    assert [item["parent_transaction_id"] for item in items] == [tx["id"]]
+    assert items[0]["category_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Edit, ignore and delete rules
+# ---------------------------------------------------------------------------
+
+
+async def _children(client, auth_headers, parent_id):
+    return (await client.get(f"/api/transactions/{parent_id}/split", headers=auth_headers)).json()
+
+
+@pytest.mark.asyncio
+async def test_line_edits_are_limited_to_bookkeeping_fields(client, auth_headers):
+    _, insurance, _, tx, lines = await _vul(client, auth_headers)
+    await _split(client, auth_headers, tx["id"], lines)
+    child = (await _children(client, auth_headers, tx["id"]))[1]
+
+    for locked in ({"amount": "100.00"}, {"date": "2026-01-01"}, {"status": "pending"},
+                   {"is_ignored": True}, {"exclude_from_pnl": True}, {"type": "credit"}):
+        resp = await client.patch(f"/api/transactions/{child['id']}", headers=auth_headers, json=locked)
+        assert resp.status_code == 400, (locked, resp.text)
+        assert "split line" in resp.json()["detail"]
+
+    resp = await client.patch(
+        f"/api/transactions/{child['id']}", headers=auth_headers,
+        json={"category_id": insurance["id"], "notes": "reclassified"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["category_id"] == insurance["id"]
+    assert resp.json()["notes"] == "reclassified"
+
+
+@pytest.mark.asyncio
+async def test_parent_edits_propagate_or_are_refused(client, auth_headers):
+    _, _, _, tx, lines = await _vul(client, auth_headers)
+    await _split(client, auth_headers, tx["id"], lines)
+
+    for locked in ({"amount": "600.00"}, {"is_ignored": False}, {"type": "credit"}, {"status": "pending"}):
+        resp = await client.patch(f"/api/transactions/{tx['id']}", headers=auth_headers, json=locked)
+        assert resp.status_code == 400, (locked, resp.text)
+        assert "Remove the split" in resp.json()["detail"]
+
+    resp = await client.patch(
+        f"/api/transactions/{tx['id']}", headers=auth_headers,
+        json={"date": "2026-01-15", "description": "NWM VUL PREMIUM", "exclude_from_pnl": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["is_ignored"] is True
+    for child in await _children(client, auth_headers, tx["id"]):
+        assert child["date"] == "2026-01-15"
+        assert child["description"] == "NWM VUL PREMIUM"
+        assert child["exclude_from_pnl"] is True
+
+
+@pytest.mark.asyncio
+async def test_ignore_toggle_and_delete_guards(client, auth_headers, session: AsyncSession):
+    _, _, _, tx, lines = await _vul(client, auth_headers)
+    await _split(client, auth_headers, tx["id"], lines)
+    child_ids = [c["id"] for c in await _children(client, auth_headers, tx["id"])]
+
+    parent_ignore = await client.patch(f"/api/transactions/{tx['id']}/ignore", headers=auth_headers)
+    assert parent_ignore.status_code == 400 and "remove the split" in parent_ignore.json()["detail"]
+    child_ignore = await client.patch(f"/api/transactions/{child_ids[0]}/ignore", headers=auth_headers)
+    assert child_ignore.status_code == 400 and "Split lines" in child_ignore.json()["detail"]
+
+    child_delete = await client.delete(f"/api/transactions/{child_ids[0]}", headers=auth_headers)
+    assert child_delete.status_code == 400 and "remove the split" in child_delete.json()["detail"]
+
+    lone_line = await client.post(
+        "/api/transactions/bulk-delete", headers=auth_headers, json={"transaction_ids": child_ids[:1]}
+    )
+    assert lone_line.status_code == 200 and lone_line.json()["deleted"] == 0
+    assert len(await _rows_under(session, tx["id"])) == 2
+
+    whole = await client.post(
+        "/api/transactions/bulk-delete", headers=auth_headers, json={"transaction_ids": [tx["id"]]}
+    )
+    assert whole.status_code == 200 and whole.json()["deleted"] == 1
+    assert await _rows_under(session, tx["id"]) == []
+    assert await session.get(Transaction, uuid.UUID(tx["id"])) is None
+
+
+@pytest.mark.asyncio
+async def test_bulk_categorize_skips_the_parent(client, auth_headers):
+    _, insurance, _, tx, lines = await _vul(client, auth_headers)
+    await _split(client, auth_headers, tx["id"], lines)
+    child = (await _children(client, auth_headers, tx["id"]))[1]
+
+    resp = await client.patch(
+        "/api/transactions/bulk-categorize", headers=auth_headers,
+        json={"transaction_ids": [tx["id"], child["id"]], "category_id": insurance["id"]},
+    )
+
+    assert resp.status_code == 200, resp.text
+    parent = (await client.get(f"/api/transactions/{tx['id']}", headers=auth_headers)).json()
+    assert parent["category_id"] is None
+    assert (await _children(client, auth_headers, tx["id"]))[1]["category_id"] == insurance["id"]
+
+
+@pytest.mark.asyncio
+async def test_parent_never_becomes_a_transfer(client, auth_headers):
+    account, _, _, tx, lines = await _vul(client, auth_headers)
+    await _split(client, auth_headers, tx["id"], lines)
+    other = await _account(client, auth_headers, "Savings")
+    credit = await _transaction(client, auth_headers, other["id"], amount="500.00", type="credit")
+
+    link = await client.post(
+        "/api/transactions/link-transfer", headers=auth_headers,
+        json={"transaction_ids": [tx["id"], credit["id"]]},
+    )
+    assert link.status_code == 400 and "remove the split first" in link.json()["detail"]
+
+    counterpart = await client.post(
+        f"/api/transactions/{tx['id']}/create-counterpart", headers=auth_headers,
+        json={"to_account_id": other["id"]},
+    )
+    assert counterpart.status_code == 400 and "remove the split first" in counterpart.json()["detail"]
+
+    candidates = await client.get(
+        f"/api/transactions/{credit['id']}/transfer-candidates", headers=auth_headers
+    )
+    assert candidates.status_code == 200
+    assert tx["id"] not in {c["id"] for c in candidates.json()}
+

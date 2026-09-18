@@ -48,6 +48,10 @@ async def _load(
             selectinload(Transaction.split_children),
             selectinload(Transaction.splits),
         )
+        # The caller may already hold this row (a sync just created it, a
+        # test built it); refresh it so both collections are loaded and no
+        # later access lazy-loads under the async session.
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 

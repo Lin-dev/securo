@@ -192,6 +192,10 @@ async def _pool(
     query = select(Transaction).where(
         Transaction.workspace_id == workspace_id,
         Transaction.transfer_pair_id.is_(None),
+        # Ignored rows never pair: an ignored row (a split parent among them) is
+        # not money that moved, and pairing it would drop its counterpart from
+        # income or expenses.
+        Transaction.is_ignored.is_(False),
     )
     if ignored_sources:
         query = query.where(Transaction.source.not_in(ignored_sources))

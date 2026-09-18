@@ -96,6 +96,9 @@ async def aggregate(
     q = (
         select(bucket_id.label("bucket"), value_expr.label("value"), func.count(Transaction.id).label("count"))
         .where(Transaction.workspace_id == ws_id)
+        # Ignored rows are not money that moved; a split parent in particular
+        # would double count next to the lines that replaced it.
+        .where(Transaction.is_ignored.is_(False))
     )
 
     fd = parse_date(from_date)
