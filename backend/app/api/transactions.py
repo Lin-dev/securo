@@ -83,6 +83,9 @@ class TransactionsSummary(BaseModel):
     expense: float
     net: float
     excluded: float
+    # Fork addition: contributions moved into investment accounts for the same
+    # rows, counted once per movement (see INVESTMENT_CONTRIBUTION_CATEGORY).
+    invested: float = 0.0
     currency: str
 
 

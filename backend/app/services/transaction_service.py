@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional, cast
 
-from sqlalchemy import CursorResult, delete, select, func, or_, not_, update
+from sqlalchemy import CursorResult, and_, delete, select, func, or_, not_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -93,6 +93,14 @@ def _apply_fx_override(transaction, amount, amount_primary=None, fx_rate_used=No
         transaction.amount_primary = (amount * Decimal(str(fx_rate_used))).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
+
+
+# Name of the transfer-like category that marks money moved into an
+# investment account. The transactions summary reports it as `invested`
+# (fork addition): the sending (debit) leg from a non-investment account,
+# plus contribution credits that land in an investment account with no
+# sending leg in Securo (the funding account is not connected).
+INVESTMENT_CONTRIBUTION_CATEGORY = "Investment contribution"
 
 
 async def get_transactions(
@@ -455,11 +463,39 @@ async def get_transactions(
         )
         excluded = Decimal(str(excluded_total or 0))
 
+        # Invested (fork addition): contributions that left cash for an
+        # investment account. Counted once per movement — the debit leg from
+        # a non-investment account, or an unpaired contribution credit inside
+        # an investment account (funding account not in Securo). Buys inside
+        # the brokerage are not new money and stay out.
+        inv_subq = base_query.subquery()
+        inv_amount_norm = func.coalesce(inv_subq.c.amount_primary, inv_subq.c.amount)
+        invested_total = await session.scalar(
+            select(func.coalesce(func.sum(func.abs(inv_amount_norm)), 0))
+            .select_from(inv_subq)
+            .join(Category, Category.id == inv_subq.c.category_id)
+            .join(Account, Account.id == inv_subq.c.account_id)
+            .where(
+                Category.treat_as_transfer.is_(True),
+                func.lower(Category.name) == INVESTMENT_CONTRIBUTION_CATEGORY.lower(),
+                or_(
+                    and_(inv_subq.c.type == "debit", Account.type != "investment"),
+                    and_(
+                        inv_subq.c.type == "credit",
+                        Account.type == "investment",
+                        inv_subq.c.transfer_pair_id.is_(None),
+                    ),
+                ),
+            )
+        )
+        invested = Decimal(str(invested_total or 0))
+
         summary = {
             "income": income,
             "expense": expense,
             "net": income - expense,
             "excluded": excluded,
+            "invested": invested,
         }
 
     # Apply ordering (and pagination unless skipped). Bill-view callers
