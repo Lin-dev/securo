@@ -10,6 +10,7 @@ from typing import Optional
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.account import Account
 from app.models.category import Category
@@ -115,6 +116,33 @@ def is_not_ignored():
                 select(Category.id).where(Category.is_ignored.is_(True))
             ),
         ),
+    )
+
+
+def is_split_child():
+    """SQL filter: the row is one category line of a split transaction.
+
+    Lines are real rows that copy the parent's account, date and description,
+    so they count everywhere an ordinary row counts. They must not be split
+    again, ignored on their own, or rewritten by rules.
+    """
+    return Transaction.parent_transaction_id.is_not(None)
+
+
+def is_split_parent():
+    """SQL filter: the row has been split into category lines.
+
+    A split parent is kept with is_ignored=True so its lines replace it in
+    every total. Sites that reason about a row's category (uncategorized
+    lists, the pending-categorization count, the summary's excluded figure)
+    must skip the parent explicitly: it has no category of its own and its
+    lines already carry the money.
+    """
+    child = aliased(Transaction)
+    return Transaction.id.in_(
+        select(child.parent_transaction_id).where(
+            child.parent_transaction_id.is_not(None)
+        )
     )
 
 
