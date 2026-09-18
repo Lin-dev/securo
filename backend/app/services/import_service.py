@@ -24,6 +24,7 @@ from app.services import reconciliation_service, recurring_match_service
 from app.services.credit_card_service import apply_effective_date
 from app.services.category_service import get_assignable_category_ids
 from app.services.rule_engine import apply_rule_actions, evaluate_conditions, merge_notes
+from app.services.category_split_service import apply_split_rules
 from app.services.rule_service import apply_rules_to_transaction, preview_rules_for_transaction
 from app.services.fx_rate_service import stamp_primary_amount
 from app.services.payee_service import get_or_create_payee
@@ -867,6 +868,7 @@ async def import_transactions(
 
     imported = 0
     landed: list[Transaction] = []
+    imported_ids: list = []
     skipped = 0
     matched_existing_ids: set[uuid.UUID] = set()
     effective_format = (detected_format or source or "").lower()
@@ -1037,6 +1039,7 @@ async def import_transactions(
         await session.flush()
         if should_detect_duplicates and not txn_data.external_id:
             matched_existing_ids.add(incoming.id)
+        imported_ids.append(incoming.id)
         if recurring_link is not None:
             recurring_match_service.advance_past(recurring_link, txn_data.date)
 
@@ -1063,6 +1066,8 @@ async def import_transactions(
     # row is written: settling an invoice creates an allocation pointing
     # at a transaction, which has to exist first.
     await reconciliation_service.match_incoming(session, workspace_id, landed)
+    # Split rules run last, once every imported row is complete.
+    await apply_split_rules(session, workspace_id, transaction_ids=imported_ids)
 
     await session.commit()
     return imported, skipped, excluded_count, import_log.id

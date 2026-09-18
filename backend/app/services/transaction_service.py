@@ -844,6 +844,12 @@ async def create_transaction(
     # to remove, and leaving this path out would remove it only for people
     # whose bank happens to be connected.
     await reconciliation_service.match_incoming(session, workspace_id, [transaction])
+    # A split rule stands in for a category the user did not pick; it runs
+    # last so the row it splits is complete (dated, FX-stamped, unshared).
+    if not data.category_id and data.splits is None:
+        await category_split_service.apply_split_rules(
+            session, workspace_id, transaction_ids=[transaction.id]
+        )
 
     await session.commit()
     await session.refresh(transaction, ["category", "splits"])

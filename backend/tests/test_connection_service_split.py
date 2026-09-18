@@ -7,7 +7,7 @@ inserted twice.
 """
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
@@ -161,3 +161,87 @@ async def test_resync_does_not_merge_a_provider_twin_into_a_line(
     assert len(rows) == 4
     assert sum(1 for r in rows if r.external_id == "nwm-2" and r.source == "sync") == 1
     assert sum(1 for r in rows if r.parent_transaction_id == parent_id) == 2
+
+
+# ---------------------------------------------------------------------------
+# Rule-driven splits during sync
+# ---------------------------------------------------------------------------
+
+
+async def _split_rule(session, user_id, ws_id, insurance, invested):
+    from app.schemas.rule import RuleAction, RuleCondition, RuleCreate
+    from app.services.rule_service import create_rule
+
+    await create_rule(session, ws_id, user_id, RuleCreate(
+        name="NWM split", conditions_op="and",
+        conditions=[RuleCondition(field="description", op="contains", value="NORTHWESTERN")],
+        actions=[RuleAction(op="split_categories", value=[
+            {"category_id": str(insurance), "amount": "250"},
+            {"category_id": str(invested), "remainder": True},
+        ])],
+    ))
+
+
+@pytest.mark.asyncio
+async def test_sync_splits_a_new_row_by_rule(
+    session: AsyncSession, test_user, test_workspace, conn_account
+):
+    conn, account = conn_account
+    conn_id, account_id, ws_id, user_id = conn.id, account.id, test_workspace.id, test_user.id
+    insurance = await _category(session, user_id, ws_id, "Insurance")
+    invested = await _category(session, user_id, ws_id, "Investment contribution")
+    await _split_rule(session, user_id, ws_id, insurance, invested)
+    recent = date.today() - timedelta(days=2)
+    payload = [
+        _tx(external_id="nwm-1", description="NORTHWESTERN MUTUAL", amount=Decimal("500.00"), date=recent),
+        _tx(external_id="uber-1", description="UBER", amount=Decimal("20.00"), date=recent),
+    ]
+
+    await _run_sync(session, conn_id, ws_id, user_id, _provider(payload))
+
+    session.expire_all()
+    rows = await _rows(session, account_id)
+    parent = next(r for r in rows if r.external_id == "nwm-1")
+    assert parent.is_ignored is True
+    lines = sorted((r for r in rows if r.parent_transaction_id == parent.id), key=lambda r: r.created_at)
+    assert [(r.category_id, r.amount) for r in lines] == [(insurance, Decimal("250.00")), (invested, Decimal("250.00"))]
+    uber = next(r for r in rows if r.external_id == "uber-1")
+    assert uber.is_ignored is False and uber.parent_transaction_id is None
+
+    # A second sync of the same payload changes nothing.
+    await _run_sync(session, conn_id, ws_id, user_id, _provider(payload))
+    session.expire_all()
+    assert len(await _rows(session, account_id)) == 4
+
+
+@pytest.mark.asyncio
+async def test_sync_splits_a_row_when_it_posts(
+    session: AsyncSession, test_user, test_workspace, conn_account
+):
+    """A pending charge waits; the sync that flips it to posted splits it,
+    even though that row is not among the sync's new ids."""
+    conn, account = conn_account
+    conn_id, account_id, ws_id, user_id = conn.id, account.id, test_workspace.id, test_user.id
+    insurance = await _category(session, user_id, ws_id, "Insurance")
+    invested = await _category(session, user_id, ws_id, "Investment contribution")
+    await _split_rule(session, user_id, ws_id, insurance, invested)
+    recent = date.today() - timedelta(days=2)
+    pending_id = uuid.uuid4()
+    session.add(Transaction(
+        id=pending_id, user_id=user_id, workspace_id=ws_id, account_id=account_id,
+        external_id="nwm-1", description="NORTHWESTERN MUTUAL", amount=Decimal("500.00"),
+        currency="BRL", date=recent, type="debit", source="sync", status="pending",
+    ))
+    await session.commit()
+
+    await _run_sync(session, conn_id, ws_id, user_id, _provider([
+        _tx(external_id="nwm-1", description="NORTHWESTERN MUTUAL", amount=Decimal("500.00"), date=recent),
+    ]))
+
+    session.expire_all()
+    rows = await _rows(session, account_id)
+    parent = await session.get(Transaction, pending_id)
+    assert parent.status == "posted"
+    assert parent.is_ignored is True
+    assert sum(1 for r in rows if r.parent_transaction_id == pending_id) == 2
+    assert len(rows) == 3
