@@ -26,7 +26,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { AlertTriangle, ChevronDown, ChevronLeft, Download, Eye, EyeClosed, Paperclip, Upload, X, FileText, Plus, Unlink, SlidersHorizontal, ListPlus, Check } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronLeft, Download, ExternalLink, Eye, EyeClosed, Paperclip, Upload, X, FileText, Plus, Unlink, SlidersHorizontal, ListPlus, Check } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,6 +44,9 @@ import { CategorySelect } from '@/components/category-select'
 import { TransactionAttachments } from '@/components/transaction-attachments'
 import type { AttachmentPreview } from '@/components/transaction-attachments'
 import { TransactionSplitsSection } from '@/components/transaction-splits-section'
+import { TransactionCategorySplitSection } from '@/components/transaction-category-split-section'
+import { DeleteConfirmationDialog } from '@/components/delete-confirmation-dialog'
+import { canSplitByCategory, isSplitChild as isSplitChildRow, isSplitParent as isSplitParentRow, stripForSplitRole } from '@/lib/transaction-split-utils'
 import { buildInstallmentSeriesInput, hasNonStatusChange, isManualInstallmentSeriesRow } from '@/lib/installment-series'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import type { Transaction, RecurringTransaction, TransactionSplitsInput, TransactionEditPayload, InstallmentSeriesInput, TransactionApplyScope, CategoryGroup, Category, Rule, RuleCondition } from '@/types'
@@ -88,6 +91,7 @@ export function TransactionDialog({
   onUnlinkTransfer,
   onIgnoreChanged,
   onCreateRule,
+  onOpenTransaction,
   loading,
   error,
   isSynced = false,
@@ -106,6 +110,8 @@ export function TransactionDialog({
   onUnlinkTransfer?: (pairId: string) => void
   onIgnoreChanged?: () => void
   onCreateRule?: (tx: Transaction) => void
+  /** Open another transaction in this dialog (a split line's original). */
+  onOpenTransaction?: (id: string) => void
   loading: boolean
   error: string | null
   isSynced?: boolean
@@ -116,6 +122,8 @@ export function TransactionDialog({
   const [preview, setPreview] = useState<AttachmentPreview | null>(null)
   const [pendingInstallmentEdit, setPendingInstallmentEdit] =
     useState<PendingInstallmentEdit | null>(null)
+  // Deleting a split parent takes its lines along, so it asks first.
+  const [confirmParentDelete, setConfirmParentDelete] = useState(false)
 
   const handlePreviewChange = useCallback((newPreview: AttachmentPreview | null) => {
     setPreview(prev => {
@@ -155,7 +163,16 @@ export function TransactionDialog({
 
   const handleClose = () => {
     setPendingInstallmentEdit(null)
+    setConfirmParentDelete(false)
     onClose()
+  }
+
+  const handleDelete = () => {
+    if (transaction && isSplitParentRow(transaction)) {
+      setConfirmParentDelete(true)
+      return
+    }
+    onDelete?.()
   }
 
   const handleSave = (
@@ -214,10 +231,11 @@ export function TransactionDialog({
               accounts={accounts}
               recurringMatch={recurringMatch}
               onSave={handleSave}
-              onDelete={onDelete}
+              onDelete={onDelete ? handleDelete : undefined}
               onUnlinkTransfer={onUnlinkTransfer}
               onIgnoreChanged={onIgnoreChanged}
               onCreateRule={onCreateRule}
+              onOpenTransaction={onOpenTransaction}
               onCancel={handleClose}
               loading={loading}
               error={error}
@@ -363,6 +381,18 @@ export function TransactionDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <DeleteConfirmationDialog
+      open={confirmParentDelete}
+      title={t('transactions.splitParentDeleteTitle')}
+      description={t('transactions.splitParentDeleteDesc', { count: transaction?.split_count ?? 0 })}
+      isPending={loading}
+      onClose={() => setConfirmParentDelete(false)}
+      onConfirm={() => {
+        setConfirmParentDelete(false)
+        onDelete?.()
+      }}
+    />
     </>
   )
 }
@@ -379,6 +409,7 @@ function TransactionForm({
   onUnlinkTransfer,
   onIgnoreChanged,
   onCreateRule,
+  onOpenTransaction,
   onCancel,
   loading,
   error,
@@ -398,6 +429,7 @@ function TransactionForm({
   onUnlinkTransfer?: (pairId: string) => void
   onIgnoreChanged?: () => void
   onCreateRule?: (tx: Transaction) => void
+  onOpenTransaction?: (id: string) => void
   onCancel: () => void
   loading: boolean
   error: string | null
@@ -488,6 +520,13 @@ function TransactionForm({
   })
   const isCreating = !transaction
   const showConversion = currency !== userCurrency && !isSynced
+  // Category-line splits. A line mirrors its parent, so its amount, date,
+  // account and status are the parent's to change; a parent's money is in
+  // its lines, so its amount and identity are frozen until the split goes.
+  const isSplitChild = !!transaction && isSplitChildRow(transaction)
+  const isSplitParent = !!transaction && isSplitParentRow(transaction)
+  const canSplit = canSplitByCategory(transaction)
+  const [categorySplitDrafting, setCategorySplitDrafting] = useState(false)
   // Privacy mode hides monetary values across the app, but the edit modal
   // surfaced the raw amount anyway (issue #323). Only existing transactions
   // carry a value worth hiding — when creating, the user must see what they
@@ -534,6 +573,14 @@ function TransactionForm({
     queryFn: () => transactionsApi.transferPair(transaction!.id),
     enabled: !!transaction?.id && !!transaction?.transfer_pair_id,
   })
+  // The original a split line was cut from, for the notice and to lock the
+  // description the same way a synced row's is.
+  const { data: splitParent } = useQuery({
+    queryKey: ['transactions', transaction?.parent_transaction_id],
+    queryFn: () => transactionsApi.get(transaction!.parent_transaction_id!),
+    enabled: isSplitChild,
+  })
+  const descriptionLocked = isSynced || (isSplitChild && splitParent?.source === 'sync')
   const extendableRules = useMemo(
     () => (rulesList ?? []).filter(canExtendRuleFromTransaction),
     [rulesList],
@@ -764,7 +811,7 @@ function TransactionForm({
         const pnlExclusionPayload = transaction
           ? { exclude_from_pnl: excludeFromReports }
           : {}
-        const txData = isSynced
+        const rawTxData = isSynced
           ? {
               category_id: categoryId || null,
               payee_id: payeeId || null,
@@ -793,6 +840,7 @@ function TransactionForm({
               ...overridePayload,
               ...splitsPayload,
             } as TransactionEditPayload
+        const txData = stripForSplitRole(rawTxData, { isSplitChild, isSplitParent }) as TransactionEditPayload
         const recurringData = isCreating && isRecurring
           ? { frequency, end_date: endDate || undefined }
           : undefined
@@ -879,6 +927,30 @@ function TransactionForm({
           </div>
         </div>
       )}
+      {isSplitChild && transaction && (
+        <div className="flex items-center justify-between gap-2 p-3 text-sm bg-muted/50 border border-border rounded-md">
+          <span className="text-muted-foreground">
+            {t('transactions.splitChildInfo', {
+              description: splitParent?.description ?? transaction.description,
+              amount: splitParent
+                ? formatCurrency(Math.abs(Number(splitParent.amount)), transaction.currency, displayLocale)
+                : '…',
+            })}
+          </span>
+          {onOpenTransaction && transaction.parent_transaction_id && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5 shrink-0"
+              onClick={() => onOpenTransaction(transaction.parent_transaction_id!)}
+            >
+              <ExternalLink size={14} />
+              {t('transactions.splitChildOpenParent')}
+            </Button>
+          )}
+        </div>
+      )}
       {recurringMatch && (
         <div className="flex items-center gap-2 p-3 text-sm bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-md">
           <span>{t('transactions.recurringInfo', {
@@ -905,7 +977,7 @@ function TransactionForm({
       )}
       <div className="space-y-2">
         <Label>{t('transactions.description')}</Label>
-        {isSynced ? (
+        {descriptionLocked ? (
           <textarea
             ref={descriptionRef}
             className="w-full border border-input rounded-md px-3 py-2 text-sm bg-muted/40 text-muted-foreground resize-none overflow-hidden cursor-default outline-none focus:outline-none focus-visible:outline-none"
@@ -965,7 +1037,7 @@ function TransactionForm({
               value={amount}
               onChange={(e) => handleAmountChange(e.target.value)}
               required
-              disabled={isSynced}
+              disabled={isSynced || isSplitChild || isSplitParent}
               className="bg-card"
             />
           )}
@@ -976,7 +1048,7 @@ function TransactionForm({
             className="w-full border border-border rounded-md px-3 py-2 text-sm bg-card h-9 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-ring/30 focus-visible:ring-[2px]"
             value={currency}
             onChange={(e) => handleCurrencyChange(e.target.value)}
-            disabled={isSynced}
+            disabled={isSynced || isSplitChild || isSplitParent}
           >
             {(supportedCurrencies ?? [{ code: userCurrency, symbol: userCurrency, name: userCurrency, flag: '' }]).map((c) => (
               <option key={c.code} value={c.code}>{c.flag} {c.name}</option>
@@ -990,7 +1062,7 @@ function TransactionForm({
           <DatePickerInput
             value={date}
             onChange={setDate}
-            disabled={isSynced}
+            disabled={isSynced || isSplitChild}
             className="w-full justify-start"
           />
         </div>
@@ -1000,7 +1072,7 @@ function TransactionForm({
             className="w-full border border-border rounded-md px-3 py-2 text-sm bg-card h-9 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-ring/30 focus-visible:ring-[2px]"
             value={status}
             onChange={(e) => setStatus(e.target.value as 'posted' | 'pending')}
-            disabled={isSynced}
+            disabled={isSynced || isSplitChild || isSplitParent}
           >
             <option value="posted">{t('transactions.statusPosted')}</option>
             <option value="pending">{t('transactions.statusPending')}</option>
@@ -1062,7 +1134,7 @@ function TransactionForm({
             className="w-full border border-border rounded-md px-3 py-2 text-sm bg-card disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-ring/30 focus-visible:ring-[2px]"
             value={type}
             onChange={(e) => setType(e.target.value as 'debit' | 'credit')}
-            disabled={isSynced}
+            disabled={isSynced || isSplitChild || isSplitParent}
           >
             <option value="debit">{t('transactions.expense')}</option>
             <option value="credit">{t('transactions.income')}</option>
@@ -1077,8 +1149,12 @@ function TransactionForm({
             groups={categoryGroups}
             currentCategory={seed?.category}
             allowNone={true}
+            disabled={isSplitParent}
             className="bg-card"
           />
+          {isSplitParent && (
+            <p className="text-xs text-muted-foreground">{t('transactions.splitParentCategoryHint')}</p>
+          )}
         </div>
       </div>
       <div className={cn("grid gap-4", isSynced ? "grid-cols-1" : "grid-cols-2")}>
@@ -1106,6 +1182,7 @@ function TransactionForm({
               value={accountId}
               onChange={(e) => setAccountId(e.target.value)}
               required
+              disabled={isSplitChild || isSplitParent}
             >
               {sortedAccounts.map((acc) => (
                 <option key={acc.id} value={acc.id}>{getAccountLabel(acc)}</option>
@@ -1126,7 +1203,7 @@ function TransactionForm({
         />
       </div>
 
-      {transaction && (
+      {transaction && !isSplitChild && (
         <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3">
           <input
             type="checkbox"
@@ -1185,7 +1262,23 @@ function TransactionForm({
           group debt; splitting it would create circular accounting
           (the share would settle a debt that this debit is already
           settling). Hide the section entirely in that case. */}
-      {transaction?.source !== 'settlement' && (
+      {transaction && canSplit && (
+        <TransactionCategorySplitSection
+          transaction={transaction}
+          categories={categories}
+          categoryGroups={categoryGroups}
+          disabled={loading}
+          onDraftingChange={setCategorySplitDrafting}
+          onDone={() => {
+            onIgnoreChanged?.()
+            onCancel()
+          }}
+        />
+      )}
+
+      {/* A split parent is hidden from totals, so a group share on it would
+          be owed but never counted; a line can be shared instead. */}
+      {transaction?.source !== 'settlement' && !isSplitChild && !isSplitParent && (
         <TransactionSplitsSection
           amount={parseAmountInput(amount, displayLocale) ?? 0}
           currency={currency}
@@ -1308,6 +1401,9 @@ function TransactionForm({
         </div>
       )}
 
+      {categorySplitDrafting && (
+        <p className="text-xs text-muted-foreground">{t('transactions.splitDraftBlocksSave')}</p>
+      )}
       </div>
 
       <DialogFooter className={cn(
@@ -1315,12 +1411,12 @@ function TransactionForm({
         !(onDelete || seed?.id) ? 'sm:justify-end' : ''
       )}>
         <div className="flex min-w-0 flex-wrap gap-2 items-center">
-          {onDelete && (
+          {onDelete && !isSplitChild && (
             <Button type="button" variant="destructive" onClick={onDelete} disabled={loading} className="whitespace-nowrap text-xs sm:text-sm h-8 sm:h-9">
               {t('common.delete')}
             </Button>
           )}
-          {seed?.id && (
+          {seed?.id && !isSplitChild && !isSplitParent && (
             <Button
               type="button"
               variant={isIgnored ? 'secondary' : 'outline'}
@@ -1375,7 +1471,7 @@ function TransactionForm({
             <div className="inline-flex">
               <Button
                 type="submit"
-                disabled={loading || !splitsValid}
+                disabled={loading || !splitsValid || categorySplitDrafting}
                 className="rounded-r-none whitespace-nowrap text-xs sm:text-sm h-8 sm:h-9"
               >
                 {loading ? t('common.loading') : t('common.save')}
@@ -1384,7 +1480,7 @@ function TransactionForm({
                 <DropdownMenuTrigger asChild>
                   <Button
                     type="button"
-                    disabled={loading || !splitsValid}
+                    disabled={loading || !splitsValid || categorySplitDrafting}
                     aria-label={t('transactions.moreSaveOptions')}
                     className="rounded-l-none border-l border-l-primary-foreground/20 px-1.5 sm:px-2 has-[>svg]:px-1.5 sm:has-[>svg]:px-2 h-8 sm:h-9"
                   >
@@ -1402,7 +1498,7 @@ function TransactionForm({
               </DropdownMenu>
             </div>
           ) : (
-            <Button type="submit" disabled={loading || !splitsValid} className="whitespace-nowrap text-xs sm:text-sm h-8 sm:h-9">
+            <Button type="submit" disabled={loading || !splitsValid || categorySplitDrafting} className="whitespace-nowrap text-xs sm:text-sm h-8 sm:h-9">
               {loading ? t('common.loading') : t('common.save')}
             </Button>
           )}

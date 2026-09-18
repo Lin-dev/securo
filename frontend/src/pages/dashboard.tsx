@@ -38,7 +38,7 @@ import {
   Tooltip as RechartsTooltip,
   ResponsiveContainer,
 } from 'recharts'
-import { CheckCircle2, CalendarIcon, Clock, Paperclip, Target, ArrowUpDown, HelpCircle, EyeClosed, AlertCircle } from 'lucide-react'
+import { CheckCircle2, CalendarIcon, Clock, Paperclip, Split, Target, ArrowUpDown, HelpCircle, EyeClosed, AlertCircle } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ICON_MAP } from '@/lib/category-icons'
 import { PageHeader } from '@/components/page-header'
@@ -512,6 +512,9 @@ export default function DashboardPage() {
     parentOwnerName: string | null
     groupName: string | null
     isIgnored: boolean
+    // Category-line split: lines under a parent, and the parent of a line.
+    splitCount: number
+    parentTransactionId: string | null
     installmentNumber: number | null
     totalInstallments: number | null
     showPendingBadge: boolean
@@ -562,6 +565,8 @@ export default function DashboardPage() {
         parentOwnerName: isShared ? tx.parent_owner_name ?? null : null,
         groupName: groupId ? groupNameById.get(groupId) ?? null : null,
         isIgnored: tx.is_ignored,
+        splitCount: tx.split_count ?? 0,
+        parentTransactionId: tx.parent_transaction_id ?? null,
         installmentNumber: tx.installment_number,
         totalInstallments: tx.total_installments,
         showPendingBadge: shouldShowPendingBadge(tx),
@@ -589,6 +594,8 @@ export default function DashboardPage() {
         parentOwnerName: null,
         groupName: null,
         isIgnored: false,
+        splitCount: 0,
+        parentTransactionId: null,
         installmentNumber: null,
         totalInstallments: null,
         showPendingBadge: false,
@@ -1322,8 +1329,25 @@ export default function DashboardPage() {
                               <Clock size={12} className="text-amber-500" role="img" aria-label={t('transactions.pending')} />
                             </span>
                           )}
-                          {row.isIgnored && (
+                          {row.splitCount > 0 ? (
+                            <span
+                              className="inline-flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600 bg-gray-100 border border-gray-200 px-1 py-0.5 rounded-full shrink-0"
+                              title={t('transactions.splitBadgeTooltip', { count: row.splitCount })}
+                            >
+                              <Split className="h-3 w-3" />
+                              {row.splitCount}
+                            </span>
+                          ) : row.isIgnored && (
                             <EyeClosed className="h-3 w-3 text-gray-500 shrink-0" />
+                          )}
+                          {row.parentTransactionId && (
+                            <span
+                              className="inline-flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide text-indigo-700 bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-900 px-1 py-0.5 rounded-full shrink-0"
+                              title={t('transactions.splitChildBadgeTooltip')}
+                            >
+                              <Split className="h-3 w-3" />
+                              {t('transactions.splitChildBadge')}
+                            </span>
                           )}
                           {row.attachmentCount > 0 && (
                             <Paperclip size={11} className="text-muted-foreground shrink-0" />
@@ -1437,11 +1461,28 @@ export default function DashboardPage() {
                                   <Clock size={12} className="text-amber-500" role="img" aria-label={t('transactions.pending')} />
                                 </span>
                               )}
-                              {row.isIgnored && (
+                              {row.splitCount > 0 ? (
+                                <span
+                                  className="ml-2 inline-flex items-center gap-1 text-xs text-gray-600 font-normal bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5"
+                                  title={t('transactions.splitBadgeTooltip', { count: row.splitCount })}
+                                >
+                                  <Split className="h-3 w-3" />
+                                  {t('transactions.splitBadge', { count: row.splitCount })}
+                                </span>
+                              ) : row.isIgnored && (
                                 <span className="ml-2 inline-flex items-center gap-1 text-xs text-gray-600 font-normal bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5">
                                 <EyeClosed className="h-3 w-3" />
                                 {t('transactions.ignored')}
                                 <span title={t('transactions.ignoreTransferHint')}><HelpCircle className="h-3 w-3 text-blue-400" /></span>
+                                </span>
+                              )}
+                              {row.parentTransactionId && (
+                                <span
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-700 bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-900 px-1.5 py-0.5 rounded-full"
+                                  title={t('transactions.splitChildBadgeTooltip')}
+                                >
+                                  <Split className="h-3 w-3" />
+                                  {t('transactions.splitChildBadge')}
                                 </span>
                               )}
                               {row.attachmentCount > 0 && (
@@ -1594,6 +1635,14 @@ export default function DashboardPage() {
           setDialogOpen(false)
           setEditingTx(null)
           handleCreateRuleFromTransaction(tx)
+        }}
+        onOpenTransaction={async (id) => {
+          try {
+            setEditingTx(await transactions.get(id))
+            setDialogOpen(true)
+          } catch {
+            toast.error(t('common.error'))
+          }
         }}
         loading={updateMutation.isPending || deleteMutation.isPending || unlinkTransferMutation.isPending}
         error={updateMutation.error ? extractApiError(updateMutation.error) : deleteMutation.error ? extractApiError(deleteMutation.error) : null}

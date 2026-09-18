@@ -74,6 +74,7 @@ import type {
   GroupBalances,
   TransactionSplitsInput,
   TransactionEditPayload,
+  CategorySplitLineInput,
   InstallmentSeriesInput,
   TransactionApplyScope,
   InvoiceAttachment,
@@ -550,6 +551,23 @@ export const transactions = {
   },
   unlinkRecurring: async (id: string): Promise<Transaction> => {
     const { data } = await api.patch(`/transactions/${id}/unlink-recurring`)
+    return data
+  },
+  // Category-line splits. Splitting replaces any existing lines; the parent
+  // comes back hidden (is_ignored) with its split_count, the lines as rows.
+  splitByCategory: async (
+    id: string,
+    lines: CategorySplitLineInput[],
+  ): Promise<{ parent: Transaction; children: Transaction[] }> => {
+    const { data } = await api.post(`/transactions/${id}/split`, { lines })
+    return data
+  },
+  removeCategorySplit: async (id: string): Promise<Transaction> => {
+    const { data } = await api.delete(`/transactions/${id}/split`)
+    return data
+  },
+  splitLines: async (id: string): Promise<Transaction[]> => {
+    const { data } = await api.get(`/transactions/${id}/split`)
     return data
   },
   createTransfer: async (transfer: {

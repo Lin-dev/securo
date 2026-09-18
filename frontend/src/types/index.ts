@@ -285,6 +285,19 @@ export interface Transaction {
   // Keeps the transaction in the ledger/balance while excluding it from P&L.
   exclude_from_pnl?: boolean
   virtual?: boolean
+  // Category-line split. A line points at the transaction it was split
+  // from; a parent reports how many lines sit under it (0 otherwise).
+  parent_transaction_id?: string | null
+  split_count?: number
+}
+
+// One line of a category split, as sent to POST /transactions/{id}/split.
+// `amount` is absolute, in the parent's currency; the lines must add up to
+// the parent's amount.
+export interface CategorySplitLineInput {
+  category_id: string | null
+  amount: number
+  notes?: string
 }
 
 // Scope for installment-series edits/deletes: "this" (default) only touches

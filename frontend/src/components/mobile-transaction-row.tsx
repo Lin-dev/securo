@@ -2,7 +2,8 @@ import { getAccountName } from '@/lib/account-utils'
 import { AccountIcon } from '@/components/account-icon'
 import { CategoryIcon } from '@/components/category-icon'
 import type { Transaction, Account } from '@/types'
-import { AlertTriangle, ArrowLeftRight, CalendarClock, ChartNoAxesColumn, Clock, EyeClosed, Paperclip } from 'lucide-react'
+import { AlertTriangle, ArrowLeftRight, CalendarClock, ChartNoAxesColumn, Clock, EyeClosed, Paperclip, Split } from 'lucide-react'
+import { isSplitChild, isSplitParent } from '@/lib/transaction-split-utils'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useTranslation } from 'react-i18next'
 import { formatCurrency } from '@/lib/format'
@@ -28,6 +29,8 @@ interface MobileTransactionRowProps {
   onClick: (tx: Transaction) => void
   /** Show the payee instead of the account name in an account-scoped view. */
   showPayee?: boolean
+  /** Open the original a split line was cut from. */
+  onOpenParent?: (id: string) => void
 }
 
 export function MobileTransactionRow({
@@ -44,6 +47,7 @@ export function MobileTransactionRow({
   onSelect,
   onClick,
   showPayee = false,
+  onOpenParent,
 }: MobileTransactionRowProps) {
   const { mask } = usePrivacyMode()
   const { t } = useTranslation()
@@ -116,8 +120,30 @@ export function MobileTransactionRow({
           {virtual && (
             <CalendarClock className="h-3 w-3 text-primary shrink-0" />
           )}
-          {tx.is_ignored && (
+          {isSplitParent(tx) ? (
+            <span
+              className="inline-flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600 bg-gray-100 border border-gray-200 px-1 py-0.5 rounded-full shrink-0"
+              title={t('transactions.splitBadgeTooltip', { count: tx.split_count })}
+            >
+              <Split className="h-3 w-3" />
+              {tx.split_count}
+            </span>
+          ) : tx.is_ignored && (
             <EyeClosed className="h-3 w-3 text-gray-500 shrink-0" />
+          )}
+          {isSplitChild(tx) && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenParent?.(tx.parent_transaction_id!)
+              }}
+              title={t('transactions.splitChildBadgeTooltip')}
+              className="inline-flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide text-indigo-700 bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-900 px-1 py-0.5 rounded-full shrink-0"
+            >
+              <Split className="h-3 w-3" />
+              {t('transactions.splitChildBadge')}
+            </button>
           )}
           {tx.exclude_from_pnl && !tx.is_ignored && (
             <ChartNoAxesColumn

@@ -35,7 +35,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
-import { AlertTriangle, ArrowLeftRight, ArrowUp, ArrowDown, Check, Clock, HelpCircle, Info, Paperclip, Trash2, Users, X, EyeClosed, ChartNoAxesColumn, SlidersHorizontal, Receipt } from 'lucide-react'
+import { AlertTriangle, ArrowLeftRight, ArrowUp, ArrowDown, Check, Clock, HelpCircle, Info, Paperclip, Split, Trash2, Users, X, EyeClosed, ChartNoAxesColumn, SlidersHorizontal, Receipt } from 'lucide-react'
+import { isSplitChild, isSplitParent } from '@/lib/transaction-split-utils'
 import type { Transaction, Rule, InstallmentSeriesInput, TransactionApplyScope, TransactionEditPayload } from '@/types'
 import { RuleDialog, type RuleDialogInitialData } from '@/components/rule-dialog'
 import { PageHeader } from '@/components/page-header'
@@ -930,7 +931,7 @@ export default function TransactionsPage() {
     setDialogOpen(true)
   }
 
-  const handleOpenCalendarTransaction = async (id: string) => {
+  const handleOpenTransactionById = async (id: string) => {
     try {
       const tx = await transactions.get(id)
       setEditingTx(tx)
@@ -1140,15 +1141,38 @@ export default function TransactionsPage() {
                 <span title={t('transactions.transferTooltip')}><HelpCircle className="h-3 w-3 text-blue-400" /></span>
               </span>
             )}
-            {tx.is_ignored &&
-              (
+            {/* A split parent is ignored only so its lines can replace it, so
+                it is badged as split, not as ignored. A line links back to
+                the original it was cut from. */}
+            {isSplitParent(tx) ? (
+              <span
+                className="ml-2 inline-flex items-center gap-1 text-xs text-gray-600 font-normal bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5"
+                title={t('transactions.splitBadgeTooltip', { count: tx.split_count })}
+              >
+                <Split className="h-3 w-3" />
+                {t('transactions.splitBadge', { count: tx.split_count })}
+              </span>
+            ) : tx.is_ignored && (
               <span className="ml-2 inline-flex items-center gap-1 text-xs text-gray-600 font-normal bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5">
                 <EyeClosed className="h-3 w-3" />
                 {t('transactions.ignored')}
                 <span title={t('transactions.ignoreTransferHint')}><HelpCircle className="h-3 w-3 text-blue-400" /></span>
               </span>
-                            )
-            }
+            )}
+            {isSplitChild(tx) && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleOpenTransactionById(tx.parent_transaction_id!)
+                }}
+                title={t('transactions.splitChildBadgeTooltip')}
+                className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-700 bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-900 px-1.5 py-0.5 rounded-full hover:bg-indigo-100 dark:hover:bg-indigo-950/70 transition-colors"
+              >
+                <Split className="h-3 w-3" />
+                {t('transactions.splitChildBadge')}
+              </button>
+            )}
             {/* Distinct from Ignored on purpose: this row still moves the
                 balance, so its amount keeps its colour and sign and only
                 the badge marks it. Ignored greys the amount out instead. */}
@@ -1237,7 +1261,11 @@ export default function TransactionsPage() {
       case 'category':
         return (
           <TableCell key={col.id} style={widthStyle} className={baseClass}>
-            {tx.category ? (
+            {isSplitParent(tx) ? (
+              <span className="text-xs text-muted-foreground italic">
+                {t('transactions.splitCategoryCell', { count: tx.split_count })}
+              </span>
+            ) : tx.category ? (
               <span className="text-sm text-muted-foreground">{tx.category.name}</span>
             ) : (
               <span className="text-xs text-muted-foreground italic">{t('transactions.noCategory')}</span>
@@ -1493,7 +1521,7 @@ export default function TransactionsPage() {
           mask={mask}
           selectedDate={calendarSelectedDate}
           onSelectedDateChange={setCalendarSelectedDate}
-          onOpenTransaction={handleOpenCalendarTransaction}
+          onOpenTransaction={handleOpenTransactionById}
           accounts={accountsList}
           userCurrency={userCurrency}
         />
@@ -1624,6 +1652,7 @@ export default function TransactionsPage() {
                     selected={selectedIds.has(tx.id)}
                     selectable={canWrite && !tx.is_shared}
                     canWrite={canWrite}
+                    onOpenParent={handleOpenTransactionById}
                     highlighted={tx.id === highlightId}
                     highlightedRowRef={tx.id === highlightId ? highlightedRowRef : undefined}
                     locale={locale}
@@ -2068,6 +2097,7 @@ export default function TransactionsPage() {
           setEditingTx(null)
           handleCreateRuleFromTransaction(tx)
         }}
+        onOpenTransaction={handleOpenTransactionById}
         loading={createMutation.isPending || updateMutation.isPending || deleteMutation.isPending || unlinkTransferMutation.isPending}
         error={createMutation.error || updateMutation.error ? extractApiError(createMutation.error || updateMutation.error) : null}
         isSynced={editingTx?.source === 'sync'}

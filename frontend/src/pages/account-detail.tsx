@@ -14,7 +14,8 @@ import { toast } from 'sonner'
 import type { CreditCardBill, ProjectedTransaction, Transaction } from '@/types'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, ArrowLeftRight, CalendarClock, ChevronLeft, ChevronRight, Clock, EyeClosed, HelpCircle, Paperclip, Pencil, X } from 'lucide-react'
+import { ArrowLeft, ArrowLeftRight, CalendarClock, ChevronLeft, ChevronRight, Clock, EyeClosed, HelpCircle, Paperclip, Pencil, Split, X } from 'lucide-react'
+import { isSplitChild, isSplitParent } from '@/lib/transaction-split-utils'
 import { MobileTransactionRow } from '@/components/mobile-transaction-row'
 import { CategoryIcon } from '@/components/category-icon'
 import { ProjectedTransactionBadge } from '@/components/projected-transaction-badge'
@@ -282,6 +283,17 @@ export default function AccountDetailPage() {
   const queryClient = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingTx, setEditingTx] = useState<Transaction | null>(null)
+  // Open a row that is not on this page's list, such as the original a
+  // split line was cut from.
+  const handleOpenTransactionById = async (id: string) => {
+    try {
+      const tx = await transactions.get(id)
+      setEditingTx(tx)
+      setDialogOpen(true)
+    } catch {
+      toast.error(t('common.error'))
+    }
+  }
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [filterFrom, setFilterFrom] = useState(defaultFrom)
   const [filterTo, setFilterTo] = useState(defaultTo)
@@ -1561,6 +1573,7 @@ export default function AccountDetailPage() {
                       userCurrency={userCurrency}
                       onSelect={() => {}}
                       showPayee
+                      onOpenParent={handleOpenTransactionById}
                       onClick={(clickedTx) => {
                         // The opening-balance row is synthetic; the desktop
                         // table makes it non-clickable and mobile must match.
@@ -1623,12 +1636,34 @@ export default function AccountDetailPage() {
                                 <span title={t('transactions.transferTooltip')}><HelpCircle className="h-3 w-3 text-blue-400" /></span>
                               </span>
                             )}
-                            {isIgnored && (
+                            {isSplitParent(tx) ? (
+                              <span
+                                className="ml-2 inline-flex items-center gap-1 text-xs text-gray-600 font-normal bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5"
+                                title={t('transactions.splitBadgeTooltip', { count: tx.split_count })}
+                              >
+                                <Split className="h-3 w-3" />
+                                {t('transactions.splitBadge', { count: tx.split_count })}
+                              </span>
+                            ) : isIgnored && (
                               <span className="ml-2 inline-flex items-center gap-1 text-xs text-gray-600 font-normal bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5">
                                 <EyeClosed className="h-3 w-3" />
                                 {t('transactions.ignored')}
                                 <span title={t('transactions.ignoreTransferHint')}><HelpCircle className="h-3 w-3 text-blue-400" /></span>
                               </span>
+                            )}
+                            {isSplitChild(tx) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleOpenTransactionById(tx.parent_transaction_id!)
+                                }}
+                                title={t('transactions.splitChildBadgeTooltip')}
+                                className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-700 bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-900 px-1.5 py-0.5 rounded-full hover:bg-indigo-100 dark:hover:bg-indigo-950/70 transition-colors"
+                              >
+                                <Split className="h-3 w-3" />
+                                {t('transactions.splitChildBadge')}
+                              </button>
                             )}
                             {isVirtual && (
                               <ProjectedTransactionBadge />
@@ -1722,6 +1757,7 @@ export default function AccountDetailPage() {
         }}
         onDelete={editingTx ? () => deleteMutation.mutate(editingTx.id) : undefined}
         onUnlinkTransfer={(pairId) => unlinkTransferMutation.mutate(pairId)}
+        onOpenTransaction={handleOpenTransactionById}
         loading={updateMutation.isPending || deleteMutation.isPending || unlinkTransferMutation.isPending}
         error={updateMutation.error ? extractApiError(updateMutation.error) : null}
         isSynced={editingTx?.source === 'sync'}
