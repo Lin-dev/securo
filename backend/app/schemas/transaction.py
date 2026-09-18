@@ -187,6 +187,11 @@ class TransactionRead(TransactionBase):
     bill_id: Optional[uuid.UUID] = None
     effective_bill_date: Optional[_Date] = None
     recurring_transaction_id: Optional[uuid.UUID] = None
+    # Category-line split. A line points at the transaction it was split
+    # from; a parent reports how many lines sit under it (filled by the
+    # service, 0 for ordinary rows).
+    parent_transaction_id: Optional[uuid.UUID] = None
+    split_count: int = 0
     splits: list[TransactionSplitRead] = []
     # Shared-transaction view fields. Set per-request when the viewer
     # is a linked member of one of this transaction's splits but not
@@ -209,6 +214,24 @@ class TransactionRead(TransactionBase):
         return self
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CategorySplitLineInput(BaseModel):
+    """One category line of a split. `amount` is absolute, in the parent's
+    currency; the lines must add up to the parent's amount."""
+
+    category_id: Optional[uuid.UUID] = None
+    amount: Decimal = Field(gt=0)
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class CategorySplitRequest(BaseModel):
+    lines: list[CategorySplitLineInput] = Field(min_length=2)
+
+
+class CategorySplitRead(BaseModel):
+    parent: TransactionRead
+    children: list[TransactionRead]
 
 
 class BulkCategorizeRequest(BaseModel):
