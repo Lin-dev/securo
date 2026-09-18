@@ -17,6 +17,7 @@ import {
 import type { Category, Payee, Rule, RuleAction, RuleCondition, RuleConditionNode, RuleExportPayload } from '@/types'
 import { isConditionGroup } from '@/lib/rule-conditions'
 import { normalizeRuleMatchValue, ruleSearchText } from '@/lib/rule-match-utils'
+import { SPLIT_RULE_OP, isRuleSplitLines } from '@/lib/rule-split-utils'
 import { Trash2, Plus, RefreshCw, Package, Check, ArrowUpDown, ArrowUp, ArrowDown, Download, Upload, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/page-header'
@@ -107,10 +108,13 @@ function conditionSummary(conditions: RuleConditionNode[], conditionsOp: string,
   return parts.join(joiner(conditionsOp)) || t('rules.noConditions')
 }
 
-function actionSummary(actions: RuleAction[], categories: Category[], payeesList: Payee[], t: (key: string) => string): string {
+function actionSummary(actions: RuleAction[], categories: Category[], payeesList: Payee[], t: (key: string, options?: Record<string, unknown>) => string): string {
   return actions.map(a => {
+    if (a.op === SPLIT_RULE_OP) {
+      return `→ ${t('rules.splitSummary', { count: Array.isArray(a.value) ? a.value.length : 0 })}`
+    }
     if (a.op === 'set_category') {
-      const cat = findCategoryReference(categories, a.value)
+      const cat = typeof a.value === 'string' ? findCategoryReference(categories, a.value) : undefined
       return cat ? `→ ${cat.name}` : `→ ${t('transactions.category')}`
     }
     if (a.op === 'set_payee') {
@@ -118,9 +122,9 @@ function actionSummary(actions: RuleAction[], categories: Category[], payeesList
       return p ? `→ ${t('payees.payee')}: ${p.name}` : `→ ${t('payees.payee')}`
     }
     if (a.op === 'set_description') {
-      return `→ ${t('rules.fieldDescription')}: ${a.value}`
+      return `→ ${t('rules.fieldDescription')}: ${String(a.value)}`
     }
-    if (a.op === 'append_notes') return `→ ${t('rules.fieldNotes')}: ${a.value}`
+    if (a.op === 'append_notes') return `→ ${t('rules.fieldNotes')}: ${String(a.value)}`
     if (a.op === 'ignore') return `→ ${t('rules.ignoreAction')}`
     return a.op
   }).join('  ') || t('rules.noActions')
@@ -132,6 +136,7 @@ const ACTION_FILTERS = [
   { value: 'set_payee', label: 'rules.setPayee' },
   { value: 'append_notes', label: 'rules.appendNotes' },
   { value: 'ignore', label: 'rules.ignoreAction' },
+  { value: 'split_categories', label: 'rules.splitCategories' },
 ] as const
 
 const FILTER_CONTROL_CLASS = 'h-7 rounded-md border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus-visible:ring-ring/30 focus-visible:ring-[2px]'
@@ -337,7 +342,13 @@ export default function RulesPage() {
       // Searching over the visible-only list made that rule unfindable by the
       // very name on screen.
       if (query && !ruleSearchText(rule, displayCategories).includes(query)) return false
-      if (filterCategory && !rule.actions.some(a => a.op === 'set_category' && a.value === filterCategory)) return false
+      if (
+        filterCategory &&
+        !rule.actions.some(a =>
+          (a.op === 'set_category' && a.value === filterCategory) ||
+          (a.op === SPLIT_RULE_OP && isRuleSplitLines(a.value) && a.value.some(line => line.category_id === filterCategory)),
+        )
+      ) return false
       if (filterStatus === 'active' && !rule.is_active) return false
       if (filterStatus === 'inactive' && rule.is_active) return false
       if (filterAction && !rule.actions.some(a => a.op === filterAction)) return false

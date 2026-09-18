@@ -2,7 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { getAccountName, sortAccountsByDisplayName } from '@/lib/account-utils'
-import { isInvalidDescriptionAction, parseRulePriority, previewableActions } from '@/lib/rule-form-utils'
+import { isInvalidDescriptionAction, isInvalidSplitAction, parseRulePriority, previewableActions } from '@/lib/rule-form-utils'
+import { SPLIT_RULE_OP, defaultRuleSplitLines, editorToRuleLines, isRuleSplitLines, ruleLinesToEditor } from '@/lib/rule-split-utils'
+import type { CategorySplitEditorLine } from '@/lib/transaction-split-utils'
+import { CategorySplitLinesEditor } from '@/components/category-split-lines-editor'
 import { rules as rulesApi } from '@/lib/api'
 import { formatCurrency } from '@/lib/format'
 import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
@@ -29,6 +32,7 @@ import type {
   RuleCondition,
   RuleConditionNode,
   RuleAction,
+  RuleActionValue,
 } from '@/types'
 
 const CONDITION_FIELDS = [
@@ -444,6 +448,18 @@ export function RuleDialog({
   const [applyToExisting, setApplyToExisting] = useState(!rule)
   const [overwriteExistingCategories, setOverwriteExistingCategories] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
+  // A split action is edited as text lines so a half-typed number is not
+  // reformatted under the cursor; the action's value holds the parsed form.
+  const splitEditorLocale = useDisplayLocale()
+  const [splitDrafts, setSplitDrafts] = useState<Record<number, CategorySplitEditorLine[]>>(() => {
+    const seeded: Record<number, CategorySplitEditorLine[]> = {}
+    defaultActions.forEach((action, index) => {
+      if (action.op === SPLIT_RULE_OP && isRuleSplitLines(action.value)) {
+        seeded[index] = ruleLinesToEditor(action.value, splitEditorLocale)
+      }
+    })
+    return seeded
+  })
 
   function updateCondition(i: number, field: keyof RuleCondition, val: string | number) {
     setConditions(prev => prev.map((node, idx) => (
@@ -498,17 +514,39 @@ export function RuleDialog({
     }))
   }
 
-  function updateAction(i: number, field: keyof RuleAction, val: string) {
+  function updateAction(i: number, field: keyof RuleAction, val: RuleActionValue) {
     setActions(prev => prev.map((a, idx) => {
       if (idx !== i) return a
       const next = { ...a, [field]: val }
-      if (field === 'op') next.value = ''
+      if (field === 'op') next.value = val === SPLIT_RULE_OP ? defaultRuleSplitLines() : ''
       return next
     }))
+    if (field === 'op') {
+      setSplitDrafts(prev => {
+        const next = { ...prev }
+        if (val === SPLIT_RULE_OP) next[i] = ruleLinesToEditor(defaultRuleSplitLines(), splitEditorLocale)
+        else delete next[i]
+        return next
+      })
+    }
+  }
+
+  function updateSplitLines(i: number, lines: CategorySplitEditorLine[]) {
+    setSplitDrafts(prev => ({ ...prev, [i]: lines }))
+    updateAction(i, 'value', editorToRuleLines(lines, splitEditorLocale))
   }
 
   function removeAction(i: number) {
     setActions(prev => prev.filter((_, idx) => idx !== i))
+    setSplitDrafts(prev => {
+      const next: Record<number, CategorySplitEditorLine[]> = {}
+      for (const [key, lines] of Object.entries(prev)) {
+        const idx = Number(key)
+        if (idx < i) next[idx] = lines
+        else if (idx > i) next[idx - 1] = lines
+      }
+      return next
+    })
   }
 
   function addAction() {
@@ -519,10 +557,11 @@ export function RuleDialog({
   // its actions to the whole ledger. The API rejects these too.
   const hasBlankCondition = flattenConditions(conditions).some(c => String(c.value ?? '').trim() === '')
   const hasInvalidDescriptionAction = actions.some(isInvalidDescriptionAction)
+  const hasInvalidSplitAction = actions.some(isInvalidSplitAction)
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (hasBlankCondition || hasInvalidDescriptionAction) return
+    if (hasBlankCondition || hasInvalidDescriptionAction || hasInvalidSplitAction) return
     onSave({
       name,
       conditions_op: conditionsOp,
@@ -654,6 +693,7 @@ export function RuleDialog({
             <div className="space-y-2">
               {actions.map((action, i) => {
                 const invalidDescription = isInvalidDescriptionAction(action)
+                const invalidSplit = isInvalidSplitAction(action)
                 return (
                   <div key={i} className="space-y-1">
                     <div className="relative grid min-w-0 gap-2 pr-7 sm:flex sm:items-center sm:pr-0">
@@ -667,6 +707,7 @@ export function RuleDialog({
                         <option value="set_payee">{t('rules.setPayee')}</option>
                         <option value="append_notes">{t('rules.appendNotes')}</option>
                         <option value="ignore">{t('rules.ignoreAction')}</option>
+                        <option value={SPLIT_RULE_OP}>{t('rules.splitCategories')}</option>
                       </select>
                       {action.op === 'ignore' ? (
                         <span className="min-w-0 text-sm italic text-muted-foreground sm:w-0 sm:flex-1">
@@ -675,7 +716,7 @@ export function RuleDialog({
                       ) : action.op === 'set_category' ? (
                         <div className="w-full min-w-0 sm:w-0 sm:flex-1">
                           <CategorySelect
-                            value={action.value}
+                            value={typeof action.value === 'string' ? action.value : ''}
                             onChange={(val) => updateAction(i, 'value', val)}
                             categories={categories}
                             groups={categoryGroups}
@@ -686,10 +727,28 @@ export function RuleDialog({
                             className={`${SELECT_CLASS} w-full`}
                           />
                         </div>
+                      ) : action.op === SPLIT_RULE_OP ? (
+                        <div className="w-full min-w-0 space-y-2 sm:w-0 sm:flex-1">
+                          <CategorySplitLinesEditor
+                            lines={
+                              splitDrafts[i] ??
+                              ruleLinesToEditor(
+                                isRuleSplitLines(action.value) ? action.value : defaultRuleSplitLines(),
+                                splitEditorLocale,
+                              )
+                            }
+                            onChange={(lines) => updateSplitLines(i, lines)}
+                            categories={categories}
+                            categoryGroups={categoryGroups}
+                            currentCategories={currentCategories}
+                            mode="template"
+                          />
+                          <p className="text-xs text-muted-foreground">{t('rules.splitCategoriesHint')}</p>
+                        </div>
                       ) : action.op === 'set_payee' ? (
                         <select
                           className={`${SELECT_CLASS} w-full min-w-0 sm:w-0 sm:flex-1`}
-                          value={action.value}
+                          value={typeof action.value === 'string' ? action.value : ''}
                           onChange={(e) => updateAction(i, 'value', e.target.value)}
                           required
                         >
@@ -701,7 +760,7 @@ export function RuleDialog({
                       ) : (
                         <Input
                           className="h-8 w-full min-w-0 text-sm aria-invalid:border-input aria-invalid:ring-0 dark:aria-invalid:ring-0 sm:w-0 sm:flex-1"
-                          value={action.value}
+                          value={typeof action.value === 'string' ? action.value : ''}
                           onChange={(e) => updateAction(i, 'value', e.target.value)}
                           placeholder={
                             action.op === 'set_description'
@@ -726,6 +785,9 @@ export function RuleDialog({
                       <p id={`action-${i}-description-error`} className="text-xs text-rose-500">
                         {t('rules.invalidDescriptionValue')}
                       </p>
+                    )}
+                    {invalidSplit && (
+                      <p className="text-xs text-rose-500">{t('rules.splitInvalid')}</p>
                     )}
                   </div>
                 )

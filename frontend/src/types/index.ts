@@ -487,9 +487,20 @@ export interface RuleConditionGroup {
 /** An entry of a rule's condition list: a leaf condition or one group. */
 export type RuleConditionNode = RuleCondition | RuleConditionGroup
 
+// One line of a `split_categories` rule action: exactly one of amount,
+// percent or remainder, and at most one remainder line per action.
+export interface RuleSplitLine {
+  category_id: string
+  amount?: number
+  percent?: number
+  remainder?: boolean
+}
+
+export type RuleActionValue = string | RuleSplitLine[]
+
 export interface RuleAction {
   op: string
-  value: string
+  value: RuleActionValue
 }
 
 export interface Rule {
