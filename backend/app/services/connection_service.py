@@ -1407,6 +1407,9 @@ async def _cleanup_phantom_duplicates(
             Transaction.account_id.in_(account_ids),
             Transaction.source == "sync",
             Transaction.transfer_pair_id.is_(None),
+            # A user-hidden row is not a phantom: a split parent in particular
+            # is unpaired by design, and deleting it would take its lines.
+            Transaction.is_ignored.is_(False),
         )
     )
     unmatched = list(unmatched_result.scalars().all())

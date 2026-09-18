@@ -434,3 +434,52 @@ async def test_budget_vs_actual_includes_prev_month(
     cat0 = [c for c in comparisons if c.category_id == test_categories[0].id]
     if cat0:
         assert cat0[0].prev_month_amount == Decimal("75")
+
+
+@pytest.mark.asyncio
+async def test_budget_actual_uses_split_lines(
+    session: AsyncSession, test_user, test_workspace, test_categories
+):
+    from app.schemas.transaction import CategorySplitLineInput
+    from app.services.category_split_service import split_transaction
+
+    group = CategoryGroup(
+        id=uuid.uuid4(), user_id=test_user.id, name="SplitGroup", icon="folder",
+        color="#000000", position=0, is_system=False,
+    )
+    session.add(group)
+    await session.commit()
+    test_categories[0].group_id = group.id
+    test_categories[1].group_id = group.id
+    await session.commit()
+    account = Account(
+        id=uuid.uuid4(), user_id=test_user.id, name="SplitBudget", type="checking",
+        balance=Decimal("5000"), currency="BRL",
+    )
+    session.add(account)
+    await session.commit()
+    await create_budget(
+        session, test_workspace.id, test_user.id,
+        BudgetCreate(category_id=test_categories[0].id, amount=Decimal("500"), month=date(2025, 3, 1)),
+    )
+    parent = Transaction(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id,
+        account_id=account.id, description="NORTHWESTERN", amount=Decimal("500"),
+        date=date(2025, 3, 10), type="debit", source="manual", status="posted",
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(parent)
+    await session.commit()
+    await split_transaction(session, test_workspace.id, parent.id, [
+        CategorySplitLineInput(category_id=test_categories[0].id, amount=Decimal("100")),
+        CategorySplitLineInput(category_id=test_categories[1].id, amount=Decimal("400")),
+    ])
+
+    comparisons = await get_budget_vs_actual(
+        session, test_workspace.id, test_user.id, month=date(2025, 3, 1)
+    )
+
+    cat0 = next(c for c in comparisons if c.category_id == test_categories[0].id)
+    assert cat0.actual_amount == Decimal("100")
+    cat1 = next(c for c in comparisons if c.category_id == test_categories[1].id)
+    assert cat1.actual_amount == Decimal("400")

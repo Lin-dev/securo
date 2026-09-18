@@ -423,9 +423,12 @@ async def get_payee_summary(
     if not payee:
         raise ValueError("Payee not found")
 
+    # Ignored rows stay out: they are not money that moved, and a split
+    # parent shares its payee with the lines that replaced it.
     base = select(Transaction).where(
         Transaction.payee_id == payee_id,
         Transaction.workspace_id == workspace_id,
+        Transaction.is_ignored.is_(False),
     )
     if start_date:
         base = base.where(Transaction.date >= start_date)
@@ -453,6 +456,7 @@ async def get_payee_summary(
         .where(
             Transaction.payee_id == payee_id,
             Transaction.workspace_id == workspace_id,
+            Transaction.is_ignored.is_(False),
         )
     )
     row = totals.one()
@@ -463,6 +467,7 @@ async def get_payee_summary(
         .where(
             Transaction.payee_id == payee_id,
             Transaction.workspace_id == workspace_id,
+            Transaction.is_ignored.is_(False),
             Transaction.category_id.isnot(None),
         )
         .group_by(Transaction.category_id)

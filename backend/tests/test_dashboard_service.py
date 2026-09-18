@@ -1166,3 +1166,55 @@ async def test_balance_at_multi_currency(session, test_user, test_workspace):
 # ---------------------------------------------------------------------------
 # _total_balance_by_currency
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Category splits: the lines count, the hidden parent does not
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spending_by_category_counts_split_lines_not_parent(
+    session: AsyncSession, test_user, test_workspace
+):
+    from app.schemas.transaction import CategorySplitLineInput
+    from app.services.category_split_service import split_transaction
+
+    insurance = await _make_category(session, test_user.id, "Insurance")
+    fees = await _make_category(session, test_user.id, "Fees")
+    account = await _make_account(session, test_user.id, "Split Spend")
+    parent = await _add_txn(session, test_user.id, account.id, 500, "debit", date.today())
+    await split_transaction(session, test_workspace.id, parent.id, [
+        CategorySplitLineInput(category_id=insurance.id, amount=Decimal("300")),
+        CategorySplitLineInput(category_id=fees.id, amount=Decimal("200")),
+    ])
+
+    spending = await get_spending_by_category(session, test_workspace.id, test_user.id)
+
+    by_category = {s.category_id: s.total for s in spending}
+    assert by_category[str(insurance.id)] == pytest.approx(300.0)
+    assert by_category[str(fees.id)] == pytest.approx(200.0)
+    assert None not in by_category
+
+
+@pytest.mark.asyncio
+async def test_pending_categorization_skips_split_parent(
+    session: AsyncSession, test_user, test_workspace
+):
+    from app.schemas.transaction import CategorySplitLineInput
+    from app.services.category_split_service import split_transaction
+    from app.services.dashboard_service import get_summary
+
+    insurance = await _make_category(session, test_user.id, "Insurance")
+    account = await _make_account(session, test_user.id, "Split Pending")
+    parent = await _add_txn(session, test_user.id, account.id, 500, "debit", date.today())
+    await split_transaction(session, test_workspace.id, parent.id, [
+        CategorySplitLineInput(category_id=insurance.id, amount=Decimal("300")),
+        CategorySplitLineInput(category_id=None, amount=Decimal("200")),
+    ])
+
+    summary = await get_summary(session, test_workspace.id, test_user.id)
+
+    # Only the uncategorized line is pending; the parent has no category by design.
+    assert summary.pending_categorization == 1
+    assert summary.pending_categorization_amount == pytest.approx(200.0)

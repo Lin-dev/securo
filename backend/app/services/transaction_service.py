@@ -30,9 +30,39 @@ from app.services._query_filters import (
     counts_as_pnl,
     counts_as_user_pnl,
     is_not_ignored,
+    is_split_parent,
     reporting_date_col,
 )
 from app.services.recurring_transaction_service import _advance_date
+
+# Category-line splits. A line mirrors its parent's account, date and status,
+# so those live on the parent; a parent's money lives in its lines, so its
+# amount and identity are frozen until the split is removed.
+_SPLIT_LINE_LOCKED_FIELDS = frozenset(
+    {
+        "amount", "date", "type", "currency", "account_id", "status",
+        "is_ignored", "exclude_from_pnl", "effective_bill_date",
+        "amount_primary", "fx_rate_used",
+    }
+)
+_SPLIT_PARENT_LOCKED_FIELDS = frozenset(
+    {"amount", "type", "currency", "account_id", "status", "is_ignored",
+     "amount_primary", "fx_rate_used"}
+)
+# Edits a parent passes on to its lines so they keep mirroring it.
+_SPLIT_PARENT_PROPAGATED_FIELDS = frozenset(
+    {"date", "description", "effective_bill_date", "payee_id", "exclude_from_pnl"}
+)
+SPLIT_LINE_EDIT_MESSAGE = (
+    "This is a split line; change the amount, date, account or status on the "
+    "original transaction"
+)
+SPLIT_PARENT_EDIT_MESSAGE = (
+    "Remove the split before changing the amount, type, currency, account or status"
+)
+SPLIT_PARENT_TRANSFER_MESSAGE = (
+    "A split transaction cannot be part of a transfer; remove the split first"
+)
 
 
 async def _ensure_category_in_workspace(
@@ -270,9 +300,11 @@ async def get_transactions(
     if payee_id:
         base_query = base_query.where(Transaction.payee_id == payee_id)
     if uncategorized:
+        # A split parent has no category of its own; its lines carry them.
         base_query = base_query.where(
             Transaction.category_id == None,
             Transaction.transfer_pair_id.is_(None),
+            ~is_split_parent(),
         )
     if exclude_transfers:
         base_query = base_query.where(Transaction.transfer_pair_id.is_(None))
@@ -460,7 +492,9 @@ async def get_transactions(
         # the same rows — the complement of `counts_as_pnl()`. Surfaces
         # transfer-like movement (e.g. how much was moved/invested) without
         # distorting income/expense/net.
-        excl_subq = base_query.where(not_(pnl_filter)).subquery()
+        # A split parent is ignored only so its lines can replace it; the
+        # lines already account for its money, so it is not "excluded".
+        excl_subq = base_query.where(not_(pnl_filter), ~is_split_parent()).subquery()
         excl_amount_norm = func.coalesce(
             excl_subq.c.amount_primary, excl_subq.c.amount
         )
@@ -482,6 +516,7 @@ async def get_transactions(
             .join(Category, Category.id == inv_subq.c.category_id)
             .join(Account, Account.id == inv_subq.c.account_id)
             .where(
+                inv_subq.c.is_ignored.is_(False),
                 Category.treat_as_transfer.is_(True),
                 func.lower(Category.name) == INVESTMENT_CONTRIBUTION_CATEGORY.lower(),
                 or_(
@@ -1066,6 +1101,8 @@ async def get_transfer_candidates(
             Transaction.type == opposing_type,
             Transaction.transfer_pair_id.is_(None),
             Transaction.source != "opening_balance",
+            # An ignored row (a split parent among them) is not money that moved.
+            Transaction.is_ignored.is_(False),
             Transaction.date >= from_date,
             Transaction.date <= to_date,
         )
@@ -1175,6 +1212,7 @@ async def link_existing_as_transfer(
             Transaction.id.in_(transaction_ids),
             Transaction.workspace_id == workspace_id,
         )
+        .options(selectinload(Transaction.split_children))
     )
     txns = list(result.scalars().all())
     if len(txns) != 2:
@@ -1183,6 +1221,8 @@ async def link_existing_as_transfer(
     for tx in txns:
         if tx.transfer_pair_id is not None:
             raise ValueError("Transaction is already part of a transfer")
+        if tx.split_children:
+            raise ValueError(SPLIT_PARENT_TRANSFER_MESSAGE)
 
     if txns[0].account_id == txns[1].account_id:
         raise ValueError("Transactions must be in different accounts")
@@ -1226,6 +1266,8 @@ async def create_transfer_counterpart(
         raise ValueError("Transaction not found")
     if anchor.transfer_pair_id is not None:
         raise ValueError("Transaction is already part of a transfer")
+    if anchor.split_children:
+        raise ValueError(SPLIT_PARENT_TRANSFER_MESSAGE)
     if anchor.account_id == to_account_id:
         raise ValueError("Counterpart must be in a different account")
 
@@ -1545,6 +1587,17 @@ async def update_transaction(
     splits_payload = data.splits if "splits" in update_data else None
     update_data.pop("splits", None)
 
+    if transaction.parent_transaction_id is not None:
+        if (
+            _SPLIT_LINE_LOCKED_FIELDS & update_data.keys()
+            or splits_payload is not None
+            or apply_to_transfer_pair
+        ):
+            raise ValueError(SPLIT_LINE_EDIT_MESSAGE)
+    elif transaction.split_children:
+        if _SPLIT_PARENT_LOCKED_FIELDS & update_data.keys() or splits_payload is not None:
+            raise ValueError(SPLIT_PARENT_EDIT_MESSAGE)
+
     # Verify the new account belongs to the workspace before touching the
     # row. When changing the account on one side of a transfer pair,
     # refuse to collide with the paired transaction's account (a transfer
@@ -1643,6 +1696,21 @@ async def update_transaction(
         await session.flush()
         await _resync_installment_series_total(session, workspace_id, transaction)
 
+    # Lines keep mirroring their parent: a date or bill-cycle correction on
+    # the parent must move the lines with it, or a report would show the
+    # parent's month empty and the lines in another.
+    if transaction.split_children:
+        propagated = {
+            key: value
+            for key, value in update_data.items()
+            if key in _SPLIT_PARENT_PROPAGATED_FIELDS
+        }
+        if propagated:
+            for child in transaction.split_children:
+                await _apply_update_to_row(
+                    session, user_id, child, dict(propagated), False, None
+                )
+
     await session.commit()
     await session.refresh(transaction, ["category", "payee_entity", "splits"])
     return transaction
@@ -1660,6 +1728,8 @@ async def bulk_update_category(
         .where(
             Transaction.id.in_(transaction_ids),
             Transaction.workspace_id == workspace_id,
+            # A split parent's category lives on its lines.
+            ~is_split_parent(),
         )
         .values(category_id=category_id)
     )
@@ -1837,10 +1907,19 @@ async def bulk_add_to_group(
     )
     txs = txs_result.scalars().all()
 
+    # A split parent is hidden from totals, so a group share on it would be
+    # owed but never counted; its lines can be shared instead.
+    parent_rows = await session.execute(
+        select(Transaction.parent_transaction_id)
+        .where(Transaction.parent_transaction_id.in_(transaction_ids))
+        .distinct()
+    )
+    split_parent_ids = {row[0] for row in parent_rows.all()}
+
     updated = 0
     skipped = 0
     for tx in txs:
-        if tx.transfer_pair_id is not None or tx.splits:
+        if tx.transfer_pair_id is not None or tx.splits or tx.id in split_parent_ids:
             skipped += 1
             continue
         await split_service.replace_splits(session, tx, payload, user_id)
@@ -1865,6 +1944,12 @@ async def toggle_ignore_transaction(
     transaction = await get_transaction(session, transaction_id, workspace_id)
     if not transaction:
         return None
+    if transaction.split_children:
+        raise ValueError(
+            "A split transaction stays hidden while its lines exist; remove the split instead"
+        )
+    if transaction.parent_transaction_id is not None:
+        raise ValueError("Split lines cannot be ignored on their own; edit the split instead")
     transaction.is_ignored = not transaction.is_ignored
     await session.commit()
     await session.refresh(transaction)
@@ -1904,6 +1989,8 @@ async def delete_transaction(
     transaction = await get_transaction(session, transaction_id, workspace_id)
     if not transaction:
         return False
+    if transaction.parent_transaction_id is not None:
+        raise ValueError("Split lines cannot be deleted; remove the split instead")
 
     # Expand to sibling installments when the caller asked for a scoped
     # delete and the row is part of a series.
@@ -1914,7 +2001,8 @@ async def delete_transaction(
     # Clean up attachment files from storage before ORM cascade deletes DB records
     from app.services.attachment_service import cleanup_attachment_files
 
-    tx_ids_to_cleanup: list[uuid.UUID] = []
+    # The parent's lines go with it (ORM cascade); their files go first too.
+    tx_ids_to_cleanup: list[uuid.UUID] = [child.id for child in transaction.split_children]
     paired_txs: list[Transaction] = []
     for row in rows:
         tx_ids_to_cleanup.append(row.id)
@@ -1948,7 +2036,11 @@ async def bulk_delete_transactions(
     from app.services.attachment_service import cleanup_attachment_files
 
     result = await session.execute(
-        select(Transaction.id, Transaction.transfer_pair_id)
+        select(
+            Transaction.id,
+            Transaction.transfer_pair_id,
+            Transaction.parent_transaction_id,
+        )
         .where(
             Transaction.id.in_(transaction_ids),
             Transaction.workspace_id == workspace_id,
@@ -1958,8 +2050,15 @@ async def bulk_delete_transactions(
     if not transactions:
         return 0
 
-    valid_ids = [row[0] for row in transactions]
-    transfer_pair_ids = {row[1] for row in transactions if row[1]}
+    # A line only goes together with its parent: deleting one line on its
+    # own would leave the split short of the original amount.
+    requested = {row[0] for row in transactions}
+    valid_ids = [
+        row[0] for row in transactions if row[2] is None or row[2] in requested
+    ]
+    if not valid_ids:
+        return 0
+    transfer_pair_ids = {row[1] for row in transactions if row[0] in valid_ids and row[1]}
 
     paired_ids = []
     if transfer_pair_ids:
@@ -1973,12 +2072,18 @@ async def bulk_delete_transactions(
         )
         paired_ids = [row[0] for row in paired_result.all()]
 
+    # A deleted parent takes its lines along. Done here rather than left to
+    # the database so the lines' attachments are cleaned up on every engine.
+    child_result = await session.execute(
+        select(Transaction.id).where(Transaction.parent_transaction_id.in_(valid_ids))
+    )
+    child_ids = [row[0] for row in child_result.all() if row[0] not in valid_ids]
+
     # Storage files must go before the rows: the DB cascade removes the
     # attachment records, and after that their storage keys are unreachable.
-    await cleanup_attachment_files(session, valid_ids + paired_ids)
+    doomed = valid_ids + paired_ids + child_ids
+    await cleanup_attachment_files(session, doomed)
 
-    await session.execute(
-        delete(Transaction).where(Transaction.id.in_(valid_ids + paired_ids))
-    )
+    await session.execute(delete(Transaction).where(Transaction.id.in_(doomed)))
     await session.commit()
     return len(valid_ids)

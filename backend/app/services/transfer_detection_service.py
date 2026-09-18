@@ -26,11 +26,15 @@ async def detect_transfer_pairs(
     Returns the number of pairs created.
     """
     # Load candidate debits — filtered to candidate_ids when provided
+    # Ignored rows never pair: an ignored row (a split parent among them) is
+    # not money that moved, and pairing it would drop its counterpart from
+    # income or expenses.
     debit_query = select(Transaction).where(
         Transaction.workspace_id == workspace_id,
         Transaction.type == "debit",
         Transaction.transfer_pair_id.is_(None),
         Transaction.source != "opening_balance",
+        Transaction.is_ignored.is_(False),
     )
     if candidate_ids:
         debit_query = debit_query.where(Transaction.id.in_(candidate_ids))
@@ -46,6 +50,7 @@ async def detect_transfer_pairs(
             Transaction.type == "debit",
             Transaction.transfer_pair_id.is_(None),
             Transaction.source != "opening_balance",
+            Transaction.is_ignored.is_(False),
             Transaction.id.not_in(candidate_ids),
         )
         reverse_result = await session.execute(reverse_debit_query)
@@ -64,6 +69,7 @@ async def detect_transfer_pairs(
         Transaction.type == "credit",
         Transaction.transfer_pair_id.is_(None),
         Transaction.source != "opening_balance",
+        Transaction.is_ignored.is_(False),
     )
     credit_result = await session.execute(credit_query)
     credits = list(credit_result.scalars().all())

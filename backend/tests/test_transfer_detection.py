@@ -362,3 +362,23 @@ async def test_both_sides_imported_together(session: AsyncSession, test_user, te
     await session.refresh(debit)
     await session.refresh(credit)
     assert debit.transfer_pair_id == credit.transfer_pair_id
+
+
+@pytest.mark.asyncio
+async def test_detect_skips_ignored_rows(session: AsyncSession, test_user, test_workspace):
+    """An ignored row (a split parent among them) is never auto-paired."""
+    a = await _make_account(session, test_user.id, "A")
+    b = await _make_account(session, test_user.id, "B")
+    today = date.today()
+    hidden = await _add_txn(session, test_user.id, a.id, 500, "debit", today)
+    hidden.is_ignored = True
+    await session.commit()
+    await _add_txn(session, test_user.id, b.id, 500, "credit", today)
+
+    assert await detect_transfer_pairs(session, test_workspace.id) == 0
+    await session.refresh(hidden)
+    assert hidden.transfer_pair_id is None
+
+    # A visible row of the same shape still pairs.
+    await _add_txn(session, test_user.id, a.id, 500, "debit", today, source="split")
+    assert await detect_transfer_pairs(session, test_workspace.id) == 1

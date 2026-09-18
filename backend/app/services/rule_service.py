@@ -20,6 +20,7 @@ from app.schemas.rule import (
     RuleUpdate,
 )
 
+from app.services._query_filters import is_split_parent
 from app.services.category_service import get_hidden_category_ids
 
 from app.services.rule_engine import (
@@ -1107,6 +1108,16 @@ async def _get_existing_rule_names_for_workspace(
     return {row[0] for row in result.all()}
 
 
+# Rules leave category splits alone. The lines carry categories the user
+# chose by hand, and the parent exists only to be replaced by them, so a
+# re-apply must reach neither. Column-only filters: the preview path loads
+# with `load_only`, and touching a relationship there would lazy-load.
+_NOT_PART_OF_A_SPLIT = (
+    Transaction.parent_transaction_id.is_(None),
+    ~is_split_parent(),
+)
+
+
 # Exactly the columns `_rule_preview` copies. Anything reading a column that is
 # not here off a transaction loaded with `load_only(*_PREVIEW_COLUMNS)` would
 # trigger a lazy refresh — which raises under async — so the two lists move
@@ -1285,6 +1296,7 @@ async def preview_rule(
         .where(
             Transaction.workspace_id == workspace_id,
             Transaction.source != "opening_balance",
+            *_NOT_PART_OF_A_SPLIT,
         )
         # `id` breaks date ties, so the match list is in the same order for
         # every window: without a total order two rows sharing a date could
@@ -1385,6 +1397,7 @@ async def apply_single_rule(
         select(Transaction).where(
             Transaction.workspace_id == workspace_id,
             Transaction.source != "opening_balance",
+            *_NOT_PART_OF_A_SPLIT,
         )
     )
     transactions = result.scalars().all()
@@ -1443,6 +1456,7 @@ async def apply_all_rules(session: AsyncSession, workspace_id: uuid.UUID) -> int
         select(Transaction).where(
             Transaction.workspace_id == workspace_id,
             Transaction.source != "opening_balance",
+            *_NOT_PART_OF_A_SPLIT,
         )
     )
     transactions = result.scalars().all()

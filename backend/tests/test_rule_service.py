@@ -1264,3 +1264,62 @@ async def test_get_installed_packs(session: AsyncSession, test_user, test_worksp
 
     packs_after = await get_installed_packs(session, test_user.id)
     assert packs_after["BR"] is True
+
+
+# ---------------------------------------------------------------------------
+# Category splits are off limits to rules
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rules_leave_split_parent_and_lines_alone(
+    session: AsyncSession, test_user, test_workspace, test_categories
+):
+    from app.schemas.transaction import CategorySplitLineInput
+    from app.services.category_split_service import split_transaction
+    from app.services.rule_service import preview_rule
+
+    ws_id, user_id = test_workspace.id, test_user.id
+    cat_ids = [c.id for c in test_categories]
+    account_id, parent_id = uuid.uuid4(), uuid.uuid4()
+    session.add(Account(
+        id=account_id, user_id=user_id, workspace_id=ws_id,
+        name="Rules", type="checking", balance=Decimal("0"), currency="BRL",
+    ))
+    session.add(Transaction(
+        id=parent_id, user_id=user_id, workspace_id=ws_id,
+        account_id=account_id, description="NORTHWESTERN MUTUAL", amount=Decimal("500"),
+        date=date.today(), type="debit", source="sync", status="posted",
+        created_at=datetime.now(timezone.utc),
+    ))
+    await session.commit()
+    _, children = await split_transaction(session, ws_id, parent_id, [
+        CategorySplitLineInput(category_id=cat_ids[0], amount=Decimal("250")),
+        CategorySplitLineInput(category_id=cat_ids[1], amount=Decimal("250")),
+    ])
+    child_ids = [c.id for c in children]
+
+    conditions = [{"field": "description", "op": "contains", "value": "NORTHWESTERN"}]
+    actions = [{"op": "set_category", "value": str(cat_ids[2])}]
+    preview = await preview_rule(session, ws_id, "and", conditions, actions)
+    assert preview.matched == 0
+
+    rule = await create_rule(
+        session, ws_id, user_id,
+        RuleCreate(
+            name="NWM", conditions_op="and",
+            conditions=[RuleCondition(field="description", op="contains", value="NORTHWESTERN")],
+            actions=[RuleAction(op="set_category", value=str(cat_ids[2]))],
+            priority=1,
+        ),
+    )
+    assert await apply_single_rule(session, ws_id, rule, overwrite_existing_categories=True) == 0
+    assert await apply_all_rules(session, ws_id) == 0
+
+    session.expire_all()
+    for child_id, expected in zip(child_ids, cat_ids[:2]):
+        child = await session.get(Transaction, child_id)
+        assert child.category_id == expected
+    parent = await session.get(Transaction, parent_id)
+    assert parent.category_id is None
+    assert parent.is_ignored is True

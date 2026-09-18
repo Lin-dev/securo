@@ -16,6 +16,7 @@ from app.models.recurring_transaction import RecurringTransaction
 from app.schemas.dashboard import DashboardSummary, SpendingByCategory, MonthlyTrend, ProjectedTransaction, DailyBalance, BalanceHistory
 from app.services._query_filters import (
     counts_as_user_pnl,
+    is_split_parent,
     owner_split_offset_by_category,
     owner_split_offset_pnl,
     reporting_date_col,
@@ -410,6 +411,9 @@ async def get_summary(
         # income that need a category, so exclude them.
         Transaction.source != "settlement",
         Transaction.transfer_pair_id.is_(None),
+        # A split parent's category lives on its lines, which are counted
+        # here on their own merits.
+        ~is_split_parent(),
         *acct_filter,
     ]
     pending_categorization_result = await session.execute(
