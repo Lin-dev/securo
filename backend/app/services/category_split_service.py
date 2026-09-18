@@ -14,19 +14,29 @@ keeps its provider identity, so a re-sync matches it by ``external_id`` and
 leaves it frozen like any other ignored row.
 """
 
+import logging
 import uuid
-from decimal import ROUND_HALF_UP, Decimal
-from typing import Iterable, Optional, Sequence
+from datetime import date
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from types import SimpleNamespace
+from typing import Any, Iterable, Optional, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.category import Category
+from app.models.rule import Rule
 from app.models.transaction import Transaction
 from app.schemas.transaction import CategorySplitLineInput
+from app.services._query_filters import is_split_parent
+from app.services.category_service import get_hidden_category_ids
+from app.services.rule_engine import evaluate_conditions
+
+logger = logging.getLogger(__name__)
 
 SPLIT_SOURCE = "split"
+SPLIT_RULE_OP = "split_categories"
 _UNSPLITTABLE_SOURCES = ("opening_balance", "settlement", SPLIT_SOURCE)
 _CENT = Decimal("0.01")
 
@@ -120,7 +130,7 @@ def materialize_lines(
     return resolved
 
 
-async def _ensure_categories_in_workspace(
+async def ensure_categories_in_workspace(
     session: AsyncSession,
     workspace_id: uuid.UUID,
     category_ids: Iterable[Optional[uuid.UUID]],
@@ -208,7 +218,7 @@ async def split_transaction(
     if tx is None:
         return None
     assert_splittable(tx)
-    await _ensure_categories_in_workspace(
+    await ensure_categories_in_workspace(
         session, workspace_id, (line.category_id for line in lines)
     )
     children = await _materialize(session, tx, lines)
@@ -252,3 +262,242 @@ async def child_counts(
         .group_by(Transaction.parent_transaction_id)
     )
     return {row[0]: row[1] for row in result.all()}
+
+
+# ─── Rule-driven splits ───────────────────────────────────────────────────
+#
+# A `split_categories` rule action carries its lines as a list:
+#   [{"category_id": "...", "amount": "250.00"},
+#    {"category_id": "...", "percent": 50},
+#    {"category_id": "...", "remainder": true}]
+# Each line takes exactly one of amount / percent / remainder; at most one
+# line takes the remainder. The pure rule engine ignores the op — it cannot
+# create rows — and `apply_split_rules` materializes it afterwards, once the
+# parent row is complete (posted, dated, bill-linked).
+
+
+def _decimal(value: Any) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError("Each split line needs an amount, a percent or remainder")
+
+
+def validate_rule_lines(value: Any) -> list[dict]:
+    """Normalize a split action's value or raise ValueError.
+
+    Returns one dict per line with `category_id` (UUID), `amount` (Decimal or
+    None), `percent` (Decimal or None) and `remainder` (bool). Category
+    existence is the caller's check; it needs the workspace.
+    """
+    if not isinstance(value, list) or len(value) < 2:
+        raise ValueError("Split action needs at least two lines")
+    lines: list[dict] = []
+    remainders = 0
+    fixed = 0
+    percent_total = Decimal("0")
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ValueError("Each split line needs an amount, a percent or remainder")
+        try:
+            category_id = uuid.UUID(str(raw.get("category_id")))
+        except (TypeError, ValueError):
+            raise ValueError("Category not found")
+        amount = raw.get("amount")
+        percent = raw.get("percent")
+        remainder = bool(raw.get("remainder"))
+        if (amount is not None) + (percent is not None) + remainder != 1:
+            raise ValueError("Each split line needs an amount, a percent or remainder")
+        line = {"category_id": category_id, "amount": None, "percent": None, "remainder": remainder}
+        if amount is not None:
+            amount = _quantize(_decimal(amount))
+            if amount <= 0:
+                raise ValueError("Split line amounts must be greater than zero")
+            line["amount"] = amount
+            fixed += 1
+        if percent is not None:
+            percent = _decimal(percent)
+            if not (Decimal("0") < percent <= Decimal("100")):
+                raise ValueError("Split line percents must be between 0 and 100")
+            line["percent"] = percent
+            percent_total += percent
+        remainders += remainder
+        lines.append(line)
+    if remainders > 1:
+        raise ValueError("Only one split line can take the remainder")
+    if percent_total > Decimal("100"):
+        raise ValueError("Split percents add up to more than 100")
+    if remainders == 0 and fixed == 0 and percent_total != Decimal("100"):
+        raise ValueError("Split percents must add up to 100")
+    return lines
+
+
+def resolve_rule_lines(
+    lines: Sequence[dict], total: Decimal, hidden_category_ids: Iterable[uuid.UUID] = ()
+) -> Optional[list[CategorySplitLineInput]]:
+    """Turn validated rule lines into concrete amounts for one transaction.
+
+    Fixed amounts are taken as written, percents are taken of the absolute
+    total, and the remainder line absorbs what is left. Returns None when the
+    lines do not fit the transaction (fixed amounts that do not add up, a
+    line that would be zero or negative) or point at a hidden category; the
+    caller leaves such a transaction unsplit.
+    """
+    hidden = set(hidden_category_ids)
+    if any(line["category_id"] in hidden for line in lines):
+        return None
+    total = _quantize(total).copy_abs()
+    amounts: list[Optional[Decimal]] = []
+    for line in lines:
+        if line["amount"] is not None:
+            amounts.append(line["amount"])
+        elif line["percent"] is not None:
+            amounts.append(_quantize(total * line["percent"] / Decimal("100")))
+        else:
+            amounts.append(None)
+    allocated = sum((a for a in amounts if a is not None), Decimal("0"))
+    remainder_slots = [i for i, a in enumerate(amounts) if a is None]
+    if remainder_slots:
+        amounts[remainder_slots[0]] = total - allocated
+    elif allocated != total:
+        # Percent lines round; the last percent line takes the cents so the
+        # lines add up. Fixed-only lines that miss the total do not fit.
+        percent_slots = [i for i, line in enumerate(lines) if line["percent"] is not None]
+        residual = total - allocated
+        if not percent_slots or residual.copy_abs() > _CENT * len(lines):
+            return None
+        amounts[percent_slots[-1]] = (amounts[percent_slots[-1]] or Decimal("0")) + residual
+    if any(a is None or a <= 0 for a in amounts):
+        return None
+    return [
+        CategorySplitLineInput(category_id=line["category_id"], amount=amount)
+        for line, amount in zip(lines, amounts)
+    ]
+
+
+def _eligibility_filters(workspace_id: uuid.UUID) -> list:
+    """SQL twin of `assert_splittable`, minus the group-split check."""
+    return [
+        Transaction.workspace_id == workspace_id,
+        Transaction.status == "posted",
+        Transaction.parent_transaction_id.is_(None),
+        ~is_split_parent(),
+        Transaction.transfer_pair_id.is_(None),
+        Transaction.source.not_in(_UNSPLITTABLE_SOURCES),
+        Transaction.installment_series_id.is_(None),
+        Transaction.installment_number.is_(None),
+    ]
+
+
+async def splittable_ids(session: AsyncSession, workspace_id: uuid.UUID) -> set[uuid.UUID]:
+    """Ids a split rule could act on right now; for the rule editor's preview."""
+    result = await session.execute(
+        select(Transaction.id).where(*_eligibility_filters(workspace_id))
+    )
+    return {row[0] for row in result.all()}
+
+
+def _condition_target(tx: Transaction, description: str) -> SimpleNamespace:
+    """The fields conditions may read, with a swapped-in description."""
+    return SimpleNamespace(
+        description=description,
+        payee=tx.payee,
+        notes=tx.notes,
+        amount=tx.amount,
+        type=tx.type,
+        account_id=tx.account_id,
+        payee_id=tx.payee_id,
+        date=tx.date,
+    )
+
+
+def _rule_matches(rule: Rule, tx: Transaction) -> bool:
+    conditions = rule.conditions or []
+    if evaluate_conditions(rule.conditions_op, conditions, tx):
+        return True
+    # A rule that renamed the row earlier should still recognise it, the same
+    # way `apply_single_rule` retries against the imported text.
+    if tx.original_description is not None and tx.original_description != tx.description:
+        return evaluate_conditions(
+            rule.conditions_op, conditions, _condition_target(tx, tx.original_description)
+        )
+    return False
+
+
+async def apply_split_rules(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    *,
+    transaction_ids: Optional[Sequence[uuid.UUID]] = None,
+    account_ids: Optional[Sequence[uuid.UUID]] = None,
+    since: Optional[date] = None,
+) -> int:
+    """Split every eligible unsplit row the first matching split rule fits.
+
+    Runs after sync, import, manual creation and rule application, on rows
+    that are complete. Never touches an existing split, so editing a rule
+    only affects rows that have not been split yet. Flushes, never commits.
+    Returns the number of rows split.
+    """
+    rules_result = await session.execute(
+        select(Rule)
+        .where(Rule.workspace_id == workspace_id, Rule.is_active.is_(True))
+        .order_by(Rule.priority, Rule.id)
+    )
+    prepared: list[tuple[Rule, list[dict]]] = []
+    for rule in rules_result.scalars().all():
+        action = next(
+            (a for a in (rule.actions or []) if isinstance(a, dict) and a.get("op") == SPLIT_RULE_OP),
+            None,
+        )
+        if action is None:
+            continue
+        try:
+            prepared.append((rule, validate_rule_lines(action.get("value"))))
+        except ValueError as exc:
+            logger.warning("Split rule %s has an invalid action and is skipped: %s", rule.id, exc)
+    if not prepared:
+        return 0
+
+    query = (
+        select(Transaction)
+        .where(*_eligibility_filters(workspace_id))
+        .options(
+            selectinload(Transaction.split_children),
+            selectinload(Transaction.splits),
+        )
+        .execution_options(populate_existing=True)
+    )
+    if transaction_ids is not None:
+        if not transaction_ids:
+            return 0
+        query = query.where(Transaction.id.in_(list(transaction_ids)))
+    if account_ids is not None:
+        if not account_ids:
+            return 0
+        query = query.where(Transaction.account_id.in_(list(account_ids)))
+    if since is not None:
+        query = query.where(Transaction.date >= since)
+    candidates = list((await session.execute(query)).scalars().all())
+    if not candidates:
+        return 0
+
+    hidden = await get_hidden_category_ids(session, workspace_id)
+    count = 0
+    for tx in candidates:
+        if tx.splits:
+            # Same rule as the API: a group-shared row is not split by category.
+            continue
+        for rule, lines in prepared:
+            if not _rule_matches(rule, tx):
+                continue
+            resolved = resolve_rule_lines(lines, tx.amount, hidden)
+            if resolved is None:
+                logger.info(
+                    "Split rule %s matched transaction %s but its lines do not fit", rule.id, tx.id
+                )
+                continue
+            await _materialize(session, tx, resolved)
+            count += 1
+            break
+    return count

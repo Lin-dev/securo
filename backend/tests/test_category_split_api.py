@@ -520,3 +520,69 @@ async def test_parent_never_becomes_a_transfer(client, auth_headers):
     assert candidates.status_code == 200
     assert tx["id"] not in {c["id"] for c in candidates.json()}
 
+
+
+# ---------------------------------------------------------------------------
+# Split rules through the API
+# ---------------------------------------------------------------------------
+
+
+async def _split_rule(client, auth_headers, insurance, invested, **extra):
+    resp = await client.post(
+        "/api/rules", headers=auth_headers,
+        json={
+            "name": "NWM split", "conditions_op": "and",
+            "conditions": [{"field": "description", "op": "contains", "value": "NORTHWESTERN"}],
+            "actions": [{"op": "split_categories", "value": [
+                {"category_id": insurance["id"], "amount": "250"},
+                {"category_id": invested["id"], "remainder": True},
+            ]}],
+            "priority": 1,
+            **extra,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+@pytest.mark.asyncio
+async def test_creating_a_split_rule_splits_history_and_new_rows(client, auth_headers):
+    account, insurance, invested, existing, _ = await _vul(client, auth_headers)
+
+    rule = await _split_rule(client, auth_headers, insurance, invested, apply_to_existing=True)
+    assert rule["applied_count"] == 1
+    history = (await client.get(f"/api/transactions/{existing['id']}", headers=auth_headers)).json()
+    assert history["is_ignored"] is True and history["split_count"] == 2
+
+    created = await _transaction(client, auth_headers, account["id"])
+    assert created["is_ignored"] is True and created["split_count"] == 2
+    lines = await _children(client, auth_headers, created["id"])
+    assert [(c["category_id"], float(c["amount"])) for c in lines] == [
+        (insurance["id"], 250.0), (invested["id"], 250.0),
+    ]
+
+    # A category picked by hand wins over the rule.
+    chosen = await _transaction(client, auth_headers, account["id"], category_id=insurance["id"])
+    assert chosen["split_count"] == 0 and chosen["is_ignored"] is False
+
+    # A row the lines do not fit stays whole.
+    small = await _transaction(client, auth_headers, account["id"], amount="100.00")
+    assert small["split_count"] == 0 and small["is_ignored"] is False
+
+
+@pytest.mark.asyncio
+async def test_split_rule_rejects_bad_lines_at_the_api(client, auth_headers):
+    _, insurance, _, _, _ = await _vul(client, auth_headers)
+    resp = await client.post(
+        "/api/rules", headers=auth_headers,
+        json={
+            "name": "bad", "conditions_op": "and",
+            "conditions": [{"field": "description", "op": "contains", "value": "X"}],
+            "actions": [{"op": "split_categories", "value": [
+                {"category_id": insurance["id"], "percent": 40},
+                {"category_id": insurance["id"], "percent": 40},
+            ]}],
+        },
+    )
+    assert resp.status_code == 400
+    assert "add up to 100" in resp.json()["detail"]

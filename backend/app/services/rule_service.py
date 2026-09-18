@@ -20,6 +20,7 @@ from app.schemas.rule import (
     RuleUpdate,
 )
 
+from app.services import category_split_service
 from app.services._query_filters import is_split_parent
 from app.services.category_service import get_hidden_category_ids
 
@@ -46,6 +47,7 @@ _ALLOWED_CONDITION_OPS = {
 }
 _ALLOWED_ACTION_OPS = {
     "set_category", "set_payee", "set_description", "append_notes", "ignore",
+    category_split_service.SPLIT_RULE_OP,
 }
 
 
@@ -120,6 +122,11 @@ async def _validate_rule_definition(
                 raise ValueError("Description cannot be blank")
             if len(value.strip()) > 500:
                 raise ValueError("Description cannot exceed 500 characters")
+        elif op == category_split_service.SPLIT_RULE_OP:
+            lines = category_split_service.validate_rule_lines(value)
+            await category_split_service.ensure_categories_in_workspace(
+                session, workspace_id, [line["category_id"] for line in lines]
+            )
 
 
 # ─── Universal rules (work for any language/country) ───
@@ -924,6 +931,17 @@ async def export_rules(session: AsyncSession, workspace_id: uuid.UUID) -> RuleEx
                 if not category_name:
                     continue
                 actions.append({**action, "value": category_name})
+            elif action.get("op") == category_split_service.SPLIT_RULE_OP:
+                lines = action.get("value") or []
+                names = [category_names.get(str(line.get("category_id"))) for line in lines]
+                if not all(names):
+                    continue
+                actions.append({
+                    **action,
+                    "value": [
+                        {**line, "category_id": name} for line, name in zip(lines, names)
+                    ],
+                })
             else:
                 actions.append(action)
         exported_rules.append({
@@ -979,6 +997,24 @@ async def import_rules(
                     missing_required_reference = True
                     break
                 action_data["value"] = category_id
+            elif action_data["op"] == category_split_service.SPLIT_RULE_OP:
+                lines = action_data.get("value")
+                if not isinstance(lines, list):
+                    missing_required_reference = True
+                    break
+                resolved_lines = []
+                for line in lines:
+                    category_id = (
+                        categories_by_name.get(str(line.get("category_id")))
+                        if isinstance(line, dict) else None
+                    )
+                    if not category_id:
+                        missing_required_reference = True
+                        break
+                    resolved_lines.append({**line, "category_id": category_id})
+                if missing_required_reference:
+                    break
+                action_data["value"] = resolved_lines
             resolved_actions.append(action_data)
         if missing_required_reference:
             skipped += 1
@@ -1313,6 +1349,14 @@ async def preview_rule(
     action_dicts = [
         action if isinstance(action, dict) else action.model_dump() for action in actions or []
     ]
+    # A split action is applied after the engine runs, so the effect-state
+    # comparison below cannot see it; every eligible match will be split.
+    splits_rows = any(a.get("op") == category_split_service.SPLIT_RULE_OP for a in action_dicts)
+    eligible_for_split = (
+        await category_split_service.splittable_ids(session, workspace_id)
+        if splits_rows and will_apply
+        else set()
+    )
 
     matched = 0
     changed = 0
@@ -1342,7 +1386,7 @@ async def preview_rule(
                 and not overwrite_existing_categories,
                 skip_description=_has_manual_description(tx),
             )
-            will_change = _rule_effect_state(draft) != before
+            will_change = _rule_effect_state(draft) != before or tx.id in eligible_for_split
             if will_change:
                 changed += 1
         # `matched` has just counted this row, so `matched - 1` is its index
@@ -1446,6 +1490,7 @@ async def apply_single_rule(
         if before != after:
             count += 1
 
+    count += await category_split_service.apply_split_rules(session, workspace_id)
     await session.commit()
     return count
 
@@ -1515,5 +1560,6 @@ async def apply_all_rules(session: AsyncSession, workspace_id: uuid.UUID) -> int
         if matched or before != after:
             count += 1
 
+    count += await category_split_service.apply_split_rules(session, workspace_id)
     await session.commit()
     return count

@@ -1323,3 +1323,151 @@ async def test_rules_leave_split_parent_and_lines_alone(
     parent = await session.get(Transaction, parent_id)
     assert parent.category_id is None
     assert parent.is_ignored is True
+
+
+# ---------------------------------------------------------------------------
+# split_categories action
+# ---------------------------------------------------------------------------
+
+
+async def _nwm_row(session, user_id, ws_id, amount="500", description="NORTHWESTERN MUTUAL", **overrides):
+    account_id = overrides.pop("account_id", None)
+    if account_id is None:
+        account_id = uuid.uuid4()
+        session.add(Account(
+            id=account_id, user_id=user_id, workspace_id=ws_id,
+            name=f"Acc-{account_id.hex[:6]}", type="checking", balance=Decimal("0"), currency="BRL",
+        ))
+    tx_id = uuid.uuid4()
+    fields = dict(
+        id=tx_id, user_id=user_id, workspace_id=ws_id, account_id=account_id,
+        description=description, amount=Decimal(amount), date=date.today(), type="debit",
+        source="sync", status="posted", created_at=datetime.now(timezone.utc),
+    )
+    fields.update(overrides)
+    session.add(Transaction(**fields))
+    await session.commit()
+    return tx_id, account_id
+
+
+def _split_rule(cat_ids, name="NWM split", **kw):
+    return RuleCreate(
+        name=name, conditions_op="and",
+        conditions=[RuleCondition(field="description", op="contains", value="NORTHWESTERN")],
+        actions=[RuleAction(op="split_categories", value=[
+            {"category_id": str(cat_ids[0]), "amount": "250"},
+            {"category_id": str(cat_ids[1]), "remainder": True},
+        ])],
+        priority=1, **kw,
+    )
+
+
+@pytest.mark.asyncio
+async def test_split_rule_validation(session: AsyncSession, test_user, test_workspace, test_categories):
+    ws_id, user_id = test_workspace.id, test_user.id
+    cat_ids = [c.id for c in test_categories]
+    bad = RuleCreate(
+        name="bad", conditions_op="and",
+        conditions=[RuleCondition(field="description", op="contains", value="X")],
+        actions=[RuleAction(op="split_categories", value=[{"category_id": str(cat_ids[0]), "amount": "1"}])],
+    )
+    with pytest.raises(ValueError, match="at least two lines"):
+        await create_rule(session, ws_id, user_id, bad)
+    foreign = RuleCreate(
+        name="foreign", conditions_op="and",
+        conditions=[RuleCondition(field="description", op="contains", value="X")],
+        actions=[RuleAction(op="split_categories", value=[
+            {"category_id": str(uuid.uuid4()), "amount": "1"},
+            {"category_id": str(cat_ids[0]), "remainder": True},
+        ])],
+    )
+    with pytest.raises(ValueError, match="Category not found"):
+        await create_rule(session, ws_id, user_id, foreign)
+    rule = await create_rule(session, ws_id, user_id, _split_rule(cat_ids))
+    assert rule.actions[0]["value"][1]["remainder"] is True
+
+
+@pytest.mark.asyncio
+async def test_split_rule_exports_and_imports_by_category_name(
+    session: AsyncSession, test_user, test_workspace, test_categories
+):
+    ws_id, user_id = test_workspace.id, test_user.id
+    cat_ids = [c.id for c in test_categories]
+    cat_names = [c.name for c in test_categories]
+    await create_rule(session, ws_id, user_id, _split_rule(cat_ids))
+
+    exported = await export_rules(session, ws_id)
+    action = exported.rules[0].actions[0]
+    assert action.op == "split_categories"
+    assert [line["category_id"] for line in action.value] == cat_names[:2]
+
+    payload = RuleExportPayload(rules=exported.rules)
+    result = await import_rules(session, ws_id, user_id, payload, overwrite=True)
+    assert result.imported == 1
+    rules = await get_rules(session, ws_id)
+    assert [line["category_id"] for line in rules[0].actions[0]["value"]] == [str(c) for c in cat_ids[:2]]
+
+    # A line whose category name is unknown makes the rule unimportable.
+    broken = RuleExportPayload(rules=[RuleExportItem(
+        name="broken", conditions=exported.rules[0].conditions,
+        actions=[RuleAction(op="split_categories", value=[
+            {"category_id": "No such category", "amount": "1"},
+            {"category_id": cat_names[0], "remainder": True},
+        ])],
+    )])
+    result = await import_rules(session, ws_id, user_id, broken, overwrite=True)
+    assert (result.imported, result.skipped) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_split_rule_preview_and_apply_to_history(
+    session: AsyncSession, test_user, test_workspace, test_categories
+):
+    from sqlalchemy import select
+
+    from app.services.rule_service import preview_rule
+
+    ws_id, user_id = test_workspace.id, test_user.id
+    cat_ids = [c.id for c in test_categories]
+    fits_id, account_id = await _nwm_row(session, user_id, ws_id)
+    small_id, _ = await _nwm_row(session, user_id, ws_id, amount="100", account_id=account_id)
+    pending_id, _ = await _nwm_row(session, user_id, ws_id, status="pending", account_id=account_id)
+    other_id, _ = await _nwm_row(session, user_id, ws_id, description="UBER", account_id=account_id)
+
+    draft = _split_rule(cat_ids)
+    preview = await preview_rule(
+        session, ws_id, "and",
+        [c.model_dump() for c in draft.conditions], [a.model_dump() for a in draft.actions],
+    )
+    # The pending row matches but cannot be split yet; the fit is decided at apply time.
+    assert (preview.matched, preview.will_change) == (3, 2)
+
+    rule = await create_rule(session, ws_id, user_id, draft)
+    applied = await apply_single_rule(session, ws_id, rule)
+
+    assert applied == 1
+    session.expire_all()
+    fits = await session.get(Transaction, fits_id)
+    assert fits.is_ignored is True
+    lines = (await session.execute(
+        select(Transaction).where(Transaction.parent_transaction_id == fits_id).order_by(Transaction.created_at)
+    )).scalars().all()
+    assert [(line.category_id, line.amount) for line in lines] == [(cat_ids[0], Decimal("250.00")), (cat_ids[1], Decimal("250.00"))]
+    # 100 cannot hold a 250 line, pending rows wait, and UBER never matched.
+    for untouched in (small_id, pending_id, other_id):
+        row = await session.get(Transaction, untouched)
+        assert row.is_ignored is False
+
+    # Re-applying is idempotent: the parent is not split again, by either
+    # path. (`apply_all_rules` reports matched rows, not splits, so the
+    # state is what is checked.)
+    await session.refresh(rule)
+    assert await apply_single_rule(session, ws_id, rule) == 0
+    await apply_all_rules(session, ws_id)
+    session.expire_all()
+    rows = (await session.execute(
+        select(Transaction).where(Transaction.account_id == account_id)
+    )).scalars().all()
+    assert sum(1 for r in rows if r.parent_transaction_id == fits_id) == 2
+    assert sum(1 for r in rows if r.parent_transaction_id is not None) == 2
+    assert sum(1 for r in rows if r.is_ignored) == 1

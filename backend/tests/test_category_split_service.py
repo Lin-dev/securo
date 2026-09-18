@@ -115,3 +115,83 @@ async def test_child_counts_only_reports_parents(session: AsyncSession, test_use
     counts = await child_counts(session, [parent.id, plain.id, *[c.id for c in children]])
     assert counts == {parent.id: 2}
     assert await child_counts(session, []) == {}
+
+
+# ---------------------------------------------------------------------------
+# Rule lines
+# ---------------------------------------------------------------------------
+
+from app.services.category_split_service import resolve_rule_lines, validate_rule_lines  # noqa: E402
+
+CAT_A, CAT_B, CAT_C = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+
+def _rule_value(*lines: dict) -> list[dict]:
+    return [dict(line) for line in lines]
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("nope", "at least two lines"),
+        ([{"category_id": str(CAT_A), "amount": 1}], "at least two lines"),
+        ([{"category_id": "x", "amount": 1}, {"category_id": str(CAT_B), "amount": 1}], "Category not found"),
+        ([{"category_id": str(CAT_A)}, {"category_id": str(CAT_B), "amount": 1}], "needs an amount, a percent or remainder"),
+        ([{"category_id": str(CAT_A), "amount": 1, "percent": 5}, {"category_id": str(CAT_B), "remainder": True}], "needs an amount"),
+        ([{"category_id": str(CAT_A), "amount": 0}, {"category_id": str(CAT_B), "remainder": True}], "greater than zero"),
+        ([{"category_id": str(CAT_A), "percent": 150}, {"category_id": str(CAT_B), "remainder": True}], "between 0 and 100"),
+        ([{"category_id": str(CAT_A), "remainder": True}, {"category_id": str(CAT_B), "remainder": True}], "Only one split line"),
+        ([{"category_id": str(CAT_A), "percent": 60}, {"category_id": str(CAT_B), "percent": 60}], "more than 100"),
+        ([{"category_id": str(CAT_A), "percent": 40}, {"category_id": str(CAT_B), "percent": 40}], "must add up to 100"),
+        ([{"category_id": str(CAT_A), "amount": "abc"}, {"category_id": str(CAT_B), "remainder": True}], "needs an amount"),
+    ],
+)
+def test_validate_rule_lines_rejects(value, message):
+    with pytest.raises(ValueError, match=message):
+        validate_rule_lines(value)
+
+
+def test_validate_rule_lines_normalizes():
+    lines = validate_rule_lines(_rule_value(
+        {"category_id": str(CAT_A), "amount": "250"},
+        {"category_id": str(CAT_B), "percent": "25.5"},
+        {"category_id": str(CAT_C), "remainder": True},
+    ))
+    assert lines[0] == {"category_id": CAT_A, "amount": Decimal("250.00"), "percent": None, "remainder": False}
+    assert lines[1]["percent"] == Decimal("25.5")
+    assert lines[2]["remainder"] is True
+    # Fixed-only lines are allowed: they simply skip rows they do not fit.
+    validate_rule_lines(_rule_value({"category_id": str(CAT_A), "amount": 250}, {"category_id": str(CAT_B), "amount": 250}))
+
+
+def _resolved(lines, total, hidden=()):
+    resolved = resolve_rule_lines(validate_rule_lines(lines), Decimal(total), hidden)
+    return None if resolved is None else [(line.category_id, line.amount) for line in resolved]
+
+
+def test_resolve_rule_lines_fixed_percent_and_remainder():
+    fixed = _rule_value({"category_id": str(CAT_A), "amount": 250}, {"category_id": str(CAT_B), "amount": 250})
+    assert _resolved(fixed, "500") == [(CAT_A, Decimal("250.00")), (CAT_B, Decimal("250.00"))]
+    assert _resolved(fixed, "300") is None
+
+    percent = _rule_value({"category_id": str(CAT_A), "percent": 50}, {"category_id": str(CAT_B), "percent": 50})
+    assert _resolved(percent, "333.33") == [(CAT_A, Decimal("166.67")), (CAT_B, Decimal("166.66"))]
+
+    remainder = _rule_value(
+        {"category_id": str(CAT_A), "amount": 250},
+        {"category_id": str(CAT_B), "percent": 10},
+        {"category_id": str(CAT_C), "remainder": True},
+    )
+    assert _resolved(remainder, "1000") == [
+        (CAT_A, Decimal("250.00")), (CAT_B, Decimal("100.00")), (CAT_C, Decimal("650.00")),
+    ]
+    # The remainder line would be zero or negative: the rule does not fit.
+    assert _resolved(remainder, "250") is None
+    assert _resolved(remainder, "-1000") == [
+        (CAT_A, Decimal("250.00")), (CAT_B, Decimal("100.00")), (CAT_C, Decimal("650.00")),
+    ]
+
+
+def test_resolve_rule_lines_skips_hidden_categories():
+    fixed = _rule_value({"category_id": str(CAT_A), "amount": 250}, {"category_id": str(CAT_B), "amount": 250})
+    assert _resolved(fixed, "500", hidden={CAT_B}) is None

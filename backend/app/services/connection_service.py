@@ -48,6 +48,7 @@ from app.services.asset_group_service import (
 from app.services.asset_service import ACCOUNT_LINK_METADATA_KEY
 from app.services.credit_card_service import apply_effective_date
 from app.services.rule_engine import merge_notes
+from app.services.category_split_service import apply_split_rules
 from app.services.rule_service import apply_rules_to_transaction, preview_rules_for_transaction
 from app.services.transfer_detection_service import detect_transfer_pairs
 from app.services.fx_rate_service import stamp_primary_amount
@@ -1093,6 +1094,7 @@ async def handle_oauth_callback(
     user = await session.get(User, user_id)
     user_currency = user.primary_currency if user else get_settings().default_currency
     new_tx_ids: list[uuid.UUID] = []
+    synced_account_ids: list[uuid.UUID] = []
 
     use_provider_cats = await admin_service.use_provider_categories(session)
 
@@ -1232,9 +1234,13 @@ async def handle_oauth_callback(
         # history that falls outside the provider's lookback window gets
         # absorbed into this synthetic transaction.
         await sync_opening_balance_for_connected_account(session, account)
+        synced_account_ids.append(account.id)
 
     # Detect transfer pairs among newly synced transactions
     await detect_transfer_pairs(session, workspace_id, candidate_ids=new_tx_ids)
+    # Split rules run once the rows are complete and transfer detection has
+    # had first pick; a paired row is never split.
+    await apply_split_rules(session, workspace_id, account_ids=synced_account_ids)
 
     # Investment holdings live on /investments — separate endpoint from
     # /accounts. Pulled after account setup when enabled so holdings are
@@ -1760,6 +1766,7 @@ async def sync_connection(
         user = await session.get(User, user_id)
         user_currency = user.primary_currency if user else get_settings().default_currency
         new_tx_ids: list[uuid.UUID] = []
+        synced_account_ids: list[uuid.UUID] = []
         merged_count = 0
         accounts_data = await provider.get_accounts(credentials)
         institution_cache: dict[str, Institution] = {}
@@ -2125,10 +2132,24 @@ async def sync_connection(
             # Reconcile the opening balance after any new transactions land so
             # SUM(all txs) keeps matching account.balance from the provider.
             await sync_opening_balance_for_connected_account(session, account)
+            synced_account_ids.append(account.id)
 
         # Detect transfer pairs among newly synced transactions
         if new_tx_ids:
             await detect_transfer_pairs(session, workspace_id, candidate_ids=new_tx_ids)
+
+        # Split rules run over the synced window, not only the new ids: a row
+        # that just flipped pending→posted in the match pass is eligible now
+        # and is not in new_tx_ids. Transfer detection has already had first
+        # pick, so a paired row is never split.
+        split_since = (
+            connection.last_sync_at.date() - timedelta(days=14)
+            if connection.last_sync_at
+            else None
+        )
+        await apply_split_rules(
+            session, workspace_id, account_ids=synced_account_ids, since=split_since
+        )
 
         # Clean up phantom duplicates: providers occasionally double-report the
         # same payment with different ids. Once transfer detection has paired
