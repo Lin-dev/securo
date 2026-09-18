@@ -1,4 +1,5 @@
 import { flattenConditions } from './rule-conditions'
+import { SPLIT_RULE_OP, isRuleSplitLines } from './rule-split-utils'
 import type { Category, Rule } from '../types'
 
 export function normalizeRuleMatchValue(value: string | number): string {
@@ -15,9 +16,15 @@ export function normalizeRuleMatchValue(value: string | number): string {
  * {@link normalizeRuleMatchValue}, so the query can be compared against it
  * case- and accent-insensitively. */
 export function ruleSearchText(rule: Rule, categories: Category[]): string {
-  const categoryNames = rule.actions
-    .filter(a => a.op === 'set_category')
-    .map(a => categories.find(c => c.id === a.value)?.name ?? '')
+  const categoryNames = rule.actions.flatMap(a => {
+    if (a.op === 'set_category' && typeof a.value === 'string') {
+      return [categories.find(c => c.id === a.value)?.name ?? '']
+    }
+    if (a.op === SPLIT_RULE_OP && isRuleSplitLines(a.value)) {
+      return a.value.map(line => categories.find(c => c.id === line.category_id)?.name ?? '')
+    }
+    return []
+  })
   return [
     rule.name,
     ...flattenConditions(rule.conditions).map(c => String(c.value ?? '')),

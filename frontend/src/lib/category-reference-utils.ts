@@ -4,7 +4,9 @@ type CategoryReference = {
 }
 
 type RuleReference = {
-  actions: Array<{ op: string; value: string }>
+  // `value` is a string for most actions and a list of lines for
+  // `split_categories`; only the string form names a category here.
+  actions: Array<{ op: string; value: unknown }>
 }
 
 export function findCategoryReference<T extends CategoryReference>(
@@ -15,7 +17,10 @@ export function findCategoryReference<T extends CategoryReference>(
 }
 
 export function getRuleCategoryId(rule: RuleReference): string | null {
-  return rule.actions.find((action) => action.op === 'set_category' && action.value)?.value ?? null
+  const action = rule.actions.find(
+    (candidate) => candidate.op === 'set_category' && typeof candidate.value === 'string' && candidate.value,
+  )
+  return typeof action?.value === 'string' ? action.value : null
 }
 
 export function getRuleCategoryName<T extends CategoryReference>(

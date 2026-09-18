@@ -1,9 +1,19 @@
 import type { RuleAction } from '../types'
 
+import { SPLIT_RULE_OP, isValidRuleSplitLines } from './rule-split-utils'
+
 export function isInvalidDescriptionAction(action: RuleAction): boolean {
   if (action.op !== 'set_description') return false
   const value = String(action.value ?? '').trim()
   return value === '' || value.length > 500
+}
+
+/** A split action the API would refuse: too few lines, a line without a
+ * category or without exactly one of amount / percent / remainder, more than
+ * one remainder, or percents that do not work out. */
+export function isInvalidSplitAction(action: RuleAction): boolean {
+  if (action.op !== SPLIT_RULE_OP) return false
+  return !isValidRuleSplitLines(action.value)
 }
 
 /** The actions a draft is complete enough to preview.
@@ -19,6 +29,7 @@ export function isInvalidDescriptionAction(action: RuleAction): boolean {
 export function previewableActions(actions: RuleAction[]): RuleAction[] {
   return actions.filter((action) => {
     if (action.op === 'ignore') return true
+    if (action.op === SPLIT_RULE_OP) return isValidRuleSplitLines(action.value)
     if (isInvalidDescriptionAction(action)) return false
     return String(action.value ?? '').trim() !== ''
   })
