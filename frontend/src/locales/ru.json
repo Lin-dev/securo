@@ -988,6 +988,7 @@
     "summaryExpenses": "Расходы",
     "summaryNet": "Чистый",
     "summaryExcluded": "Исключено",
+    "summaryInvested": "Invested",
     "bulkCategorize": "Применить",
     "bulkSuccess": "{{count}} транзакций категоризированы",
     "bulkDelete": "Удалить выбранные",
