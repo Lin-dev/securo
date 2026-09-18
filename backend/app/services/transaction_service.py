@@ -22,7 +22,7 @@ from app.schemas.transaction import (
     TransferCreate,
 )
 from app.schemas.transaction_split import TransactionSplitInput, TransactionSplitsInput
-from app.services import split_service
+from app.services import category_split_service, split_service
 from app.services.credit_card_service import apply_effective_date
 from app.services.rule_service import apply_rules_to_transaction
 from app.services.fx_rate_service import stamp_primary_amount, convert as fx_convert
@@ -138,6 +138,7 @@ async def get_transactions(
     include_summary: bool = False,
     user_pnl_only: bool = False,
     exclude_ignored: bool = False,
+    parent_transaction_id: Optional[uuid.UUID] = None,
 ) -> tuple[list[Transaction], int, Optional[dict]]:
     """List transactions for a workspace.
 
@@ -198,6 +199,11 @@ async def get_transactions(
     )
     if transaction_ids:
         base_query = base_query.where(Transaction.id.in_(transaction_ids))
+    if parent_transaction_id is not None:
+        # The category lines of one split parent, for the split editor.
+        base_query = base_query.where(
+            Transaction.parent_transaction_id == parent_transaction_id
+        )
     if use_group_scope:
         from app.models.group import GroupMember
         from app.models.transaction_split import TransactionSplit
@@ -548,8 +554,10 @@ async def get_transactions(
             .group_by(TransactionAttachment.transaction_id)
         )
         counts = {row[0]: row[1] for row in count_rows.all()}
+        split_counts = await category_split_service.child_counts(session, tx_ids)
         for tx in transactions:
             tx.attachment_count = counts.get(tx.id, 0)
+            tx.split_count = split_counts.get(tx.id, 0)
             tx.payee_name = tx.payee_entity.name if tx.payee_entity else None
         # Tag shared rows with the viewer's share + the source group.
         # Owned rows stay as-is. We pre-compute the viewer's linked
@@ -703,6 +711,7 @@ async def get_transaction(
             selectinload(Transaction.category),
             selectinload(Transaction.payee_entity),
             selectinload(Transaction.splits),
+            selectinload(Transaction.split_children),
         )
     )
     transaction = result.scalar_one_or_none()
@@ -713,6 +722,7 @@ async def get_transaction(
             )
         )
         transaction.attachment_count = count_result.scalar_one()
+        transaction.split_count = len(transaction.split_children)
         transaction.payee_name = transaction.payee_entity.name if transaction.payee_entity else None
     return transaction
 

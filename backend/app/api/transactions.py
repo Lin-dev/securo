@@ -15,9 +15,9 @@ from app.core.workspace_context import (
     current_workspace,
     current_writable_workspace,
 )
-from app.schemas.transaction import BulkAddToGroupRequest, BulkCategorizeRequest, BulkTagsRequest, CreateCounterpartRequest, InstallmentSeriesCreate, LinkTransferRequest, TransactionBulkDeleteRequest, TransactionCreate, TransactionRead, TransactionUpdate, TransferCreate, TransferRead
+from app.schemas.transaction import BulkAddToGroupRequest, BulkCategorizeRequest, BulkTagsRequest, CategorySplitRead, CategorySplitRequest, CreateCounterpartRequest, InstallmentSeriesCreate, LinkTransferRequest, TransactionBulkDeleteRequest, TransactionCreate, TransactionRead, TransactionUpdate, TransferCreate, TransferRead
 from app.schemas.transaction_calendar import TransactionCalendarResponse
-from app.services import transaction_service
+from app.services import category_split_service, transaction_service
 from app.services.admin_service import get_credit_card_accounting_mode
 from app.services.transaction_calendar_service import get_transaction_calendar
 
@@ -546,6 +546,89 @@ async def unlink_recurring_transaction(
         )
     primary_currency = ctx.user.primary_currency
     return _tag_fx_fallback(TransactionRead.model_validate(transaction, from_attributes=True), primary_currency)
+
+
+async def _split_lines(
+    session: AsyncSession, ctx: WorkspaceContext, parent_id: uuid.UUID
+) -> list[TransactionRead]:
+    """The category lines under a parent, oldest first (the order they were entered)."""
+    children, _, _ = await transaction_service.get_transactions(
+        session,
+        ctx.workspace.id,
+        ctx.user_id,
+        parent_transaction_id=parent_id,
+        skip_pagination=True,
+        sort_by="created_at",
+        sort_dir="asc",
+    )
+    primary_currency = ctx.user.primary_currency
+    return [
+        _tag_fx_fallback(TransactionRead.model_validate(child, from_attributes=True), primary_currency)
+        for child in children
+    ]
+
+
+async def _read_parent(
+    session: AsyncSession, ctx: WorkspaceContext, transaction_id: uuid.UUID
+) -> TransactionRead:
+    parent = await transaction_service.get_transaction(session, transaction_id, ctx.workspace.id)
+    if not parent:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+    return _tag_fx_fallback(
+        TransactionRead.model_validate(parent, from_attributes=True), ctx.user.primary_currency
+    )
+
+
+@router.post("/{transaction_id}/split", response_model=CategorySplitRead)
+async def split_transaction_by_category(
+    transaction_id: uuid.UUID,
+    data: CategorySplitRequest,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Split a posted transaction into category lines (replacing any existing
+    lines). The parent is kept and hidden from totals; the lines take its place."""
+    try:
+        result = await category_split_service.split_transaction(
+            session, ctx.workspace.id, transaction_id, data.lines
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+    return CategorySplitRead(
+        parent=await _read_parent(session, ctx, transaction_id),
+        children=await _split_lines(session, ctx, transaction_id),
+    )
+
+
+@router.get("/{transaction_id}/split", response_model=list[TransactionRead])
+async def get_split_lines(
+    transaction_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(current_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """The category lines of a split parent; empty when it is not split."""
+    await _read_parent(session, ctx, transaction_id)
+    return await _split_lines(session, ctx, transaction_id)
+
+
+@router.delete("/{transaction_id}/split", response_model=TransactionRead)
+async def remove_category_split(
+    transaction_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Delete a parent's category lines and bring the parent back into totals."""
+    try:
+        parent = await category_split_service.unsplit_transaction(
+            session, ctx.workspace.id, transaction_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    if parent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+    return await _read_parent(session, ctx, transaction_id)
 
 
 @router.delete("/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT)
