@@ -45,7 +45,7 @@ class Transaction(Base):
     # purchase when it hits the user's cash, not when it was made.
     effective_date: Mapped[_date] = mapped_column(Date, index=True)
     type: Mapped[str] = mapped_column(String(10))  # debit, credit
-    source: Mapped[str] = mapped_column(String(20))  # sync, ofx, csv, manual
+    source: Mapped[str] = mapped_column(String(20))  # sync, ofx, csv, manual, split (category line of a parent)
     status: Mapped[str] = mapped_column(String(10), default="posted")  # posted, pending
     payee: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     payee_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("payees.id", ondelete="SET NULL"), nullable=True)
@@ -115,6 +115,23 @@ class Transaction(Base):
         nullable=True,
         index=True,
     )
+    # The transaction this row is one category line of. Splitting a
+    # transaction across categories materializes one child row per line and
+    # hides the parent with is_ignored=True, so every balance and P&L
+    # aggregate sees the lines instead of the original. Children copy the
+    # parent's account/date/description and carry source="split"; only a
+    # posted, unsplit, non-transfer row can become a parent. ON DELETE
+    # CASCADE: removing the parent removes its lines.
+    parent_transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "transactions.id",
+            ondelete="CASCADE",
+            name="fk_transactions_parent_transaction_id",
+        ),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     account: Mapped["Account"] = relationship(back_populates="transactions")
@@ -131,6 +148,21 @@ class Transaction(Base):
     splits: Mapped[list["TransactionSplit"]] = relationship(
         back_populates="transaction", cascade="all, delete-orphan"
     )
+    parent: Mapped[Optional["Transaction"]] = relationship(
+        "Transaction",
+        remote_side="Transaction.id",
+        foreign_keys="Transaction.parent_transaction_id",
+        back_populates="split_children",
+    )
+    # ORM cascade on purpose (no passive_deletes): the SQLite test database
+    # does not enforce foreign keys, so the children must be deleted by the
+    # session, not by the database.
+    split_children: Mapped[list["Transaction"]] = relationship(
+        "Transaction",
+        foreign_keys="Transaction.parent_transaction_id",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
 
     # Populated dynamically by the service (not DB columns).
     is_shared: bool = False
@@ -139,6 +171,8 @@ class Transaction(Base):
     parent_owner_name = cast(Optional[str], None)
     attachment_count: int = 0
     payee_name = cast(Optional[str], None)
+    # Number of category lines under this row (0 unless it is a split parent).
+    split_count: int = 0
 
 
 # Safety net: `effective_date` is NOT NULL. For non-CC transactions it always
