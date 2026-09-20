@@ -78,7 +78,10 @@ class TransactionsSummary(BaseModel):
     `excluded` (issue #242) is the absolute total of everything filtered
     out of income/expense for the same rows — paired transfers,
     `treat_as_transfer` categories (transfers, investments, custom) and
-    ignored items — i.e. the complement of `counts_as_pnl()`."""
+    ignored items — i.e. the complement of `counts_as_pnl()`.
+
+    Always computed over the filtered set BEFORE `summary_scope`, so the
+    summary line keeps showing all five figures while one is active."""
     income: float
     expense: float
     net: float
@@ -90,6 +93,8 @@ class TransactionsSummary(BaseModel):
 
 
 class PaginatedTransactions(BaseModel):
+    """`items` and `total` honour every filter including `summary_scope`;
+    `summary` honours every filter except `summary_scope`."""
     items: list[TransactionRead]
     total: int
     page: int
@@ -107,6 +112,16 @@ def _merge_id_filters(
     if single and single not in ids:
         ids.append(single)
     return ids or None
+
+
+# Query-string form of `transaction_service.SUMMARY_SCOPES`; a value outside
+# the set is a 422 at the edge, like `sort_dir`.
+_SUMMARY_SCOPE_PATTERN = "^(" + "|".join(transaction_service.SUMMARY_SCOPES) + ")$"
+_SUMMARY_SCOPE_DESCRIPTION = (
+    "Return only the rows behind one summary figure "
+    "(income|expense|net|excluded|invested). `summary` stays computed over "
+    "the unscoped filtered set; `total` and `items` are scoped."
+)
 
 
 @router.get("", response_model=PaginatedTransactions)
@@ -136,6 +151,7 @@ async def list_transactions(
     max_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount <= this value (primary currency)."),
     sort_by: Optional[str] = Query(None, description="Column to sort by (date|amount|description|payee|category|account|type|status). Default: date desc."),
     sort_dir: str = Query("desc", regex="^(asc|desc)$"),
+    summary_scope: Optional[str] = Query(None, regex=_SUMMARY_SCOPE_PATTERN, description=_SUMMARY_SCOPE_DESCRIPTION),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -160,6 +176,7 @@ async def list_transactions(
         min_amount=min_amount,
         max_amount=max_amount,
         include_summary=True,
+        summary_scope=summary_scope,
     )
     primary_currency = ctx.user.primary_currency
     items = [_tag_fx_fallback(TransactionRead.model_validate(tx, from_attributes=True), primary_currency) for tx in transactions]
@@ -205,6 +222,7 @@ async def export_transactions(
     exclude_ignored: bool = Query(False, description="Drop rows the user marked ignored, or whose category is ignored"),
     tags: Optional[List[str]] = Query(None),
     transaction_ids: Optional[List[uuid.UUID]] = Query(None, description="If set, exports exactly these rows (scoped to the workspace); other filters are ignored."),
+    summary_scope: Optional[str] = Query(None, regex=_SUMMARY_SCOPE_PATTERN, description=_SUMMARY_SCOPE_DESCRIPTION),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -228,6 +246,7 @@ async def export_transactions(
             accounting_mode=accounting_mode,
             exclude_ignored=exclude_ignored,
             tags=tags,
+            summary_scope=summary_scope,
         )
 
     output = io.StringIO()

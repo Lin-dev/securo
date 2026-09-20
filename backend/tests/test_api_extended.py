@@ -646,3 +646,16 @@ async def test_preview_csv_split_columns(client: AsyncClient, auth_headers):
     assert len(data["transactions"]) == 2
     assert data["transactions"][0]["type"] == "credit"
     assert data["transactions"][1]["type"] == "debit"
+
+
+@pytest.mark.asyncio
+async def test_export_transactions_respects_summary_scope(client, auth_headers, test_transactions):
+    """The CSV export honours the same summary scope as the list, so
+    "export what I see" holds when a figure is active."""
+    import csv
+    import io
+
+    response = await client.get("/api/transactions/export?summary_scope=expense", headers=auth_headers)
+    assert response.status_code == 200
+    rows = [r for r in csv.reader(io.StringIO(response.text.lstrip("\ufeff"))) if r]
+    assert len(rows) - 1 == 3  # header + the three debits

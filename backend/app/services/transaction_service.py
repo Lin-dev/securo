@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional, cast
 
-from sqlalchemy import CursorResult, and_, delete, select, func, or_, not_, update
+from sqlalchemy import CursorResult, delete, select, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,11 +28,12 @@ from app.services.rule_service import apply_rules_to_transaction
 from app.services.fx_rate_service import stamp_primary_amount, convert as fx_convert
 from app.services._query_filters import (
     INVESTMENT_CONTRIBUTION_CATEGORY as _INVESTMENT_CONTRIBUTION_CATEGORY,
-    counts_as_pnl,
+    SUMMARY_SCOPES as _SUMMARY_SCOPES,
     counts_as_user_pnl,
     is_not_ignored,
     is_split_parent,
     reporting_date_col,
+    summary_scope_filter,
 )
 from app.services.recurring_transaction_service import _advance_date
 
@@ -130,6 +131,9 @@ def _apply_fx_override(transaction, amount, amount_primary=None, fx_rate_used=No
 # definition lives with the shared P&L filters because the Money Map uses
 # the same rule.
 INVESTMENT_CONTRIBUTION_CATEGORY = _INVESTMENT_CONTRIBUTION_CATEGORY
+# The five figures of the transactions summary line, each also usable as the
+# `summary_scope` row filter of `get_transactions`.
+SUMMARY_SCOPES = _SUMMARY_SCOPES
 
 
 async def get_transactions(
@@ -168,6 +172,7 @@ async def get_transactions(
     user_pnl_only: bool = False,
     exclude_ignored: bool = False,
     parent_transaction_id: Optional[uuid.UUID] = None,
+    summary_scope: Optional[str] = None,
 ) -> tuple[list[Transaction], int, Optional[dict]]:
     """List transactions for a workspace.
 
@@ -175,6 +180,9 @@ async def get_transactions(
     is the *viewer* — used for Splitwise projection (linked-member visibility,
     is-shared tagging) which is identity-based, not tenancy-based.
     """
+    if summary_scope is not None and summary_scope not in SUMMARY_SCOPES:
+        raise ValueError(f"Unknown summary scope: {summary_scope!r}")
+
     # In "accrual" mode, bucket/order by effective_date so list filters
     # line up with the cash-flow view used by the dashboard and reports.
     # When the user has set a manual cycle override (effective_bill_date)
@@ -452,10 +460,6 @@ async def get_transactions(
             ])
         base_query = base_query.where(or_(*clauses))
 
-    # Get total count
-    count_query = select(func.count()).select_from(base_query.subquery())
-    total = await session.scalar(count_query)
-
     # Filtered summary (issue #185): income / expense / net across ALL
     # rows matching the active filters — not just the current page — so
     # the UI can show an accurate total even when results span pages.
@@ -468,8 +472,10 @@ async def get_transactions(
         # (issue #242) so the footer matches the dashboard & reports: paired
         # transfers, `treat_as_transfer` categories (transfers, investments,
         # custom) and ignored items are kept OUT of income/expense.
-        pnl_filter = counts_as_pnl()
-        pnl_subq = base_query.where(pnl_filter).subquery()
+        # Every figure is a `summary_scope_filter` predicate, the same ones the
+        # `summary_scope` row filter below uses, so a list restricted to one
+        # figure always sums to it.
+        pnl_subq = base_query.where(summary_scope_filter("net")).subquery()
         amount_norm = func.coalesce(
             pnl_subq.c.amount_primary, pnl_subq.c.amount
         )
@@ -493,7 +499,7 @@ async def get_transactions(
         # distorting income/expense/net.
         # A split parent is ignored only so its lines can replace it; the
         # lines already account for its money, so it is not "excluded".
-        excl_subq = base_query.where(not_(pnl_filter), ~is_split_parent()).subquery()
+        excl_subq = base_query.where(summary_scope_filter("excluded")).subquery()
         excl_amount_norm = func.coalesce(
             excl_subq.c.amount_primary, excl_subq.c.amount
         )
@@ -507,26 +513,10 @@ async def get_transactions(
         # a non-investment account, or an unpaired contribution credit inside
         # an investment account (funding account not in Securo). Buys inside
         # the brokerage are not new money and stay out.
-        inv_subq = base_query.subquery()
+        inv_subq = base_query.where(summary_scope_filter("invested")).subquery()
         inv_amount_norm = func.coalesce(inv_subq.c.amount_primary, inv_subq.c.amount)
         invested_total = await session.scalar(
             select(func.coalesce(func.sum(func.abs(inv_amount_norm)), 0))
-            .select_from(inv_subq)
-            .join(Category, Category.id == inv_subq.c.category_id)
-            .join(Account, Account.id == inv_subq.c.account_id)
-            .where(
-                inv_subq.c.is_ignored.is_(False),
-                Category.treat_as_transfer.is_(True),
-                func.lower(Category.name) == INVESTMENT_CONTRIBUTION_CATEGORY.lower(),
-                or_(
-                    and_(inv_subq.c.type == "debit", Account.type != "investment"),
-                    and_(
-                        inv_subq.c.type == "credit",
-                        Account.type == "investment",
-                        inv_subq.c.transfer_pair_id.is_(None),
-                    ),
-                ),
-            )
         )
         invested = Decimal(str(invested_total or 0))
 
@@ -537,6 +527,16 @@ async def get_transactions(
             "excluded": excluded,
             "invested": invested,
         }
+
+    # A summary scope narrows the rows and the count to the ones behind one
+    # figure. The summary above is computed BEFORE it on purpose, so the line
+    # keeps showing all five figures (a tab strip) while one of them is active.
+    if summary_scope:
+        base_query = base_query.where(summary_scope_filter(summary_scope))
+
+    # Get total count
+    count_query = select(func.count()).select_from(base_query.subquery())
+    total = await session.scalar(count_query)
 
     # Apply ordering (and pagination unless skipped). Bill-view callers
     # order by purchase date so the in-cycle list matches the bank's own

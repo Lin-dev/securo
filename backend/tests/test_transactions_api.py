@@ -886,6 +886,34 @@ async def test_list_transactions_summary_respects_filters(
 
 
 @pytest.mark.asyncio
+async def test_list_transactions_summary_scope_lists_only_that_figures_rows(
+    client: AsyncClient, auth_headers, test_transactions: list[Transaction]
+):
+    """`summary_scope=income` returns the rows behind the income figure and
+    keeps the summary unscoped, so the line still shows all five figures."""
+    response = await client.get("/api/transactions?summary_scope=income", headers=auth_headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert len(data["items"]) == 2
+    assert {item["type"] for item in data["items"]} == {"credit"}
+    assert sum(abs(float(item["amount"])) for item in data["items"]) == pytest.approx(8150.0)
+    assert data["summary"]["income"] == pytest.approx(8150.0)
+    assert data["summary"]["expense"] == pytest.approx(110.4)
+
+    response = await client.get("/api/transactions?summary_scope=expense", headers=auth_headers)
+    assert response.json()["total"] == 3
+
+
+@pytest.mark.asyncio
+async def test_list_transactions_summary_scope_rejects_unknown_values(
+    client: AsyncClient, auth_headers, test_transactions: list[Transaction]
+):
+    response = await client.get("/api/transactions?summary_scope=bogus", headers=auth_headers)
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_list_transactions_includes_ignored_by_default(
     client: AsyncClient, auth_headers, session: AsyncSession, test_transactions: list[Transaction],
 ):

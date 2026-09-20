@@ -8,7 +8,7 @@ import uuid
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -195,6 +195,62 @@ def counts_as_pnl():
             ),
         ),
     )
+
+
+def is_invested_movement():
+    """SQL filter: the row is money moved into an investment (fork addition).
+
+    One movement counts once: the debit leg leaving a non-investment account
+    (paired or not, the money left cash for an investment), or an unpaired
+    contribution credit inside an investment account whose sending leg is not
+    in Securo (payroll deductions, employer match, an unconnected funding
+    account). Buys inside a brokerage are not new money and never match.
+
+    Relies on the caller's query joining `Account` and `Category`
+    (`get_transactions` outer-joins both). A NULL category falls out because
+    `treat_as_transfer IS true` is false for NULL; `Transaction.account_id`
+    is NOT NULL, so the account side never drops a row.
+    """
+    return and_(
+        Transaction.is_ignored.is_(False),
+        Category.treat_as_transfer.is_(True),
+        func.lower(Category.name) == INVESTMENT_CONTRIBUTION_CATEGORY.lower(),
+        or_(
+            and_(Transaction.type == "debit", Account.type != "investment"),
+            and_(
+                Transaction.type == "credit",
+                Account.type == "investment",
+                Transaction.transfer_pair_id.is_(None),
+            ),
+        ),
+    )
+
+
+# The figures of the transactions summary line, by payload key. Each is also a
+# row filter (`summary_scope_filter`), so a list restricted to one figure
+# always sums to that figure and the two can never drift apart.
+SUMMARY_SCOPES = ("income", "expense", "net", "excluded", "invested")
+
+
+def summary_scope_filter(scope: str):
+    """SQL filter for the rows behind one summary figure.
+
+    income / expense: the P&L rows of that direction. net: both together (their
+    signed sum is the net figure). excluded: everything kept out of the P&L
+    except split parents, whose lines already carry their money. invested:
+    `is_invested_movement()`, a subset of excluded.
+    """
+    if scope == "income":
+        return and_(counts_as_pnl(), Transaction.type == "credit")
+    if scope == "expense":
+        return and_(counts_as_pnl(), Transaction.type == "debit")
+    if scope == "net":
+        return counts_as_pnl()
+    if scope == "excluded":
+        return and_(not_(counts_as_pnl()), ~is_split_parent())
+    if scope == "invested":
+        return is_invested_movement()
+    raise ValueError(f"Unknown summary scope: {scope!r}")
 
 
 def counts_on_bill():
