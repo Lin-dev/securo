@@ -883,7 +883,9 @@
     "calendarTransfersExcluded": "Prevody sa nepočítajú ako príjem ani výdavok",
     "invoiceBadge": "Faktúra {{number}}",
     "invoiceBadgeNoNumber": "Faktúra",
-    "invoiceBadgeTooltip": "Táto transakcia vyrovnáva faktúru. Otvorte ju."
+    "invoiceBadgeTooltip": "Táto transakcia vyrovnáva faktúru. Otvorte ju.",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "accounts": {
     "title": "Účty",

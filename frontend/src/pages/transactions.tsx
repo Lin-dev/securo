@@ -62,6 +62,15 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { formatCurrency } from '@/lib/format'
+import { cn } from '@/lib/utils'
+import {
+  SUMMARY_SCOPE_PARAM,
+  parseSummaryScope,
+  summaryScopeLabelKey,
+  summaryScopeValue,
+  toggleSummaryScope,
+  type SummaryScope,
+} from '@/lib/summary-scope'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
 
 type TransactionUpdatePayload = TransactionEditPayload & {
@@ -81,6 +90,54 @@ function parseHashtags(notes: string | null): string[] {
 }
 
 const HIDE_IGNORED_STORAGE_KEY = 'securo.transactions.hideIgnored'
+
+const SUMMARY_TONE: Record<SummaryScope, string> = {
+  income: 'text-emerald-600',
+  expense: 'text-rose-500',
+  excluded: 'text-muted-foreground',
+  invested: 'text-sky-500',
+  net: '', // by sign, see renderSummaryFigure
+}
+
+// One figure of the summary line. A button rather than text: it scopes the
+// list to the rows behind the figure. Module-level on purpose: declared inside
+// the page it would remount on every render and drop keyboard focus.
+function SummaryFigure({
+  label, value, valueClass, bold, active, hint, onClick, className,
+}: {
+  label: string
+  value: string
+  valueClass: string
+  bold?: boolean
+  active: boolean
+  hint: string
+  onClick: () => void
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      title={hint}
+      onClick={onClick}
+      className={cn(
+        'group inline-flex items-baseline gap-1.5 rounded-md -mx-1.5 px-1.5 py-0.5 text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        active && 'bg-background ring-1 ring-border',
+        className,
+      )}
+    >
+      <span
+        className={cn(
+          'text-muted-foreground decoration-dotted underline-offset-4 group-hover:underline',
+          active && 'text-foreground underline decoration-solid',
+        )}
+      >
+        {label}
+      </span>
+      <span className={cn('text-sm tabular-nums', bold ? 'font-bold' : 'font-semibold', valueClass)}>{value}</span>
+    </button>
+  )
+}
 
 export default function TransactionsPage() {
   const { t, i18n } = useTranslation()
@@ -222,6 +279,15 @@ export default function TransactionsPage() {
   // value). Starts null so the first run is recognized as the initial mount.
   const prevSearchRef = useRef<string | null>(null)
 
+  // Which summary figure, if any, the list is scoped to (see SummaryFigure).
+  const [summaryScope, setSummaryScope] = useState<SummaryScope | null>(
+    () => parseSummaryScope(searchParams.get(SUMMARY_SCOPE_PARAM)),
+  )
+  const handleSummaryScopeClick = (scope: SummaryScope) => {
+    setSummaryScope((prev) => toggleSummaryScope(prev, scope))
+    setPage(1)
+  }
+
   // Sync state from URL when navigating (e.g. from the command palette) while
   // the page is already mounted. Typing in the search box does not touch the
   // URL, so this effect only fires on genuine navigation events.
@@ -265,6 +331,7 @@ export default function TransactionsPage() {
     }
     setFilterMinAmount(searchParams.get('min_amount') ?? '');
     setFilterMaxAmount(searchParams.get('max_amount') ?? '');
+    setSummaryScope(parseSummaryScope(searchParams.get(SUMMARY_SCOPE_PARAM)))
     setPage(1)
   }, [searchParams])
 
@@ -289,6 +356,7 @@ export default function TransactionsPage() {
         ['min_amount', filterMinAmount],
         ['max_amount', filterMaxAmount],
         ['hide_ignored', hideIgnored ? 'true' : ''],
+        [SUMMARY_SCOPE_PARAM, summaryScope ?? ''],
       ].filter(([, v]) => v.length),
     );
 
@@ -314,6 +382,7 @@ export default function TransactionsPage() {
     filterMinAmount,
     filterMaxAmount,
     hideIgnored,
+    summaryScope,
   ]);
 
   useEffect(() => {
@@ -330,7 +399,7 @@ export default function TransactionsPage() {
     setSelectedIds(new Set())
     setLastSelectedId(null)
     setBulkCategory('')
-  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery])
+  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery, summaryScope])
 
   useEffect(() => {
     if (viewMode === 'calendar') {
@@ -380,7 +449,7 @@ export default function TransactionsPage() {
     && activeAccountIds !== null && activeAccountIds.length === 0
 
   const { data, isLoading } = useQuery({
-    queryKey: ['transactions', page, limit, effectiveAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, hideIgnored, searchQuery, tagFilters, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
+    queryKey: ['transactions', page, limit, effectiveAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, hideIgnored, searchQuery, tagFilters, summaryScope, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
     enabled: !noAccounts,
     queryFn: () =>
       transactions.list({
@@ -400,6 +469,7 @@ export default function TransactionsPage() {
         q: searchQuery || undefined,
         tags: tagFilters.length > 0 ? tagFilters : undefined,
         exclude_ignored: hideIgnored ? true : undefined,
+        summary_scope: summaryScope ?? undefined,
         // Mobile has no column headers to change sort; force date-desc so
         // the date grouping always works correctly.
         ...(isMobile ? { sort_by: 'date', sort_dir: 'desc' as const } : grid.apiSort),
@@ -435,6 +505,7 @@ export default function TransactionsPage() {
     min_amount: filterMinAmount || undefined,
     max_amount: filterMaxAmount || undefined,
     tags: tagFilters.length ? tagFilters : undefined,
+    summary_scope: summaryScope ?? undefined,
     sort_by: grid.sortBy,
     sort_dir: grid.sortDir,
     page,
@@ -972,6 +1043,7 @@ export default function TransactionsPage() {
           q: searchQuery || undefined,
           tags: tagFilters.length > 0 ? tagFilters : undefined,
           exclude_ignored: hideIgnored ? true : undefined,
+          summary_scope: summaryScope ?? undefined,
         })
       }
       toast.success(t('transactions.exportSuccess'))
@@ -980,6 +1052,29 @@ export default function TransactionsPage() {
     } finally {
       setExporting(false)
     }
+  }
+
+  // One summary figure as a scope button; `className` carries the responsive
+  // visibility so the mobile stack and the desktop row share it.
+  const renderSummaryFigure = (scope: SummaryScope, className?: string) => {
+    const summary = data?.summary
+    if (!summary) return null
+    const value = summaryScopeValue(summary, scope)
+    const valueClass = scope === 'net'
+      ? (value >= 0 ? 'text-emerald-600' : 'text-rose-500')
+      : SUMMARY_TONE[scope]
+    return (
+      <SummaryFigure
+        label={t(summaryScopeLabelKey(scope))}
+        value={mask(formatCurrency(value, summary.currency, locale))}
+        valueClass={valueClass}
+        bold={scope === 'net'}
+        active={summaryScope === scope}
+        hint={t('transactions.summaryFilterHint')}
+        onClick={() => handleSummaryScopeClick(scope)}
+        className={className}
+      />
+    )
   }
 
   // Resize: track which column is being dragged so we can clear listeners
@@ -1441,6 +1536,8 @@ export default function TransactionsPage() {
         onStatusChange={(v) => { setFilterStatus(v); setPage(1) }}
         hideIgnored={hideIgnored}
         onHideIgnoredChange={handleHideIgnoredChange}
+        summaryScope={summaryScope}
+        onSummaryScopeChange={(v) => { setSummaryScope(v); setPage(1) }}
         filterFrom={filterFrom}
         filterTo={filterTo}
         onDateRangeChange={(from, to) => { setFilterFrom(from); setFilterTo(to); setPage(1) }}
@@ -1460,6 +1557,7 @@ export default function TransactionsPage() {
           setFilterMinAmount('')
           setFilterMaxAmount('')
           handleHideIgnoredChange(false)
+          setSummaryScope(null)
           setSearchInput('')
           setSearchQuery('')
           clearTagFilters()
@@ -1532,99 +1630,42 @@ export default function TransactionsPage() {
       <div className="bg-card rounded-xl border border-border shadow-sm overflow-hidden mb-4">
         {/* Filtered summary (issue #185): income / expenses / net across
             ALL rows matching the active filters — not just this page.
-            Rendered above the table so it is visible without scrolling. */}
-        {!isLoading && data?.summary && filteredItems.length > 0 && (
-          <div className="flex flex-col sm:flex-row flex-wrap sm:items-center gap-x-5 gap-y-1 border-b border-border bg-muted/30 px-4 py-2.5">
-            {/* Mobile: count + saldo on first line */}
+            Each figure is a button that scopes the list and the count to the
+            rows behind it; the figures themselves stay unscoped, so the line
+            reads like a tab strip. Kept mounted while a scope is active even
+            with zero rows, otherwise there would be nothing to un-toggle. */}
+        {!isLoading && data?.summary && (filteredItems.length > 0 || summaryScope) && (
+          <div className="flex flex-col sm:flex-row flex-wrap sm:items-center gap-x-4 gap-y-1 border-b border-border bg-muted/30 px-4 py-2.5">
+            {/* Mobile: count + net on the first line */}
             <div className="flex items-center justify-between sm:hidden">
               <span className="text-xs text-muted-foreground">
                 {t('transactions.summaryCount', { count: data.total })}
               </span>
-              <span className="flex items-baseline gap-1.5 text-xs">
-                <span className="text-muted-foreground">{t('transactions.summaryNet')}</span>
-                <span
-                  className={`text-sm font-bold tabular-nums ${
-                    data.summary.net >= 0 ? 'text-emerald-600' : 'text-rose-500'
-                  }`}
-                >
-                  {mask(formatCurrency(data.summary.net, data.summary.currency, locale))}
-                </span>
-              </span>
+              {renderSummaryFigure('net')}
             </div>
-            {/* Mobile: receitas + despesas on second line */}
+            {/* Mobile: income + expenses on the second line */}
             <div className="flex items-center justify-between sm:hidden">
-              <span className="flex items-baseline gap-1.5 text-xs">
-                <span className="text-muted-foreground">{t('transactions.summaryIncome')}</span>
-                <span className="text-sm font-semibold tabular-nums text-emerald-600">
-                  {mask(formatCurrency(data.summary.income, data.summary.currency, locale))}
-                </span>
-              </span>
-              <span className="flex items-baseline gap-1.5 text-xs">
-                <span className="text-muted-foreground">{t('transactions.summaryExpenses')}</span>
-                <span className="text-sm font-semibold tabular-nums text-rose-500">
-                  {mask(formatCurrency(data.summary.expense, data.summary.currency, locale))}
-                </span>
-              </span>
+              {renderSummaryFigure('income')}
+              {renderSummaryFigure('expense')}
             </div>
-            {/* Mobile: excluido on third line */}
-            {data.summary.excluded > 0 && (
-              <span className="flex items-baseline gap-1.5 text-xs sm:hidden">
-                <span className="text-muted-foreground">{t('transactions.summaryExcluded')}</span>
-                <span className="text-sm font-semibold tabular-nums text-muted-foreground">
-                  {mask(formatCurrency(data.summary.excluded, data.summary.currency, locale))}
-                </span>
-              </span>
+            {/* Mobile: excluded / invested on their own lines */}
+            {(data.summary.excluded > 0 || summaryScope === 'excluded') && (
+              <div className="flex sm:hidden">{renderSummaryFigure('excluded')}</div>
             )}
-            {(data.summary.invested ?? 0) > 0 && (
-              <span className="flex items-baseline gap-1.5 text-xs sm:hidden">
-                <span className="text-muted-foreground">{t('transactions.summaryInvested')}</span>
-                <span className="text-sm font-semibold tabular-nums text-sky-500">
-                  {mask(formatCurrency(data.summary.invested ?? 0, data.summary.currency, locale))}
-                </span>
-              </span>
+            {((data.summary.invested ?? 0) > 0 || summaryScope === 'invested') && (
+              <div className="flex sm:hidden">{renderSummaryFigure('invested')}</div>
             )}
             {/* Desktop: original horizontal layout */}
             <span className="mr-auto text-xs text-muted-foreground hidden sm:inline">
               {t('transactions.summaryCount', { count: data.total })}
             </span>
-            {data.summary.excluded > 0 && (
-              <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
-                <span className="text-muted-foreground">{t('transactions.summaryExcluded')}</span>
-                <span className="text-sm font-semibold tabular-nums text-muted-foreground">
-                  {mask(formatCurrency(data.summary.excluded, data.summary.currency, locale))}
-                </span>
-              </span>
-            )}
-            {(data.summary.invested ?? 0) > 0 && (
-              <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
-                <span className="text-muted-foreground">{t('transactions.summaryInvested')}</span>
-                <span className="text-sm font-semibold tabular-nums text-sky-500">
-                  {mask(formatCurrency(data.summary.invested ?? 0, data.summary.currency, locale))}
-                </span>
-              </span>
-            )}
-            <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('transactions.summaryIncome')}</span>
-              <span className="text-sm font-semibold tabular-nums text-emerald-600">
-                {mask(formatCurrency(data.summary.income, data.summary.currency, locale))}
-              </span>
-            </span>
-            <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('transactions.summaryExpenses')}</span>
-              <span className="text-sm font-semibold tabular-nums text-rose-500">
-                {mask(formatCurrency(data.summary.expense, data.summary.currency, locale))}
-              </span>
-            </span>
-            <span className="hidden sm:flex items-baseline gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('transactions.summaryNet')}</span>
-              <span
-                className={`text-sm font-bold tabular-nums ${
-                  data.summary.net >= 0 ? 'text-emerald-600' : 'text-rose-500'
-                }`}
-              >
-                {mask(formatCurrency(data.summary.net, data.summary.currency, locale))}
-              </span>
-            </span>
+            {(data.summary.excluded > 0 || summaryScope === 'excluded') &&
+              renderSummaryFigure('excluded', 'hidden sm:inline-flex')}
+            {((data.summary.invested ?? 0) > 0 || summaryScope === 'invested') &&
+              renderSummaryFigure('invested', 'hidden sm:inline-flex')}
+            {renderSummaryFigure('income', 'hidden sm:inline-flex')}
+            {renderSummaryFigure('expense', 'hidden sm:inline-flex')}
+            {renderSummaryFigure('net', 'hidden sm:inline-flex')}
           </div>
         )}
         {isLoading ? (

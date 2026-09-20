@@ -839,7 +839,9 @@
     "calendarTransfersExcluded": "振替は収入・支出にカウントされません",
     "invoiceBadge": "請求書 {{number}}",
     "invoiceBadgeNoNumber": "請求書",
-    "invoiceBadgeTooltip": "この取引は請求書を決済しています。開く。"
+    "invoiceBadgeTooltip": "この取引は請求書を決済しています。開く。",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "accounts": {
     "title": "口座",

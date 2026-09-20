@@ -839,7 +839,9 @@
     "calendarTransfersExcluded": "ट्रांसफ़र आय या खर्च के रूप में नहीं गिने जाते",
     "invoiceBadge": "इनवॉइस {{number}}",
     "invoiceBadgeNoNumber": "इनवॉइस",
-    "invoiceBadgeTooltip": "यह लेन-देन एक इनवॉइस चुकाता है। इसे खोलें।"
+    "invoiceBadgeTooltip": "यह लेन-देन एक इनवॉइस चुकाता है। इसे खोलें।",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "accounts": {
     "title": "खाते",

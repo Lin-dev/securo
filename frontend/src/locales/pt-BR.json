@@ -839,7 +839,9 @@
     "calendarTransfersExcluded": "Transferências não contam como receitas ou despesas",
     "invoiceBadge": "Cobrança {{number}}",
     "invoiceBadgeNoNumber": "Cobrança",
-    "invoiceBadgeTooltip": "Esta transação quita uma cobrança. Abrir."
+    "invoiceBadgeTooltip": "Esta transação quita uma cobrança. Abrir.",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "accounts": {
     "title": "Contas",

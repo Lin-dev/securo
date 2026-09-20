@@ -18,6 +18,7 @@ import {
   Users,
   Wallet,
   X,
+  Sigma,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -49,6 +50,7 @@ import {
   type MobileFilterView,
 } from '@/components/mobile-transactions-filter-menu'
 import type { Account, Category, CategoryGroup, Group, Payee } from '@/types'
+import { summaryScopeLabelKey, type SummaryScope } from '@/lib/summary-scope'
 
 interface TransactionsFilterBarProps {
   searchInput: string
@@ -71,6 +73,8 @@ interface TransactionsFilterBarProps {
   onStatusChange: (value: string) => void
   hideIgnored: boolean
   onHideIgnoredChange: (value: boolean) => void
+  summaryScope: SummaryScope | null
+  onSummaryScopeChange: (value: SummaryScope | null) => void
   filterFrom: string
   filterTo: string
   onDateRangeChange: (from: string, to: string) => void
@@ -114,6 +118,8 @@ export function TransactionsFilterBar({
   onStatusChange,
   hideIgnored,
   onHideIgnoredChange,
+  summaryScope,
+  onSummaryScopeChange,
   filterFrom,
   filterTo,
   onDateRangeChange,
@@ -209,6 +215,7 @@ export function TransactionsFilterBar({
     !!filterType ||
     !!filterStatus ||
     hideIgnored ||
+    !!summaryScope ||
     !!filterFrom ||
     !!filterTo ||
     !!filterMinAmount ||
@@ -1021,8 +1028,17 @@ export function TransactionsFilterBar({
           !!typeLabel ||
           !!statusLabel ||
           !!dateLabel ||
-          !!amountLabel) && (
+          !!amountLabel ||
+          !!summaryScope) && (
           <div className="flex flex-wrap items-center gap-1 border-t border-border/60 px-2 py-1.5">
+            {summaryScope && (
+              <FilterChip
+                icon={<Sigma size={12} />}
+                label={t('transactions.summaryScopeChipLabel')}
+                value={t(summaryScopeLabelKey(summaryScope))}
+                onRemove={() => onSummaryScopeChange(null)}
+              />
+            )}
             {filterAccountIds.map((id) => {
               const account = accountById.get(id)
               if (!account) return null

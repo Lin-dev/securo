@@ -1016,7 +1016,9 @@
     "calendarTransfersExcluded": "Οι μεταφορές δεν υπολογίζονται ως έσοδα ή έξοδα",
     "invoiceBadge": "Τιμολόγιο {{number}}",
     "invoiceBadgeNoNumber": "Τιμολόγιο",
-    "invoiceBadgeTooltip": "Αυτή η συναλλαγή εξοφλεί ένα τιμολόγιο. Ανοίξτε το."
+    "invoiceBadgeTooltip": "Αυτή η συναλλαγή εξοφλεί ένα τιμολόγιο. Ανοίξτε το.",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "budgets": {
     "title": "Προϋπολογισμοί",
