@@ -492,7 +492,8 @@ def test_what_ships_enabled_is_the_old_behaviour_and_nothing_else():
     node = reconciliation_policy.MATCH_TRANSFER
     on = [s for s in node["strategies"] if s.get("enabled", True)]
 
-    assert [s["id"] for s in on] == ["exact_amount_nearby"]
+    # Fork: transfer-categorised legs also pair up to four days apart.
+    assert [s["id"] for s in on] == ["exact_amount_nearby", "transfer_categories_wider_window"]
 
     when = on[0]["when"]
     assert on[0]["outcome"] == "link"

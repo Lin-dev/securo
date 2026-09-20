@@ -2732,6 +2732,7 @@
       "differentAccount": "dos cuentas distintas",
       "accountTypes": "uno de los lados es una cuenta de tipo {{kinds}}",
       "accountNamed": "una de las descripciones nombra la otra cuenta",
+      "bothTransferCategories": "both legs are in transfer categories",
       "closestDate": "gana la fecha más cercana",
       "uniqueCandidate": "solo un candidato encaja"
     },

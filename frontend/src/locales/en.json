@@ -2728,6 +2728,7 @@
       "differentAccount": "two different accounts",
       "accountTypes": "one side is a {{kinds}} account",
       "accountNamed": "one description names the other account",
+      "bothTransferCategories": "both legs are in transfer categories",
       "closestDate": "the closest date wins",
       "uniqueCandidate": "only one candidate fits"
     },

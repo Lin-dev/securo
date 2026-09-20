@@ -2730,6 +2730,7 @@
       "differentAccount": "twee verschillende rekeningen",
       "accountTypes": "een kant is een rekening van het type {{kinds}}",
       "accountNamed": "een van de omschrijvingen noemt de andere rekening",
+      "bothTransferCategories": "both legs are in transfer categories",
       "closestDate": "de dichtstbijzijnde datum wint",
       "uniqueCandidate": "slechts één kandidaat past"
     },

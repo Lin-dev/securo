@@ -55,6 +55,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.services import reconciliation_policy
 from app.services import reconciliation_rule_service as rule_service
@@ -113,7 +114,7 @@ def _widest_amount_ratio(policy: dict[str, Any]) -> Optional[Decimal]:
     return worst
 
 
-def _as_movement(tx: Transaction, account: Optional[Account]) -> Movement:
+def _as_movement(tx: Transaction, account: Optional[Account], transfer_categories: frozenset = frozenset()) -> Movement:
     return Movement(
         amount=abs(Decimal(tx.amount)),
         currency=tx.currency,
@@ -126,10 +127,11 @@ def _as_movement(tx: Transaction, account: Optional[Account]) -> Movement:
         account_name=account.name if account else None,
         account_type=account.type if account else None,
         source=tx.source,
+        transfer_category=tx.category_id in transfer_categories,
     )
 
 
-def _as_expectation(tx: Transaction, account: Optional[Account]) -> Expectation:
+def _as_expectation(tx: Transaction, account: Optional[Account], transfer_categories: frozenset = frozenset()) -> Expectation:
     """This leg, seen as the promise it makes about the other one.
 
     A debit of 100 is the expectation that a credit of 100 lands
@@ -151,6 +153,7 @@ def _as_expectation(tx: Transaction, account: Optional[Account]) -> Expectation:
         account_id=tx.account_id,
         account_name=account.name if account else None,
         account_type=account.type if account else None,
+        transfer_category=tx.category_id in transfer_categories,
     )
 
 
@@ -247,6 +250,18 @@ async def detect_transfer_pairs(
         ).scalars()
     }
 
+    # Transfer-style categories, for rules that only trust categorised legs.
+    transfer_categories = frozenset(
+        (
+            await session.execute(
+                select(Category.id).where(
+                    Category.workspace_id == workspace_id,
+                    Category.treat_as_transfer.is_(True),
+                )
+            )
+        ).scalars()
+    )
+
     ignored = set(scope.get("ignore_transaction_sources", []))
     pool = await _pool(
         session, workspace_id, ignored, scope.get("exclude_legs", []), accounts
@@ -302,12 +317,12 @@ async def detect_transfer_pairs(
     decisions: dict[uuid.UUID, tuple[Decision, Movement, Transaction]] = {}
     for tx in examined:
         candidates = [
-            _as_expectation(other, accounts.get(other.account_id))
+            _as_expectation(other, accounts.get(other.account_id), transfer_categories)
             for other in neighbours(tx)
         ]
         if not candidates:
             continue
-        movement = _as_movement(tx, accounts.get(tx.account_id))
+        movement = _as_movement(tx, accounts.get(tx.account_id), transfer_categories)
         decision = evaluate(movement, candidates, policy, trigger="money_arrives")
         if decision.port == "unmatched" or decision.expectation is None:
             continue

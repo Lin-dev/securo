@@ -105,6 +105,9 @@ class Reason(str, Enum):
     #: The rule was written for legs on a particular kind of account (a
     #: credit card, typically) and neither of these is one.
     ACCOUNT_TYPE = "account_type_not_covered"
+    #: The rule only pairs legs that both already sit in a transfer-style
+    #: category (`treat_as_transfer`), and at least one of these does not.
+    NOT_TRANSFER_CATEGORIES = "legs_not_both_in_transfer_categories"
     #: It fitted, and another candidate fitted the same way while sitting
     #: closer in time. Not a failure of this pair so much as a statement
     #: that a better one was available, and worth saying in those words:
@@ -171,6 +174,10 @@ class Movement:
     #: some: the receivable node ignores `recurring`, because a
     #: generated placeholder is a promise and not the money itself.
     source: Optional[str] = None
+    #: The row sits in a transfer-style category (`treat_as_transfer`, e.g.
+    #: "Card payment"), usually set by the household's own rules. Only
+    #: transfer matching reads it.
+    transfer_category: bool = False
 
 
 @dataclass(frozen=True)
@@ -206,6 +213,8 @@ class Expectation:
     #: When the promise came into existence, if that is a different day
     #: from when it comes due. An invoice has both and they are weeks
     #: apart; a recurring occurrence has one, and leaves this null.
+    #: As on `Movement`: this leg sits in a transfer-style category.
+    transfer_category: bool = False
     issued: Optional[date] = None
     #: The amounts at which this promise closes a whole part, smallest
     #: first, ending at `amount`. Set when the money was agreed in
@@ -823,6 +832,17 @@ def evaluate(
                 or movement.account_id == candidate.account_id
             ):
                 note.rejected_by = Reason.SAME_ACCOUNT
+                trace.append(note)
+                continue
+
+            # Both legs already categorised as movements of money (a card
+            # payment, an internal transfer). Only their dates may disagree:
+            # an ACH card payment leaves checking days before the card posts
+            # it, so a rule may trust such a pair over a wider window.
+            if rule.get("both_transfer_categories") and not (
+                movement.transfer_category and candidate.transfer_category
+            ):
+                note.rejected_by = Reason.NOT_TRANSFER_CATEGORIES
                 trace.append(note)
                 continue
 

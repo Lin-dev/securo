@@ -2728,6 +2728,7 @@
       "differentAccount": "दो अलग-अलग खाते",
       "accountTypes": "एक ओर {{kinds}} खाता है",
       "accountNamed": "किसी एक विवरण में दूसरे खाते का नाम है",
+      "bothTransferCategories": "both legs are in transfer categories",
       "closestDate": "सबसे नज़दीकी तारीख जीतती है",
       "uniqueCandidate": "केवल एक ही उम्मीदवार फिट बैठता है"
     },

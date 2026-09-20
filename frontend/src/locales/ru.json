@@ -2745,6 +2745,7 @@
       "differentAccount": "два разных счёта",
       "accountTypes": "одна из сторон — счёт типа {{kinds}}",
       "accountNamed": "одно из описаний называет другой счёт",
+      "bothTransferCategories": "both legs are in transfer categories",
       "closestDate": "побеждает ближайшая дата",
       "uniqueCandidate": "подходит только один кандидат"
     },

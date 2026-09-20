@@ -2728,6 +2728,7 @@
       "differentAccount": "δύο διαφορετικοί λογαριασμοί",
       "accountTypes": "η μία πλευρά είναι λογαριασμός τύπου {{kinds}}",
       "accountNamed": "μία από τις περιγραφές αναφέρει τον άλλο λογαριασμό",
+      "bothTransferCategories": "both legs are in transfer categories",
       "closestDate": "κερδίζει η πιο κοντινή ημερομηνία",
       "uniqueCandidate": "ταιριάζει μόνο ένας υποψήφιος"
     },

@@ -419,6 +419,28 @@ MATCH_TRANSFER: dict[str, Any] = {
             },
         },
         {
+            # Fork (securo-qc): both legs already sit in a transfer-style
+            # category (`treat_as_transfer`: "Card payment", "Internal
+            # transfer", usually set by the household's rules), so they are
+            # known movements and only their dates disagree. An ACH card
+            # payment leaves checking three or four days before the card
+            # posts it; at two days those legs never meet and the payment
+            # shows up as money leaving the household. Same exact amount,
+            # same uniqueness, a wider window, and only for categorised legs.
+            "id": "transfer_categories_wider_window",
+            "enabled": True,
+            "outcome": "link",
+            "trigger": "both",
+            "when": {
+                "different_account": True,
+                "both_transfer_categories": True,
+                "amount": {"match": "exact"},
+                "date": {"before_days": 4, "after_days": 4},
+                "tie_break": "closest_date",
+                "unique_candidate": True,
+            },
+        },
+        {
             # Off, and on the page anyway.
             #
             # A wire that arrives a few cents short of what left is a

@@ -388,6 +388,7 @@ def validate_config(config: dict[str, Any], *, whole: bool) -> dict[str, Any]:
         "different_account",
         "unique_candidate",
         "account_name_in_description",
+        "both_transfer_categories",
     ):
         if flag in when:
             checked[flag] = bool(when[flag])

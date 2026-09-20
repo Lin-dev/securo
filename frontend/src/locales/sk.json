@@ -2872,6 +2872,7 @@
       "differentAccount": "dva rôzne účty",
       "accountTypes": "jedna strana je účet typu {{kinds}}",
       "accountNamed": "jeden z popisov uvádza druhý účet",
+      "bothTransferCategories": "both legs are in transfer categories",
       "closestDate": "vyhráva najbližší dátum",
       "uniqueCandidate": "vyhovuje len jeden kandidát"
     },

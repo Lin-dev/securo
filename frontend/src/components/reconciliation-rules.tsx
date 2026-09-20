@@ -296,6 +296,8 @@ function conditionSummary(
     )
   if (when.account_name_in_description)
     parts.push(t('reconciliation.cond.accountNamed'))
+  if (when.both_transfer_categories)
+    parts.push(t('reconciliation.cond.bothTransferCategories'))
 
   if (when.amount?.match === 'exact') parts.push(t('reconciliation.cond.amountExact'))
   else if (when.amount?.match === 'tolerance')

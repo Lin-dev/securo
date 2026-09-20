@@ -1651,6 +1651,8 @@ export interface ReconciliationConditions {
    *  signal that tells two same-day transfers of the same amount apart,
    *  when one line reads "To FORTUNEO ACCOUNT" and the other does not. */
   account_name_in_description?: boolean
+  /** Fork: both legs already sit in a transfer-style category. */
+  both_transfer_categories?: boolean
   /** How to separate candidates that all fit. `closest_date` takes the
    *  nearest in time and only gives up when nothing separates them, which
    *  is different from `unique_candidate` refusing whenever there is more

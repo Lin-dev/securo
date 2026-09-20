@@ -2745,6 +2745,7 @@
       "differentAccount": "два різні рахунки",
       "accountTypes": "одна зі сторін — рахунок типу {{kinds}}",
       "accountNamed": "один з описів називає інший рахунок",
+      "bothTransferCategories": "both legs are in transfer categories",
       "closestDate": "перемагає найближча дата",
       "uniqueCandidate": "підходить лише один кандидат"
     },

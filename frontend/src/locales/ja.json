@@ -2728,6 +2728,7 @@
       "differentAccount": "異なる2つの口座",
       "accountTypes": "一方が{{kinds}}の口座",
       "accountNamed": "いずれかの摘要がもう一方の口座名を含む",
+      "bothTransferCategories": "both legs are in transfer categories",
       "closestDate": "最も近い日付が優先",
       "uniqueCandidate": "候補が1件だけ"
     },
