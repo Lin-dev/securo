@@ -7,24 +7,20 @@ import {
 } from 'd3-sankey'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import type { ReportCompositionItem } from '@/types'
+import {
+  buildMoneyMap,
+  EXPENSE_COLOR,
+  INVEST_COLOR,
+  LEFT_SIDES,
+  RIGHT_SIDES,
+  SURPLUS_COLOR,
+  TRANSFER_COLOR,
+  type MoneyMapLink as SankeyLinkDatum,
+  type MoneyMapNode as SankeyNodeDatum,
+} from '@/lib/money-map-utils'
 
-// Colour carries MEANING, not category identity: green = money in, red = money
-// out, gray = uncategorised/folded. Tinting by category (the old approach) made
-// a green "Groceries" expense look like green "Salary" income — the direction of
-// flow was invisible. Category identity is carried by the always-on labels
-// instead. Links fade from their source colour to their target colour, so an
-// expense flow visibly turns from green (cash flow) to red at the category.
-const INCOME_COLOR = '#10B981' // emerald — money in
-const EXPENSE_COLOR = '#F43F5E' // rose — money out
-const INVEST_COLOR = '#0EA5E9' // sky blue — money set aside (investments)
-const CENTER_COLOR = '#059669' // deeper emerald — the cash-flow hub
-const SURPLUS_COLOR = '#10B981' // emerald — leftover income
-const DEFICIT_COLOR = '#F59E0B' // amber — overspend drawn from reserves
-const NEUTRAL_COLOR = '#9CA3AF' // gray — uncategorised / folded long tail
-
-// Keep the diagram legible: personal-finance Sankeys read best at ~a dozen
-// streams per side. Beyond this we fold the smallest categories into "Other".
-const MAX_NODES_PER_SIDE = 9
+// Colours, lane rules and node/link construction live in money-map-utils so
+// they can be unit-tested; this file is the SVG.
 
 const NODE_WIDTH = 16
 const NODE_PADDING = 16
@@ -33,26 +29,15 @@ const NODE_PADDING = 16
 const LABEL_MIN_GAP = 26
 const TOP_GUTTER = 30 // header room above the nodes for the centre label
 
-interface SankeyNodeDatum {
-  id: string
-  name: string
-  color: string
-  side: 'income' | 'center' | 'expense' | 'investment'
-}
-
-interface SankeyLinkDatum {
-  source: number
-  target: number
-  value: number
-}
-
 // What the cursor is isolating. A plain node hover lights its own flows; the
-// two halves of the centre bar light *all* expenses or the surplus at once —
-// the "show me everything I spent" gesture the single bar couldn't offer.
+// segments of the centre bar light *all* expenses, investments, transfers or
+// the surplus at once — the "show me everything I spent" gesture the single
+// bar couldn't offer.
 type Hover =
   | { kind: 'node'; index: number }
   | { kind: 'expenses' }
   | { kind: 'investments' }
+  | { kind: 'transfers' }
   | { kind: 'surplus' }
 
 function formatMoney(value: number, currency: string, locale: string, compact: boolean) {
@@ -62,19 +47,6 @@ function formatMoney(value: number, currency: string, locale: string, compact: b
     notation: compact ? 'compact' : 'standard',
     maximumFractionDigits: compact ? 1 : 0,
   }).format(value)
-}
-
-/** Sort largest-first, then fold everything past the cap into a single "Other". */
-function collapse(items: ReportCompositionItem[], otherLabel: string): ReportCompositionItem[] {
-  const sorted = [...items].sort((a, b) => b.value - a.value)
-  if (sorted.length <= MAX_NODES_PER_SIDE) return sorted
-  const top = sorted.slice(0, MAX_NODES_PER_SIDE - 1)
-  const rest = sorted.slice(MAX_NODES_PER_SIDE - 1)
-  const otherValue = rest.reduce((s, c) => s + c.value, 0)
-  return [
-    ...top,
-    { key: 'other', label: otherLabel, value: otherValue, color: NEUTRAL_COLOR, group: rest[0].group },
-  ]
 }
 
 interface CashflowSankeyProps {
@@ -100,117 +72,23 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
     return () => observer.disconnect()
   }, [])
 
-  const { nodes: rawNodes, links: rawLinks, hasData } = useMemo(() => {
-    const income = collapse(
-      composition.filter((c) => c.group === 'income' && c.value > 0),
-      t('reports.other'),
-    )
-    const expense = collapse(
-      composition.filter((c) => c.group === 'expenses' && c.value > 0),
-      t('reports.other'),
-    )
-    // Investments are a third outflow lane — money set aside, neither spent nor
-    // surplus. Treated like Sure's "Investment Contributions" node.
-    const investment = collapse(
-      composition.filter((c) => c.group === 'investments' && c.value > 0),
-      t('reports.other'),
-    )
-
-    if (income.length === 0 && expense.length === 0 && investment.length === 0) {
-      return { nodes: [] as SankeyNodeDatum[], links: [] as SankeyLinkDatum[], hasData: false }
-    }
-
-    const totalIncome = income.reduce((s, c) => s + c.value, 0)
-    const totalExpense = expense.reduce((s, c) => s + c.value, 0)
-    const totalInvest = investment.reduce((s, c) => s + c.value, 0)
-    // Surplus is what's left after BOTH spending and investing — so investing
-    // shrinks surplus instead of silently inflating it.
-    const net = totalIncome - totalExpense - totalInvest
-
-    const nodes: SankeyNodeDatum[] = []
-    const links: SankeyLinkDatum[] = []
-    const indexOf = new Map<string, number>()
-    const pushNode = (n: SankeyNodeDatum) => {
-      indexOf.set(n.id, nodes.length)
-      nodes.push(n)
-      return nodes.length - 1
-    }
-
-    const labelFor = (c: ReportCompositionItem) =>
-      c.key === 'uncategorized' ? t('reports.uncategorized')
-        : c.key === 'other' ? t('reports.other')
-          : c.label
-    const isNeutral = (c: ReportCompositionItem) => c.key === 'uncategorized' || c.key === 'other'
-
-    income.forEach((c, i) =>
-      pushNode({
-        id: `in-${c.key}-${i}`,
-        name: labelFor(c),
-        color: isNeutral(c) ? NEUTRAL_COLOR : INCOME_COLOR,
-        side: 'income',
-      }),
-    )
-
-    // Deficit appears as an inflow on the income side so the centre balances.
-    if (net < 0) {
-      pushNode({ id: 'deficit', name: t('reports.deficit'), color: DEFICIT_COLOR, side: 'income' })
-    }
-
-    const centerIdx = pushNode({
-      id: 'center',
-      name: t('reports.cashFlowNode'),
-      color: CENTER_COLOR,
-      side: 'center',
-    })
-
-    // Right column, top → bottom: expenses (red), investments (teal), surplus
-    // (green) — matching the centre bar's stacked split.
-    expense.forEach((c, i) =>
-      pushNode({
-        id: `ex-${c.key}-${i}`,
-        name: labelFor(c),
-        color: isNeutral(c) ? NEUTRAL_COLOR : EXPENSE_COLOR,
-        side: 'expense',
-      }),
-    )
-
-    investment.forEach((c, i) =>
-      pushNode({
-        id: `inv-${c.key}-${i}`,
-        name: c.key === 'other' ? t('reports.other') : c.label,
-        color: c.key === 'other' ? NEUTRAL_COLOR : INVEST_COLOR,
-        side: 'investment',
-      }),
-    )
-
-    if (net > 0) {
-      pushNode({ id: 'surplus', name: t('reports.surplus'), color: SURPLUS_COLOR, side: 'expense' })
-    }
-
-    income.forEach((c, i) =>
-      links.push({ source: indexOf.get(`in-${c.key}-${i}`)!, target: centerIdx, value: c.value }),
-    )
-    if (net < 0) {
-      links.push({ source: indexOf.get('deficit')!, target: centerIdx, value: -net })
-    }
-    expense.forEach((c, i) =>
-      links.push({ source: centerIdx, target: indexOf.get(`ex-${c.key}-${i}`)!, value: c.value }),
-    )
-    investment.forEach((c, i) =>
-      links.push({ source: centerIdx, target: indexOf.get(`inv-${c.key}-${i}`)!, value: c.value }),
-    )
-    if (net > 0) {
-      links.push({ source: centerIdx, target: indexOf.get('surplus')!, value: net })
-    }
-
-    return { nodes, links, hasData: true }
-  }, [composition, t])
+  const { nodes: rawNodes, links: rawLinks, hasData } = useMemo(
+    () => buildMoneyMap(composition, {
+      other: t('reports.other'),
+      uncategorized: t('reports.uncategorized'),
+      deficit: t('reports.deficit'),
+      surplus: t('reports.surplus'),
+      center: t('reports.cashFlowNode'),
+      directContributions: t('reports.directContributions'),
+    }),
+    [composition, t],
+  )
 
   // Tall enough that the busier side's nodes don't crowd; grows with node count.
   const maxSide = useMemo(() => {
-    const incomeCount = rawNodes.filter((n) => n.side === 'income').length
-    const outflowCount = rawNodes.filter((n) => n.side === 'expense' || n.side === 'investment').length
-    return Math.max(incomeCount, outflowCount, 1)
+    const inflowCount = rawNodes.filter((n) => LEFT_SIDES.has(n.side)).length
+    const outflowCount = rawNodes.filter((n) => RIGHT_SIDES.has(n.side)).length
+    return Math.max(inflowCount, outflowCount, 1)
   }, [rawNodes])
   const height = Math.min(780, Math.max(380, maxSide * 60))
 
@@ -264,6 +142,7 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
         if (hover.kind === 'node') on = s.index === hover.index || tg.index === hover.index
         else if (hover.kind === 'expenses') on = s.id === 'center' && tg.side === 'expense' && tg.id !== 'surplus'
         else if (hover.kind === 'investments') on = s.id === 'center' && tg.side === 'investment'
+        else if (hover.kind === 'transfers') on = s.id === 'center' && tg.side === 'transfer_out'
         else if (hover.kind === 'surplus') on = tg.id === 'surplus'
         if (on) {
           links.add(i)
@@ -288,10 +167,10 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
   const fmtAmount = (v: number) =>
     privacyMode ? MASK : formatMoney(v, currency, locale, true)
 
-  // The centre bar's outflow split: spent (red) vs invested (teal) vs kept
-  // (green). Links attach top→bottom in node order (expenses, investments,
-  // surplus), so stacking the bar's colours in that order lines up with where
-  // the flows actually leave the hub.
+  // The centre bar's outflow split: spent (red), invested (blue), moved out
+  // (violet), kept (green). Links attach top→bottom in node order (expenses,
+  // investments, transfers out, surplus), so stacking the bar's colours in
+  // that order lines up with where the flows actually leave the hub.
   const outBy = (pred: (n: SankeyNodeDatum) => boolean) => layout
     ? layout.links
         .filter((l) => (l.source as SankeyNodeDatum).id === 'center' && pred(l.target as SankeyNodeDatum))
@@ -299,6 +178,7 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
     : 0
   const expenseOut = outBy((n) => n.side === 'expense' && n.id !== 'surplus')
   const investOut = outBy((n) => n.side === 'investment')
+  const transferOut = outBy((n) => n.side === 'transfer_out')
   const surplusOut = outBy((n) => n.id === 'surplus')
 
   const linkDimmed = (i: number) => hover !== null && !activeLinks.has(i)
@@ -371,20 +251,23 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
               const dimmed = nodeDimmed(i)
               const nodeWidthPx = Math.max(1, x1 - x0)
 
-              // Centre bar is split into spent (red), invested (teal) and kept
-              // (green) zones, each its own hover target so the cursor can
-              // isolate ALL of that flow type at once. Label sits in the top
-              // gutter. Segments are stacked in the same order the links leave
-              // the hub (expenses, investments, surplus).
+              // Centre bar is split into spent (red), invested (blue), moved
+              // out (violet) and kept (green) zones, each its own hover target
+              // so the cursor can isolate ALL of that flow type at once. Label
+              // sits in the top gutter. Segments are stacked in the same order
+              // the links leave the hub (expenses, investments, transfers out,
+              // surplus).
               if (isCenter) {
                 const cx = (x0 + x1) / 2
-                const out = expenseOut + investOut + surplusOut || 1
+                const out = expenseOut + investOut + transferOut + surplusOut || 1
                 const redH = nodeHeight * (expenseOut / out)
-                const tealH = nodeHeight * (investOut / out)
+                const blueH = nodeHeight * (investOut / out)
+                const violetH = nodeHeight * (transferOut / out)
                 const segments = [
                   { h: redH, fill: EXPENSE_COLOR, hover: { kind: 'expenses' } as Hover, title: t('reports.expenses'), val: expenseOut },
-                  { h: tealH, fill: INVEST_COLOR, hover: { kind: 'investments' } as Hover, title: t('reports.investments'), val: investOut },
-                  { h: Math.max(0, nodeHeight - redH - tealH), fill: SURPLUS_COLOR, hover: { kind: 'surplus' } as Hover, title: t('reports.surplus'), val: surplusOut },
+                  { h: blueH, fill: INVEST_COLOR, hover: { kind: 'investments' } as Hover, title: t('reports.investments'), val: investOut },
+                  { h: violetH, fill: TRANSFER_COLOR, hover: { kind: 'transfers' } as Hover, title: t('reports.transfersOut'), val: transferOut },
+                  { h: Math.max(0, nodeHeight - redH - blueH - violetH), fill: SURPLUS_COLOR, hover: { kind: 'surplus' } as Hover, title: t('reports.surplus'), val: surplusOut },
                 ]
                 let segY = y0
                 return (
