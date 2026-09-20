@@ -16,6 +16,15 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction
 
+# Name of the transfer-like category that marks money moved into an
+# investment account. The transactions summary reports it as `invested`
+# (fork addition) and the Money Map draws it as the investing lane: the
+# sending (debit) leg from a non-investment account, plus contribution
+# credits that land in an investment account with no sending leg in Securo
+# (payroll deductions, employer match, a funding account that is not
+# connected).
+INVESTMENT_CONTRIBUTION_CATEGORY = "Investment contribution"
+
 
 def is_confirmed():
     """SQL filter: the charge is settled rather than merely authorized.

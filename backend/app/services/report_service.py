@@ -15,6 +15,7 @@ from app.models.transaction import Transaction
 from app.models.category import Category
 from app.models.user import User
 from app.services._query_filters import (
+    INVESTMENT_CONTRIBUTION_CATEGORY,
     counts_as_pnl,
     counts_as_user_pnl,
     owner_split_offset_by_category,
@@ -772,19 +773,46 @@ async def get_income_expenses_report(
             if comp_map[comp_key]["value"] <= 0:
                 comp_map.pop(comp_key)
 
-    # Investment-style outflows: transactions in `treat_as_transfer` categories
-    # are excluded from P&L by counts_as_user_pnl (an investment application's
-    # counterpart is an Asset/Holding, not spending). But for the cashflow Sankey
-    # we surface them as their own "investments" group — money set aside, distinct
-    # from spending and from leftover surplus (mirrors how Sure shows an
-    # "Investment Contributions" node). Paired account transfers stay excluded via
-    # the transfer_pair_id filter, so only one-sided movements (contributions)
-    # appear here.
-    inv_result = await session.execute(
+    # Money Map lanes for transfer-style categories (`treat_as_transfer`),
+    # which counts_as_user_pnl keeps out of income and expenses. Each row is
+    # classified by which side of the cash boundary it sits on, so the chart
+    # shows real movements of money and nothing else:
+    #   investments           a debit from a cash account in the investing
+    #                         category, paired or not (the money left cash for
+    #                         an investment; the credit leg, when Securo has it,
+    #                         is the same movement and stays out), plus an
+    #                         unpaired credit in the investing category INSIDE
+    #                         an investment account: money that arrived without
+    #                         passing through a cash account (payroll 401(k)
+    #                         deductions, employer match, an unconnected funding
+    #                         account). Those are keyed by account so a 401(k)
+    #                         plan shows up as itself.
+    #   direct_contributions  the same investment-account credits, once more as
+    #                         an inflow, so the hub balances and surplus is
+    #                         unchanged by them.
+    #   transfers_out         other unpaired debits from cash accounts: a card
+    #                         payment that did not pair, a transfer to an account
+    #                         Securo cannot see. Money that left, destination
+    #                         unknown.
+    #   transfers_in          unpaired credits into cash accounts in transfer
+    #                         categories: money that arrived from outside the
+    #                         connected accounts.
+    # Debits inside investment accounts (buys, fund exchanges, fees booked as
+    # transfers) are not cash flow and stay out; counting them double-counted
+    # every contribution once it was invested. Mirrors the `invested` rule in
+    # the transactions summary so the two figures agree.
+    investing_name = INVESTMENT_CONTRIBUTION_CATEGORY.lower()
+    unpaired_col = Transaction.transfer_pair_id.is_(None).label("unpaired")
+    flow_result = await session.execute(
         select(
             Category.id,
             Category.name,
             Category.color,
+            Account.id,
+            Account.name,
+            Account.type,
+            Transaction.type,
+            unpaired_col,
             func.sum(amount_expr),
         )
         .select_from(Transaction)
@@ -796,26 +824,43 @@ async def get_income_expenses_report(
             report_date >= start,
             report_date <= today,
             Transaction.source != "opening_balance",
-            Transaction.type == "debit",
             Transaction.status == "posted",
-            Transaction.transfer_pair_id.is_(None),
             Transaction.is_ignored.is_(False),
             Transaction.exclude_from_pnl.is_(False),
             Category.treat_as_transfer.is_(True),
             Category.is_ignored.is_(False),
             *acct_filter,
         )
-        .group_by(Category.id, Category.name, Category.color)
+        .group_by(
+            Category.id, Category.name, Category.color,
+            Account.id, Account.name, Account.type,
+            Transaction.type, unpaired_col,
+        )
     )
-    for cat_id, cat_name, cat_color, total_amount in inv_result.all():
+
+    def _lane(key: tuple[str, str], label: str, color: str, amount: float) -> None:
+        entry = comp_map.setdefault(key, {"label": label, "color": color, "value": 0.0})
+        entry["value"] += amount
+
+    for row in flow_result.all():
+        cat_id, cat_name, cat_color, acct_id, acct_name, acct_type, txn_type, unpaired, total_amount = row
         amount = abs(float(total_amount or 0))
         if amount <= 0:
             continue
-        comp_map[(str(cat_id), "investments")] = {
-            "label": cat_name or "Investments",
-            "color": cat_color or "#0EA5E9",
-            "value": amount,
-        }
+        is_investing = (cat_name or "").lower() == investing_name
+        color = cat_color or "#0EA5E9"
+        if acct_type == "investment":
+            if txn_type == "credit" and unpaired and is_investing:
+                _lane((f"account:{acct_id}", "investments"), acct_name or cat_name, color, amount)
+                _lane(("direct_contributions", "direct_contributions"), "Direct contributions", "#0EA5E9", amount)
+            continue
+        if txn_type == "debit":
+            if is_investing:
+                _lane((str(cat_id), "investments"), cat_name, color, amount)
+            elif unpaired:
+                _lane((str(cat_id), "transfers_out"), cat_name, cat_color or "#8B5CF6", amount)
+        elif unpaired:
+            _lane((str(cat_id), "transfers_in"), cat_name, cat_color or "#8B5CF6", amount)
 
     # Build per-category trend (sparklines) for the full date range
     cat_trend_result = await session.execute(

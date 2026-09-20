@@ -27,6 +27,7 @@ from app.services.credit_card_service import apply_effective_date
 from app.services.rule_service import apply_rules_to_transaction
 from app.services.fx_rate_service import stamp_primary_amount, convert as fx_convert
 from app.services._query_filters import (
+    INVESTMENT_CONTRIBUTION_CATEGORY as _INVESTMENT_CONTRIBUTION_CATEGORY,
     counts_as_pnl,
     counts_as_user_pnl,
     is_not_ignored,
@@ -125,12 +126,10 @@ def _apply_fx_override(transaction, amount, amount_primary=None, fx_rate_used=No
         )
 
 
-# Name of the transfer-like category that marks money moved into an
-# investment account. The transactions summary reports it as `invested`
-# (fork addition): the sending (debit) leg from a non-investment account,
-# plus contribution credits that land in an investment account with no
-# sending leg in Securo (the funding account is not connected).
-INVESTMENT_CONTRIBUTION_CATEGORY = "Investment contribution"
+# Re-exported so callers and tests keep importing it from here; the
+# definition lives with the shared P&L filters because the Money Map uses
+# the same rule.
+INVESTMENT_CONTRIBUTION_CATEGORY = _INVESTMENT_CONTRIBUTION_CATEGORY
 
 
 async def get_transactions(
