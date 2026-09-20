@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.services.transfer_detection_service import (
     detect_transfer_pairs,
@@ -382,3 +383,73 @@ async def test_detect_skips_ignored_rows(session: AsyncSession, test_user, test_
     # A visible row of the same shape still pairs.
     await _add_txn(session, test_user.id, a.id, 500, "debit", today, source="split")
     assert await detect_transfer_pairs(session, test_workspace.id) == 1
+
+
+# ---------------------------------------------------------------------------
+# Wider window for transfer-categorised legs
+# ---------------------------------------------------------------------------
+
+
+async def _transfer_category(session: AsyncSession, user_id, workspace_id, name: str) -> Category:
+    cat = Category(
+        id=uuid.uuid4(), user_id=user_id, workspace_id=workspace_id, name=name,
+        icon="circle-help", color="#000000", treat_as_transfer=True,
+    )
+    session.add(cat)
+    await session.commit()
+    return cat
+
+
+@pytest.mark.asyncio
+async def test_detect_widens_window_when_both_legs_are_transfer_categorised(
+    session: AsyncSession, test_user, test_workspace
+):
+    """An ACH card payment leaves checking days before the card posts it.
+
+    Both legs already carry a transfer-style category, so they pair at four
+    days apart even though the strict window is two.
+    """
+    checking = await _make_account(session, test_user.id, "Wide A")
+    card = await _make_account(session, test_user.id, "Wide B")
+    card_payment = await _transfer_category(session, test_user.id, test_workspace.id, "Card payment")
+    today = date.today()
+
+    debit = await _add_txn(session, test_user.id, checking.id, 812.34, "debit", today)
+    credit = await _add_txn(session, test_user.id, card.id, 812.34, "credit", today + timedelta(days=4))
+    debit.category_id = card_payment.id
+    credit.category_id = card_payment.id
+    await session.commit()
+
+    pairs = await detect_transfer_pairs(session, test_workspace.id)
+    await session.commit()
+    assert pairs == 1
+    await session.refresh(debit)
+    await session.refresh(credit)
+    assert debit.transfer_pair_id == credit.transfer_pair_id
+
+
+@pytest.mark.asyncio
+async def test_detect_keeps_strict_window_unless_both_legs_are_transfer_categorised(
+    session: AsyncSession, test_user, test_workspace
+):
+    """One transfer-categorised leg is not enough: a same-amount row three
+    days away in another account is still treated as a coincidence."""
+    a = await _make_account(session, test_user.id, "Strict A")
+    b = await _make_account(session, test_user.id, "Strict B")
+    internal = await _transfer_category(session, test_user.id, test_workspace.id, "Internal transfer")
+    today = date.today()
+
+    debit = await _add_txn(session, test_user.id, a.id, 100, "debit", today)
+    await _add_txn(session, test_user.id, b.id, 100, "credit", today + timedelta(days=3))
+    debit.category_id = internal.id
+    await session.commit()
+
+    assert await detect_transfer_pairs(session, test_workspace.id) == 0
+
+    # Beyond the wide window nothing pairs even when both legs are categorised.
+    far_debit = await _add_txn(session, test_user.id, a.id, 55, "debit", today)
+    far_credit = await _add_txn(session, test_user.id, b.id, 55, "credit", today + timedelta(days=5))
+    far_debit.category_id = internal.id
+    far_credit.category_id = internal.id
+    await session.commit()
+    assert await detect_transfer_pairs(session, test_workspace.id) == 0
