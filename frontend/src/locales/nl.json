@@ -1180,7 +1180,9 @@
     "invoiceBadgeTooltip": "Deze transactie rekent een factuur af. Openen.",
     "suggestionBadge": "Vraag",
     "suggestionBadgeTooltip": "Een betaling kan deze factuur voldoen. Open de wachtrij om te antwoorden.",
-    "clearGroupFilter": "Groepsfilter wissen"
+    "clearGroupFilter": "Groepsfilter wissen",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "accounts": {
     "title": "Rekeningen",

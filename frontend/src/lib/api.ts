@@ -100,6 +100,7 @@ import type {
   ReconciliationSuggestion,
   ReconciliationHistoryEvent,
 } from '@/types'
+import type { SummaryScope } from '@/lib/summary-scope'
 
 const api = axios.create({
   baseURL: '/api',
@@ -529,6 +530,7 @@ export const transactions = {
     max_amount?: number
     sort_by?: string
     sort_dir?: 'asc' | 'desc'
+    summary_scope?: SummaryScope
   }): Promise<PaginatedTransactions> => {
     const { data } = await api.get('/transactions', {
       params,
@@ -734,6 +736,7 @@ export const transactions = {
     tags?: string[]
     exclude_ignored?: boolean
     transaction_ids?: string[]
+    summary_scope?: SummaryScope
   }): Promise<void> => {
     const { data } = await api.get('/transactions/export', {
       params,

@@ -1221,7 +1221,9 @@
     "invoiceBadgeTooltip": "Ta transakcja rozlicza fakturę. Otwórz ją.",
     "suggestionBadge": "Pytanie",
     "suggestionBadgeTooltip": "Płatność może opłacić tę fakturę. Otwórz kolejkę, aby odpowiedzieć.",
-    "clearGroupFilter": "Wyczyść filtr grupy"
+    "clearGroupFilter": "Wyczyść filtr grupy",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "accounts": {
     "title": "Konta",

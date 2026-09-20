@@ -1182,7 +1182,9 @@
     "invoiceBadgeTooltip": "Cette transaction solde une facture. Ouvrir.",
     "suggestionBadge": "Question",
     "suggestionBadgeTooltip": "Un paiement peut solder cette facture. Ouvrez la file pour répondre.",
-    "clearGroupFilter": "Effacer le filtre de groupe"
+    "clearGroupFilter": "Effacer le filtre de groupe",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "accounts": {
     "title": "Comptes",

@@ -1194,7 +1194,9 @@
     "invoiceBadgeTooltip": "Эта операция закрывает счёт. Открыть.",
     "suggestionBadge": "Вопрос",
     "suggestionBadgeTooltip": "Платёж может закрыть этот счёт. Откройте очередь, чтобы ответить.",
-    "clearGroupFilter": "Сбросить фильтр группы"
+    "clearGroupFilter": "Сбросить фильтр группы",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "accounts": {
     "title": "Счета",

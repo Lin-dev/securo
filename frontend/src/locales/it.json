@@ -1182,7 +1182,9 @@
     "invoiceBadgeTooltip": "Questa transazione salda una fattura. Aprila.",
     "suggestionBadge": "Domanda",
     "suggestionBadgeTooltip": "Un pagamento potrebbe saldare questa fattura. Apri la coda per rispondere.",
-    "clearGroupFilter": "Rimuovi filtro gruppo"
+    "clearGroupFilter": "Rimuovi filtro gruppo",
+    "summaryScopeChipLabel": "Summary",
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
   },
   "accounts": {
     "title": "Conti",
