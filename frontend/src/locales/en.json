@@ -1659,7 +1659,12 @@
     "amount": "Amount",
     "investments": "Investments",
     "moneyMap": "Money Map",
-    "range30d": "30D"
+    "range30d": "30D",
+    "directContributions": "Direct contributions",
+    "transfersIn": "Transfers in",
+    "transfersOut": "Transfers out",
+    "transfers": "Transfers",
+    "moneyMapHint": "Direct contributions are deposits that reached an investment account without passing through a cash account, such as payroll 401(k) deductions and employer match; they enter on the left and leave on the right for the same amount. Transfers are money moved to or from accounts Securo cannot see, including card payments that did not match a card statement. Buys and fund exchanges inside investment accounts are not drawn: that money was counted when it left cash."
   },
   "payees": {
     "addFavorite": "Add to favorites",

@@ -24,6 +24,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { PageHeader } from '@/components/page-header'
 import { CashflowSankey } from '@/components/reports/CashflowSankey'
+import { DEFICIT_COLOR, EXPENSE_COLOR, INCOME_COLOR, INVEST_COLOR, TRANSFER_COLOR } from '@/lib/money-map-utils'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
@@ -621,32 +622,31 @@ export default function ReportsPage() {
             <p className="text-sm font-semibold text-foreground">
               {t('reports.moneyMap')}
             </p>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#10B981' }} />
-                <span className="text-[11px] text-muted-foreground">{t('reports.income')}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#F43F5E' }} />
-                <span className="text-[11px] text-muted-foreground">{t('reports.expenses')}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#0EA5E9' }} />
-                <span className="text-[11px] text-muted-foreground">{t('reports.investments')}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#F59E0B' }} />
-                <span className="text-[11px] text-muted-foreground">{t('reports.deficit')}</span>
-              </div>
+            <div className="flex items-center gap-3 flex-wrap justify-end">
+              {([
+                [INCOME_COLOR, 'reports.income'],
+                [EXPENSE_COLOR, 'reports.expenses'],
+                [INVEST_COLOR, 'reports.investments'],
+                [TRANSFER_COLOR, 'reports.transfers'],
+                [DEFICIT_COLOR, 'reports.deficit'],
+              ] as const).map(([color, key]) => (
+                <div key={key} className="flex items-center gap-1.5">
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+                  <span className="text-[11px] text-muted-foreground">{t(key)}</span>
+                </div>
+              ))}
             </div>
           </div>
-          <div className="px-3 pb-5">
+          <div className="px-3 pb-3">
             {isLoading ? (
               <div className="px-2"><Skeleton className="h-[360px] w-full" /></div>
             ) : (
               <CashflowSankey composition={composition} currency={userCurrency} locale={locale} />
             )}
           </div>
+          <p className="px-5 pb-5 text-[11px] leading-relaxed text-muted-foreground">
+            {t('reports.moneyMapHint')}
+          </p>
         </div>
       )}
 
