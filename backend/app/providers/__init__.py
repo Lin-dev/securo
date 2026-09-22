@@ -41,6 +41,14 @@ KNOWN_PROVIDERS = [
         "requires_institution_select": False,
         "supports_asset_sync": True,
     },
+    {
+        "name": "plaid",
+        "display_name": "Plaid",
+        "description": "US banks, cards and brokerages via Plaid",
+        "flow_type": "link",
+        "requires_institution_select": False,
+        "supports_asset_sync": True,
+    },
 ]
 
 
@@ -93,6 +101,13 @@ def _auto_register_providers() -> None:
     if settings.simplefin_enabled:
         from app.providers.simplefin import SimpleFinProvider
         register_provider("simplefin", SimpleFinProvider)
+
+    plaid_has_secret = bool(
+        settings.plaid_secret.get_secret_value() or settings.plaid_sandbox_secret.get_secret_value()
+    )
+    if settings.plaid_client_id and plaid_has_secret:
+        from app.providers.plaid import PlaidProvider
+        register_provider("plaid", PlaidProvider)
 
 
 _auto_register_providers()

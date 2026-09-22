@@ -96,6 +96,20 @@ SIMPLEFIN_API_URL=https://beta-bridge.simplefin.org   # sandbox; use bridge.simp
 
 Then in Securo: **Accounts → Connect Bank → SimpleFIN**, and paste the token. The [developer page](https://beta-bridge.simplefin.org/info/developers) gives out free demo tokens if you want to try it without a real bank.
 
+### Plaid — US banks, cards and brokerages
+
+[Plaid](https://plaid.com/) links a bank login through its Link popup and serves balances, transactions (cursor sync, up to two years of history on first link) and investment holdings. Create a team at [dashboard.plaid.com](https://dashboard.plaid.com/), copy the Client ID and the Production and Sandbox secrets, and register `{FRONTEND_URL}/plaid/oauth` under **Team Settings → API → Allowed redirect URIs** (OAuth banks such as Chase, Capital One and Bank of America refuse to open Link without it).
+
+```
+PLAID_CLIENT_ID=
+PLAID_SECRET=                       # Production secret
+PLAID_SANDBOX_SECRET=               # Sandbox secret (optional, for testing with Plaid's fake banks)
+PLAID_ENV=production                # or sandbox; each linked Item remembers its own environment
+# PLAID_OAUTH_REDIRECT_URI=         # defaults to ${FRONTEND_URL}/plaid/oauth
+```
+
+Then in Securo: **Accounts → Connect Bank → Plaid**. Reconnecting an errored connection reopens Link in update mode; disconnecting removes the Item at Plaid so it stops counting against your plan. Loan accounts (mortgages, student loans) are not imported yet.
+
 ## OIDC Login (Optional)
 
 Securo can delegate login to any standard OIDC provider, including Authentik and Pocket ID. Create a confidential/web application in your provider and register this redirect URI:
