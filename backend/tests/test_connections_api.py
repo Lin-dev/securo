@@ -322,12 +322,16 @@ async def test_reconnect_token_with_item_id(
     mock_token = MagicMock()
     mock_token.access_token = "recon-token"
     with patch("app.services.connection_service.get_provider") as mock_gp:
-        mock_gp.return_value.create_connect_token = AsyncMock(return_value=mock_token)
+        mock_gp.return_value.create_reconnect_token = AsyncMock(return_value=mock_token)
         resp = await client.post(
             f"/api/connections/{conn.id}/reconnect-token", headers=auth_headers,
         )
         assert resp.status_code == 200
         assert resp.json()["access_token"] == "recon-token"
+        # the whole credentials dict reaches the provider, not just the item id
+        mock_gp.return_value.create_reconnect_token.assert_awaited_once()
+        args = mock_gp.return_value.create_reconnect_token.await_args.args
+        assert args[1] == {"item_id": "item-abc-123"}
 
 
 @pytest.mark.asyncio
