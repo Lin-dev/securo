@@ -984,9 +984,23 @@
       },
       "simplefin": {
         "description": "US and international banks via SimpleFIN Bridge"
+      },
+      "plaid": {
+        "description": "US banks, cards and brokerages via Plaid"
       }
     },
-    "reconnected": "Bank reconnected successfully"
+    "reconnected": "Bank reconnected successfully",
+    "plaidConnect": {
+      "title": "Connect with Plaid",
+      "description": "Plaid opens a secure window where you sign in to your bank. Securo never sees your bank password; it receives balances, transactions and holdings.",
+      "reconnectTitle": "Reconnect with Plaid",
+      "reconnectDescription": "Your bank asked to confirm the link. Sign in again in Plaid's window and Securo will resume syncing.",
+      "finishing": "Finishing your bank connection…",
+      "failed": "Plaid could not be opened",
+      "returnMissing": "Nothing to finish here",
+      "returnMissingDesc": "This page completes a bank login started from Accounts. Start the connection again from there.",
+      "backToAccounts": "Back to accounts"
+    }
   },
   "connections": {
     "settings": "Connection settings",

@@ -3,6 +3,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   simplefin: 'SimpleFIN',
   pluggy: 'Pluggy',
   enable_banking: 'Enable Banking',
+  plaid: 'Plaid',
 }
 
 export function getConnectionName(
