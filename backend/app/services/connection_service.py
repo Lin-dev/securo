@@ -1266,6 +1266,28 @@ def _description_similarity(a: str | None, b: str | None) -> float:
     return len(intersection) / max(len(tokens_a), len(tokens_b))
 
 
+async def _removed_external_ids(
+    provider, credentials: dict, account_external_id: str
+) -> list[str]:
+    """Ask the provider which ids it withdrew for an account.
+
+    Tolerant on purpose: providers predating the hook, test doubles that
+    return a mock, or a hook that raises must never fail a sync. A removal
+    hint is an optimisation, not a source of truth.
+    """
+    getter = getattr(provider, "get_removed_transaction_ids", None)
+    if getter is None:
+        return []
+    try:
+        result = await getter(credentials, account_external_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("get_removed_transaction_ids failed; ignoring", exc_info=True)
+        return []
+    if not isinstance(result, (list, tuple, set)):
+        return []
+    return [str(x) for x in result if x]
+
+
 async def _fuzzy_match_manual(
     session: AsyncSession,
     account_id: uuid.UUID,
@@ -1766,6 +1788,10 @@ async def sync_connection(
         user = await session.get(User, user_id)
         user_currency = user.primary_currency if user else get_settings().default_currency
         new_tx_ids: list[uuid.UUID] = []
+        # Pending rows that settled under a new provider id this run (Pass 1b);
+        # they get a second look from transfer detection with their final
+        # date and amount.
+        promoted_ids: list[uuid.UUID] = []
         synced_account_ids: list[uuid.UUID] = []
         merged_count = 0
         accounts_data = await provider.get_accounts(credentials)
@@ -1945,6 +1971,47 @@ async def sync_connection(
                                 existing_tx, account, bill_due_date=bill.due_date
                             )
                     continue
+
+                # Pass 1b: the provider minted a new id when a pending row
+                # settled (Plaid does). Re-key the pending row instead of
+                # inserting a posted twin; Pass 3 only catches that flip when
+                # the dates are identical, and a settled charge usually moves.
+                if txn_data.pending_external_id:
+                    pending_row = (
+                        await session.execute(
+                            select(Transaction)
+                            .where(
+                                Transaction.account_id == account.id,
+                                Transaction.external_id == txn_data.pending_external_id,
+                                Transaction.source == "sync",
+                            )
+                            .order_by(Transaction.created_at)
+                        )
+                    ).scalars().first()
+                    if pending_row is not None:
+                        # Always re-key, even a frozen (ignored) row: without
+                        # it the settled twin would land as a new row here.
+                        pending_row.external_id = txn_data.external_id
+                        if not pending_row.is_ignored:
+                            pending_row.status = txn_data.status
+                            if pending_row.date != txn_data.date:
+                                pending_row.date = txn_data.date
+                                if (
+                                    pending_row.effective_bill_date is None
+                                    and pending_row.bill_id is None
+                                ):
+                                    apply_effective_date(pending_row, account)
+                            pending_row.raw_data = txn_data.raw_data
+                            # A description the user or a rule changed stays;
+                            # an untouched one follows the settled wording.
+                            if pending_row.description == pending_row.original_description:
+                                pending_row.description = txn_data.description
+                            pending_row.original_description = txn_data.description
+                            if pending_row.amount != txn_data.amount:
+                                pending_row.amount = txn_data.amount
+                                await stamp_primary_amount(session, user_id, pending_row)
+                            promoted_ids.append(pending_row.id)
+                        continue
 
                 # Pass 2: Fuzzy match against manual transactions
                 fuzzy_match = await _fuzzy_match_manual(session, account.id, txn_data)
@@ -2129,14 +2196,51 @@ async def sync_connection(
                 else:
                     await stamp_primary_amount(session, user_id, transaction)
 
+            # Rows the provider withdrew (cursor providers send explicit
+            # removals; in practice pending authorizations that never settled).
+            # Only unpaired, non-ignored pending rows go; a posted row is a
+            # bank-side correction we leave to the user. Runs before the
+            # opening-balance reconcile so SUM(txs) still matches the balance.
+            removed_ids = await _removed_external_ids(
+                provider, credentials, acc_data.external_id
+            )
+            if removed_ids:
+                withdrawn = (
+                    await session.execute(
+                        select(Transaction).where(
+                            Transaction.account_id == account.id,
+                            Transaction.source == "sync",
+                            Transaction.external_id.in_(removed_ids),
+                        )
+                    )
+                ).scalars().all()
+                for row in withdrawn:
+                    if (
+                        row.status == "pending"
+                        and not row.is_ignored
+                        and row.transfer_pair_id is None
+                    ):
+                        await session.delete(row)
+                    else:
+                        logger.info(
+                            "Provider removed %s on account %s but the row is %s; kept",
+                            row.external_id,
+                            account.id,
+                            "posted" if row.status != "pending" else "ignored or paired",
+                        )
+                await session.flush()
+
             # Reconcile the opening balance after any new transactions land so
             # SUM(all txs) keeps matching account.balance from the provider.
             await sync_opening_balance_for_connected_account(session, account)
             synced_account_ids.append(account.id)
 
-        # Detect transfer pairs among newly synced transactions
-        if new_tx_ids:
-            await detect_transfer_pairs(session, workspace_id, candidate_ids=new_tx_ids)
+        # Detect transfer pairs among newly synced and just-settled transactions
+        transfer_candidates = new_tx_ids + promoted_ids
+        if transfer_candidates:
+            await detect_transfer_pairs(
+                session, workspace_id, candidate_ids=transfer_candidates
+            )
 
         # Split rules run over the synced window, not only the new ids: a row
         # that just flipped pending→posted in the match pass is eligible now

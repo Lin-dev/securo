@@ -100,6 +100,10 @@ class TransactionData:
     # Provider-side identifier of the bill this transaction belongs to.
     # Resolved to a credit_card_bills.id FK at sync time (issue #92).
     bill_external_id: Optional[str] = None
+    # Provider id of the pending row this settled transaction replaces, for
+    # providers that mint a new id when a transaction posts (Plaid). The sync
+    # layer re-keys the pending row instead of inserting a posted twin.
+    pending_external_id: Optional[str] = None
 
 
 @dataclass
@@ -390,5 +394,17 @@ class BankProvider(ABC):
         connections that don't expose /bills, return the default empty list.
         The sync layer falls back to locally-computed cycle math in that case
         (see app.services.credit_card_service).
+        """
+        return []
+
+    async def get_removed_transaction_ids(
+        self, credentials: dict, account_external_id: str
+    ) -> list[str]:
+        """External ids the provider reports as removed for an account.
+
+        Cursor-based providers (Plaid) send explicit removals, in practice
+        pending authorizations that never settled. The sync layer deletes
+        matching pending synced rows and leaves posted rows alone. Default:
+        nothing is ever removed.
         """
         return []
