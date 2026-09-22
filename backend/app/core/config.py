@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     simplefin_enabled: bool = False
     simplefin_api_url: str = "https://beta-bridge.simplefin.org"
 
+    # Plaid (US banks, cards and brokerages; Link popup flow). Registers when a
+    # client id and at least one secret are set. `plaid_env` picks the
+    # environment for NEW links; every linked Item remembers its own env.
+    plaid_client_id: str = ""
+    plaid_secret: SecretStr = SecretStr("")           # Production secret
+    plaid_sandbox_secret: SecretStr = SecretStr("")   # Sandbox secret (tests, smoke checks)
+    plaid_env: str = "production"                     # production | sandbox
+    plaid_client_name: str = "Securo"                 # shown inside Plaid Link (max 30 chars)
+    plaid_country_codes: str = "US"                   # comma-separated ISO-3166-1 alpha-2
+    plaid_oauth_redirect_uri: str = ""                # defaults to {FRONTEND_URL}/plaid/oauth
+    plaid_days_requested: int = 730                   # history asked for at link time (max 730)
+
     # Frontend
     frontend_url: str = "http://localhost:5173"
 
