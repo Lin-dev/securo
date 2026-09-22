@@ -226,7 +226,8 @@ async def get_reconnect_token(
 
     try:
         token_data = await connection_service.create_connect_token(
-            connection.provider, ctx.user_id, item_id=item_id
+            connection.provider, ctx.user_id, item_id=item_id,
+            credentials=connection.credentials,
         )
         return ReconnectTokenResponse(**token_data)
     except Exception as e:

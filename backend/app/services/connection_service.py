@@ -981,10 +981,18 @@ async def list_provider_institutions(
 
 
 async def create_connect_token(
-    provider_name: str, user_id: uuid.UUID, item_id: str | None = None
+    provider_name: str,
+    user_id: uuid.UUID,
+    item_id: str | None = None,
+    credentials: dict | None = None,
 ) -> dict:
+    """Mint a widget/link token; with `credentials` it is a reconnect token
+    for an existing connection (update mode)."""
     provider = get_provider(provider_name)
-    token_data = await provider.create_connect_token(str(user_id), item_id=item_id)
+    if credentials is not None:
+        token_data = await provider.create_reconnect_token(str(user_id), credentials)
+    else:
+        token_data = await provider.create_connect_token(str(user_id), item_id=item_id)
     return {"access_token": token_data.access_token}
 
 
@@ -2367,6 +2375,18 @@ async def delete_connection(
             .distinct()
         )
     ).scalars().all()
+
+    # Let the provider release the link (Plaid frees the Item slot). Best
+    # effort: an unconfigured provider or an already-dead item must never
+    # block the delete. Workspace/user cascades do not pass through here.
+    try:
+        if connection.credentials:
+            await get_provider(connection.provider).revoke(connection.credentials)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Provider revoke failed for connection %s; deleting anyway",
+            connection.id, exc_info=True,
+        )
 
     await session.delete(connection)
     await session.flush()

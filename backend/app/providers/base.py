@@ -296,6 +296,28 @@ class BankProvider(ABC):
         """Create a connect token for widget-based flows. Override in widget providers."""
         raise NotImplementedError(f"{self.name} does not support widget connect tokens")
 
+    async def create_reconnect_token(
+        self, client_user_id: str, credentials: dict
+    ) -> ConnectTokenData:
+        """Create a connect token that re-links an existing connection.
+
+        Defaults to the widget convention of passing the provider's item id
+        (Pluggy update mode). Providers whose update flow needs more than the
+        item id (Plaid's needs the access token) override this.
+        """
+        return await self.create_connect_token(
+            client_user_id, item_id=credentials.get("item_id")
+        )
+
+    async def revoke(self, credentials: dict) -> None:
+        """Tell the provider this connection is gone. Best effort.
+
+        Called when the user disconnects, before the local rows are deleted,
+        so providers that cap or bill per linked item (Plaid Items) release
+        the slot. Default is a no-op; the caller swallows errors.
+        """
+        return None
+
     async def list_institutions(
         self, country: Optional[str] = None
     ) -> "InstitutionListData":
