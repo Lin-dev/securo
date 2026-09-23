@@ -324,13 +324,13 @@ async function applyProposal(data: ProposalData): Promise<string | void> {
     }
     case 'create_payee_rule': {
       const r = await rules.create({
-        name: `Rule: ${String(p.match_pattern).slice(0, 60)}`,
+        name: String(p.name ?? `Rule: ${String(p.match_pattern).slice(0, 60)}`).slice(0, 255),
         conditions_op: 'and',
         conditions: [
           { field: 'description', op: 'contains', value: String(p.match_pattern) },
         ],
         actions: [{ op: 'set_category', value: String(p.category_id) }],
-        priority: 10,
+        priority: Number.isFinite(Number(p.priority)) ? Number(p.priority) : 10,
         is_active: true,
       })
       return r.id
