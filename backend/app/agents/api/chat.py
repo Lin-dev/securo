@@ -7,10 +7,12 @@ with summaries when results land.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import uuid
 from dataclasses import asdict
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +30,43 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 def _format_event(event: ExecutorEvent) -> bytes:
     payload = {k: v for k, v in asdict(event).items() if v is not None}
     return f"event: {event.type}\ndata: {json.dumps(payload, default=str)}\n\n".encode()
+
+
+# Seconds of silence after which the stream emits an SSE comment. Local models
+# can take a minute or more before the first byte (model load + reading an
+# ~9K-token prompt), and proxies in front of the app (Cloudflare closes idle
+# responses at 100 s, Traefik/nginx have their own idle limits) treat that
+# silence as a dead connection. A comment line is ignored by every SSE parser,
+# including the frontend's, so it is pure keep-alive.
+SSE_HEARTBEAT_SECONDS = 15.0
+_HEARTBEAT = b": ping\n\n"
+
+
+async def _with_heartbeat(events, interval: float):
+    """Yield items from the async iterator `events`; yield None whenever no item
+    arrived for `interval` seconds. Consumes the source strictly one item at a
+    time, so the executor never runs concurrently with itself."""
+    it = events.__aiter__()
+    pending: Optional[asyncio.Task] = asyncio.ensure_future(it.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if not done:
+                yield None
+                continue
+            try:
+                item = pending.result()
+            except StopAsyncIteration:
+                pending = None
+                return
+            pending = None
+            yield item
+            pending = asyncio.ensure_future(it.__anext__())
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with contextlib.suppress(BaseException):
+                await pending
 
 
 @router.post("/{agent_id}/chat")
@@ -72,7 +111,7 @@ async def chat(
         # Send the conversation id immediately so the client can update its URL.
         yield f"event: conversation\ndata: {json.dumps({'conversation_id': str(conv.id)})}\n\n".encode()
         try:
-            async for ev in executor.run(
+            run = executor.run(
                 session=session,
                 agent=agent,
                 user_id=ctx.user_id,
@@ -81,8 +120,9 @@ async def chat(
                 user_message=body.content,
                 channel=body.channel,
                 page_context=body.page_context,
-            ):
-                yield _format_event(ev)
+            )
+            async for ev in _with_heartbeat(run, SSE_HEARTBEAT_SECONDS):
+                yield _HEARTBEAT if ev is None else _format_event(ev)
         except Exception as exc:  # noqa: BLE001
             yield f"event: error\ndata: {json.dumps({'error_code': 'unknown', 'error_message': str(exc)})}\n\n".encode()
 
