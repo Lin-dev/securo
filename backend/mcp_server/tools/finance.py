@@ -9,6 +9,7 @@ from __future__ import annotations
 import calendar
 import uuid
 from collections import Counter, defaultdict
+from dataclasses import asdict
 from datetime import date, timedelta
 from typing import Any, Optional
 
@@ -20,8 +21,16 @@ from app.models.asset import Asset
 from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.user import User
-from app.services import account_service, asset_service, report_service, rule_service, transaction_service
+from app.services import (
+    account_service,
+    asset_service,
+    fire_service,
+    report_service,
+    rule_service,
+    transaction_service,
+)
 from app.services._query_filters import is_split_parent
+from app.services.fire_service import FireInputs
 from app.services.report_service import _report_start_date
 from mcp_server.auth import CallContext
 from mcp_server.registry import tool
@@ -665,5 +674,98 @@ async def get_holdings(
             "Holdings listed under an account are already included in that account's "
             "balance; investment_accounts_total_primary counts each account once and "
             "unlinked_holdings_total_by_currency is additional, per native currency."
+        ),
+    }
+
+
+# --- FIRE projection ---------------------------------------------------------------
+
+@tool(
+    name="fire_projection",
+    description=(
+        "Financial-independence math: FI number (annual spend / withdrawal rate), gap, "
+        "progress, years to FI and a year-by-year trajectory. Inputs you omit are "
+        "derived from Securo data — annual_spend and annual_contribution from the "
+        "trailing 365 days (the expense and invested figures of get_transactions_summary), "
+        "invested_assets from investment-account balances plus holdings not linked to an "
+        "account — and echoed under `derived` so you can state where each number came "
+        "from. real_return is after inflation; spending stays in today's money."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "annual_spend": {"type": "number", "exclusiveMinimum": 0, "description": "Yearly spending in the primary currency"},
+            "invested_assets": {"type": "number", "minimum": 0, "description": "Portfolio today, primary currency"},
+            "annual_contribution": {"type": "number", "minimum": 0, "description": "New money invested per year"},
+            "real_return": {"type": "number", "minimum": -0.1, "maximum": 0.2, "default": 0.05, "description": "Expected yearly return after inflation"},
+            "withdrawal_rate": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.2, "default": 0.04},
+        },
+        "additionalProperties": False,
+    },
+    tags=["read", "finance", "projection"],
+)
+async def fire_projection(
+    *,
+    session: AsyncSession,
+    ctx: CallContext,
+    annual_spend: float | None = None,
+    invested_assets: float | None = None,
+    annual_contribution: float | None = None,
+    real_return: float = 0.05,
+    withdrawal_rate: float = 0.04,
+) -> dict[str, Any]:
+    ws_id = await resolve_workspace_id(session, ctx)
+    primary = await _primary_currency(session, ctx)
+    derived: dict[str, Any] = {}
+
+    if annual_spend is None or annual_contribution is None:
+        today = date.today()
+        window = await _summary_window(session, ws_id, ctx.user_id, today - timedelta(days=364), today)
+        span = f"{window['from_date']} to {window['to_date']}"
+        if annual_spend is None:
+            annual_spend = window["expense"]
+            derived["annual_spend"] = {"value": annual_spend, "source": f"expense, trailing 365 days ({span})"}
+        if annual_contribution is None:
+            annual_contribution = window["invested"]
+            derived["annual_contribution"] = {
+                "value": annual_contribution,
+                "source": f"invested, trailing 365 days ({span})",
+            }
+
+    if invested_assets is None:
+        positions = await _investment_positions(session, ws_id, primary)
+        by_currency = positions["unlinked_holdings_total_by_currency"]
+        invested_assets = _round(positions["investment_accounts_total_primary"] + by_currency.get(primary, 0.0))
+        derived["invested_assets"] = {
+            "value": invested_assets,
+            "source": "investment account balances plus unlinked holdings, primary currency only",
+            "unconverted": {
+                "holdings_by_currency": {k: v for k, v in by_currency.items() if k != primary},
+                "accounts": positions["unconverted_accounts"],
+            },
+        }
+
+    try:
+        inputs = FireInputs(
+            annual_spend=float(annual_spend),
+            invested_assets=float(invested_assets),
+            annual_contribution=float(annual_contribution),
+            real_return=float(real_return),
+            withdrawal_rate=float(withdrawal_rate),
+        )
+        result = fire_service.project(inputs)
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc), "derived": derived}
+
+    return {
+        "currency": primary,
+        "inputs": asdict(inputs),
+        "derived": derived,
+        **result.to_dict(),
+        "notes": (
+            "Deterministic arithmetic, not advice: fi_number = annual_spend / withdrawal_rate; "
+            "years_to_fi assumes the same contribution and the same real return every year "
+            "(None = not reached within max_years). State the inputs and their sources when "
+            "quoting it."
         ),
     }
