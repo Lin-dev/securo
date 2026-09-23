@@ -70,6 +70,11 @@ class AgentSettings(BaseSettings):
     # worker. Off by default to keep the Celery path for existing installs.
     knowledge_ingest_inline: bool = False
 
+    # Pinned knowledge docs are injected into every turn's system context
+    # (standing conventions: household categorization rules, definitions).
+    # This caps the injected text in characters; 0 disables the injection.
+    pinned_context_max_chars: int = 6000
+
     # Local reasoning models served by Ollama.
     # `ollama_think`: "" = don't send (server default); "false"/"true"; or a
     # level "low|medium|high". gpt-oss only accepts levels (rejects false),

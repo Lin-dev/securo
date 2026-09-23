@@ -232,3 +232,32 @@ def test_file_size_limit_mb_returns_settings_value(monkeypatch):
 
     monkeypatch.setattr(get_agent_settings(), "knowledge_max_file_size_mb", 42)
     assert knowledge_service.file_size_limit_mb() == 42
+
+
+@pytest.mark.asyncio
+async def test_list_pinned_chunks_orders_by_doc_then_ordinal_and_skips_unpinned(session, test_agent, test_user):
+    async def _doc(name, texts, *, pinned):
+        doc = await knowledge_service.upload_doc(
+            session, agent_id=test_agent.id, user_id=test_user.id,
+            filename=name, mime="text/plain", payload=name.encode(), pinned=pinned,
+        )
+        await knowledge_service.replace_chunks(
+            session, doc_id=doc.id, agent_id=test_agent.id,
+            chunks=[(t, [0.0] * 1536) for t in texts], embedding_model="fake",
+        )
+        return doc
+
+    a = await _doc("a.txt", ["a0", "a1", "a2"], pinned=True)
+    b = await _doc("b.txt", ["b0", "b1"], pinned=True)
+    await _doc("c.txt", ["c0"], pinned=False)
+
+    rows = await knowledge_service.list_pinned_chunks(session, agent_id=test_agent.id)
+    assert [r["content"] for r in rows if r["doc_id"] == str(a.id)] == ["a0", "a1", "a2"]
+    assert [r["content"] for r in rows if r["doc_id"] == str(b.id)] == ["b0", "b1"]
+    assert all(r["content"] != "c0" for r in rows)
+    # Chunks of one doc are contiguous (ordered by doc first, then ordinal).
+    doc_sequence = [r["doc_id"] for r in rows]
+    assert doc_sequence == sorted(doc_sequence, key=doc_sequence.index)
+
+    limited = await knowledge_service.list_pinned_chunks(session, agent_id=test_agent.id, max_chunks=2)
+    assert len(limited) == 2
