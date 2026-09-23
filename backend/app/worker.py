@@ -53,6 +53,13 @@ celery_app.conf.beat_schedule = {
         # stamped with the 1:1 fallback (or left NULL) once real rates land.
         "schedule": 60 * 60 * 12,
     },
+    "finance-digest-hourly-tick": {
+        "task": "app.agents.tasks.digest.run_finance_digests",
+        # Hourly tick; the task itself decides what is due in each agent
+        # owner's local timezone (Monday / 1st at AGENTS_DIGEST_HOUR) and is
+        # idempotent per period. No-op unless AGENTS_DIGEST_ENABLED=true.
+        "schedule": 60 * 60,
+    },
 }
 
 celery_app.conf.include = [
@@ -63,4 +70,5 @@ celery_app.conf.include = [
     # Optional agents module — registering the import is harmless when
     # AGENTS_ENABLED=false (the task just won't be dispatched).
     "app.agents.tasks.ingest",
+    "app.agents.tasks.digest",
 ]

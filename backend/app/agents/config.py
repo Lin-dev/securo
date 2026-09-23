@@ -91,6 +91,12 @@ class AgentSettings(BaseSettings):
     # load (~15 s) plus prompt evaluation; 300 is safe for an M1 Max.
     llm_timeout_seconds: float = 120.0
 
+    # Scheduled finance digests, written by each workspace's default agent in
+    # a fresh "digest" conversation: weekly on Monday, monthly on the 1st, at
+    # or after `digest_hour` in the agent owner's timezone.
+    digest_enabled: bool = False
+    digest_hour: int = 7
+
     # Same env_file pair as the main Settings: the CWD-relative ".env" for
     # backward compatibility plus the anchored backend/.env, so the API and the
     # Celery worker/beat read the same file whatever directory they start from.
