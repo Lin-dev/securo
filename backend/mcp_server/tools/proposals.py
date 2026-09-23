@@ -19,7 +19,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
@@ -46,6 +46,7 @@ from app.services import (
     rule_service,
     transaction_service,
 )
+from app.services._query_filters import is_split_parent
 from mcp_server.auth import CallContext
 from mcp_server.registry import tool
 from mcp_server.tools._helpers import (
@@ -1050,6 +1051,18 @@ def _today():
                 "description": "Substring to match in transaction description (case-insensitive)",
             },
             "category_id": {"type": "string", "format": "uuid"},
+            "name": {
+                "type": "string",
+                "maxLength": 255,
+                "description": "Rule name shown on the Rules page. Default 'Auto-categorize: <pattern>'.",
+            },
+            "priority": {
+                "type": "integer",
+                "description": (
+                    "Run order, ascending; the first rule that sets a category wins. Use "
+                    "suggested_priority_for_new_merchant_rule from list_rules. Default 10."
+                ),
+            },
             "apply": _APPLY_FIELD,
         },
         "required": ["match_pattern", "category_id"],
@@ -1064,6 +1077,8 @@ async def propose_create_payee_rule(
     ctx: CallContext,
     match_pattern: str,
     category_id: str,
+    name: str | None = None,
+    priority: int | None = None,
     apply: bool = False,
 ) -> dict[str, Any]:
     ws_id = await resolve_workspace_id(session, ctx)
@@ -1076,28 +1091,56 @@ async def propose_create_payee_rule(
     if cat is None:
         return {"error": "category not found"}
 
+    rule_name = (name or "").strip()[:255] or f"Auto-categorize: {match_pattern}"
+    rule_priority = int(priority) if priority is not None else 10
+    existing_names = await rule_service._get_existing_rule_names_for_workspace(session, ws_id)
+    # What the rule would pick up today: the uncategorized rows whose
+    # description carries the pattern. Same exclusions as the uncategorized
+    # list (ignored rows, opening balances, split parents and their lines).
+    would_categorize = await session.scalar(
+        select(func.count(Transaction.id)).where(
+            Transaction.workspace_id == ws_id,
+            Transaction.category_id.is_(None),
+            Transaction.is_ignored.is_(False),
+            Transaction.source != "opening_balance",
+            Transaction.parent_transaction_id.is_(None),
+            ~is_split_parent(),
+            Transaction.description.ilike(f"%{match_pattern}%"),
+        )
+    )
+
     preview = {
         "kind": "create_payee_rule",
         "proposed": {
             "match_pattern": match_pattern,
             "category_id": str(cat.id),
             "category_name": cat.name,
+            "name": rule_name,
+            "priority": rule_priority,
+            "would_categorize_count": int(would_categorize or 0),
+            "name_collision": rule_name in existing_names,
         },
         "apply_endpoint": "POST /api/rules",
     }
 
     if _can_apply(ctx, apply):
+        if rule_name in existing_names:
+            return {**preview, "error": f"a rule named '{rule_name}' already exists"}
         created = await rule_service.create_rule(
             session,
             ws_id,
             ctx.user_id,
             RuleCreate(
-                name=f"Auto-categorize: {match_pattern}",
+                name=rule_name,
+                priority=rule_priority,
                 conditions_op="and",
                 conditions=[RuleCondition(field="description", op="contains", value=match_pattern)],
                 actions=[RuleAction(op="set_category", value=str(cat.id))],
             ),
         )
-        return {**preview, "applied": True, "id": str(created.id)}
+        # The HTTP endpoint applies a new rule to history; the MCP apply path
+        # does the same so an external client gets the categorization too.
+        categorized = await rule_service.apply_single_rule(session, ws_id, created)
+        return {**preview, "applied": True, "id": str(created.id), "categorized": int(categorized)}
 
     return preview

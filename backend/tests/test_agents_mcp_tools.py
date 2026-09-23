@@ -619,6 +619,69 @@ async def test_propose_create_payee_rule_unknown_category(
     assert result["error"] == "category not found"
 
 
+async def test_propose_create_payee_rule_reports_match_count_priority_and_collision(
+    session: AsyncSession, ctx: CallContext, test_transactions, test_categories, test_rules
+):
+    """qc7: the preview carries the name, priority and how many uncategorized
+    rows the rule would pick up, so the agent can propose rules that line up
+    with the existing ones."""
+    handler = REGISTRY["propose_create_payee_rule"].handler
+
+    result = await handler(
+        session=session, ctx=ctx, match_pattern="NETFLIX", category_id=str(test_categories[0].id)
+    )
+    assert "applied" not in result
+    proposed = result["proposed"]
+    assert proposed["name"] == "Auto-categorize: NETFLIX"
+    assert proposed["priority"] == 10
+    assert proposed["would_categorize_count"] == 1  # the uncategorized NETFLIX row
+    assert proposed["name_collision"] is False
+
+    clashing = await handler(
+        session=session, ctx=ctx, match_pattern="NETFLIX", category_id=str(test_categories[0].id),
+        name="UBER rule", priority=30,
+    )
+    assert clashing["proposed"]["name"] == "UBER rule"
+    assert clashing["proposed"]["priority"] == 30
+    assert clashing["proposed"]["name_collision"] is True
+
+
+async def test_propose_create_payee_rule_external_apply_creates_and_applies_rule(
+    session: AsyncSession, test_user, test_transactions, test_categories
+):
+    from sqlalchemy import select
+    from app.models.rule import Rule
+    from app.models.transaction import Transaction
+
+    handler = REGISTRY["propose_create_payee_rule"].handler
+    external = CallContext(user_id=test_user.id, external=True)
+    netflix = test_transactions[4]
+    assert netflix.description == "NETFLIX" and netflix.category_id is None
+
+    result = await handler(
+        session=session, ctx=external, match_pattern="NETFLIX",
+        category_id=str(test_categories[0].id), name="Netflix subscription", priority=25, apply=True,
+    )
+    assert result["applied"] is True
+    assert result["categorized"] == 1
+
+    rule = (await session.execute(select(Rule).where(Rule.id == uuid.UUID(result["id"])))).scalar_one()
+    assert rule.name == "Netflix subscription"
+    assert rule.priority == 25
+    refreshed = (await session.execute(
+        select(Transaction).where(Transaction.id == netflix.id)
+    )).scalar_one()
+    assert refreshed.category_id == test_categories[0].id
+
+    again = await handler(
+        session=session, ctx=external, match_pattern="NETFLIX",
+        category_id=str(test_categories[0].id), name="Netflix subscription", apply=True,
+    )
+    assert "applied" not in again and "already exists" in again["error"]
+    rule_count = len((await session.execute(select(Rule).where(Rule.name == "Netflix subscription"))).scalars().all())
+    assert rule_count == 1
+
+
 # --- search_knowledge_base ------------------------------------------------
 
 async def test_search_knowledge_base_requires_agent_id(
