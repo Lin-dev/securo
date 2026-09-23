@@ -5,6 +5,8 @@ Per call, mints a short-lived JWT scoped to (user_id, conversation_id).
 """
 from __future__ import annotations
 
+import re
+
 import logging
 import uuid
 from dataclasses import dataclass
@@ -117,6 +119,11 @@ def _join_text(content: Any) -> str:
     return "\n".join(parts)
 
 
+
+def _normalize_wire_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]+$", "", (name or "").strip())
+    return cleaned or (name or "")
+
 class MCPRegistry:
     """Aggregates tools from multiple MCP servers and routes calls. The
     namespacing convention is `<server>.<tool>` to avoid collisions when
@@ -203,6 +210,11 @@ class MCPRegistry:
             conversation_id=conversation_id,
             agent_id=agent_id,
         )
+
+        # Local models occasionally mangle the wire name ("secular__get_x?",
+        # "get_x."): strip trailing punctuation before resolving; an unknown
+        # server prefix falls through to the bare-name scan below.
+        wire_name = _normalize_wire_name(wire_name)
 
         # Happy path: namespaced name (server__tool).
         if "__" in wire_name:
