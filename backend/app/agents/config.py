@@ -64,6 +64,22 @@ class AgentSettings(BaseSettings):
     knowledge_storage_path: str = "/app/data/agent_knowledge"
     knowledge_max_file_size_mb: int = 25
 
+    # Local reasoning models served by Ollama.
+    # `ollama_think`: "" = don't send (server default); "false"/"true"; or a
+    # level "low|medium|high". gpt-oss only accepts levels (rejects false),
+    # qwen3-class models need false to stop emitting thinking — hence no
+    # default. `ollama_num_ctx`: 0 = server default (4096 on Ollama, too
+    # small for the tool schemas; 32768 recommended for tool use).
+    # `ollama_keep_alive`: "" = omit (server default), e.g. "30m" or "-1".
+    ollama_think: str = ""
+    ollama_num_ctx: int = 0
+    ollama_keep_alive: str = ""
+
+    # Read/write timeout (seconds) for every provider's chat stream. The
+    # first token after idle on an ~18 GB local model includes the model
+    # load (~15 s) plus prompt evaluation; 300 is safe for an M1 Max.
+    llm_timeout_seconds: float = 120.0
+
     # Same env_file pair as the main Settings: the CWD-relative ".env" for
     # backward compatibility plus the anchored backend/.env, so the API and the
     # Celery worker/beat read the same file whatever directory they start from.

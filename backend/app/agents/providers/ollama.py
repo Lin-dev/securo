@@ -5,6 +5,7 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from app.agents.config import get_agent_settings
 from app.agents.providers.base import (
     ChatChunk,
     ChatMessage,
@@ -12,7 +13,22 @@ from app.agents.providers.base import (
     LLMUnavailableError,
     ToolDefinition,
     Usage,
+    chat_timeout_seconds,
 )
+
+
+def _think_value(raw: str) -> bool | str | None:
+    """Map AGENTS_OLLAMA_THINK to Ollama's `think` field. None = don't send."""
+    v = (raw or "").strip().lower()
+    if v in ("", "omit", "default"):
+        return None
+    if v in ("false", "0", "off", "no"):
+        return False
+    if v in ("true", "1", "on", "yes"):
+        return True
+    if v in ("low", "medium", "high"):
+        return v
+    return None
 
 
 def _serialize_messages(messages: list[ChatMessage]) -> list[dict]:
@@ -75,9 +91,17 @@ class OllamaProvider(LLMProvider):
             payload["options"]["num_predict"] = max_tokens
         if tools:
             payload["tools"] = _serialize_tools(tools)
+        settings = get_agent_settings()
+        if settings.ollama_num_ctx > 0:
+            payload["options"]["num_ctx"] = int(settings.ollama_num_ctx)
+        think = _think_value(settings.ollama_think)
+        if think is not None:
+            payload["think"] = think
+        if settings.ollama_keep_alive.strip():
+            payload["keep_alive"] = settings.ollama_keep_alive.strip()
 
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(chat_timeout_seconds(), connect=10.0)) as client:
                 async with client.stream("POST", url, json=payload) as resp:
                     if resp.status_code >= 400:
                         body = (await resp.aread()).decode("utf-8", errors="replace")
@@ -88,6 +112,9 @@ class OllamaProvider(LLMProvider):
                             continue
                         data = json.loads(line)
                         msg = data.get("message") or {}
+                        # Thinking models stream their reasoning in a separate
+                        # `thinking` field. It is never user-facing text, so it
+                        # is deliberately not surfaced as a text_delta.
                         content = msg.get("content") or ""
                         if content:
                             yield ChatChunk(type="text_delta", text=content)
