@@ -292,6 +292,27 @@ async def test_ollama_embed_raises_on_http_error():
         await provider.embed(["a"], model="nomic-embed-text")
 
 
+@pytest.mark.asyncio
+async def test_ollama_embed_sends_bounded_num_ctx_by_default():
+    """Without num_ctx Ollama sizes the embedder's KV cache to the server default
+    (32K on a large GPU), costing gigabytes for a 0.6B model."""
+    _FakeAsyncClient.queue_post.append(_FakeResponse(status_code=200, json_body={"embeddings": [[0.1]]}))
+    await OllamaProvider().embed(["a"], model="qwen3-embedding:0.6b")
+    url, payload = _FakeAsyncClient.posted[-1]
+    assert url.endswith("/api/embed")
+    assert payload["input"] == ["a"]
+    assert payload["options"] == {"num_ctx": 2048}
+
+
+@pytest.mark.asyncio
+async def test_ollama_embed_omits_num_ctx_when_disabled(monkeypatch):
+    monkeypatch.setattr(get_agent_settings(), "ollama_embed_num_ctx", 0)
+    _FakeAsyncClient.queue_post.append(_FakeResponse(status_code=200, json_body={"embeddings": [[0.1]]}))
+    await OllamaProvider().embed(["a"], model="qwen3-embedding:0.6b")
+    _, payload = _FakeAsyncClient.posted[-1]
+    assert "options" not in payload
+
+
 # --------------------------------------------------------------------- Anthropic: chat_stream
 
 @pytest.mark.asyncio

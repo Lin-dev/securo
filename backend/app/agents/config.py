@@ -85,6 +85,11 @@ class AgentSettings(BaseSettings):
     ollama_think: str = ""
     ollama_num_ctx: int = 0
     ollama_keep_alive: str = ""
+    # Context window for /api/embed requests. Without it Ollama sizes the
+    # embedder's KV cache to the server default (32K on a large GPU → ~4 GB
+    # for a 0.6B model); chunks are ≤2000 chars, so 2048 tokens is plenty.
+    # 0 = don't send.
+    ollama_embed_num_ctx: int = 2048
 
     # Read/write timeout (seconds) for every provider's chat stream. The
     # first token after idle on an ~18 GB local model includes the model
