@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import json
 from typing import AsyncIterator, Optional
 
@@ -65,6 +67,13 @@ def _serialize_tools(tools: Optional[list[ToolDefinition]]) -> Optional[list[dic
     ]
 
 
+
+def _is_tool_parse_error(status: int, body: str) -> bool:
+    return status == 500 and "error parsing tool call" in (body or "")
+
+logger = logging.getLogger(__name__)
+
+
 class OllamaProvider(LLMProvider):
     name = "ollama"
 
@@ -100,41 +109,56 @@ class OllamaProvider(LLMProvider):
         if settings.ollama_keep_alive.strip():
             payload["keep_alive"] = settings.ollama_keep_alive.strip()
 
+        retried = False
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(chat_timeout_seconds(), connect=10.0)) as client:
-                async with client.stream("POST", url, json=payload) as resp:
-                    if resp.status_code >= 400:
-                        body = (await resp.aread()).decode("utf-8", errors="replace")
-                        raise LLMUnavailableError(f"Ollama {resp.status_code}: {body}", status=resp.status_code)
-                    tool_idx = 0
-                    async for line in resp.aiter_lines():
-                        if not line.strip():
-                            continue
-                        data = json.loads(line)
-                        msg = data.get("message") or {}
-                        # Thinking models stream their reasoning in a separate
-                        # `thinking` field. It is never user-facing text, so it
-                        # is deliberately not surfaced as a text_delta.
-                        content = msg.get("content") or ""
-                        if content:
-                            yield ChatChunk(type="text_delta", text=content)
-                        for call in (msg.get("tool_calls") or []):
-                            fn = call.get("function") or {}
-                            args = fn.get("arguments") or {}
-                            if not isinstance(args, str):
-                                args = json.dumps(args)
-                            tcid = call.get("id") or f"call_{tool_idx}"
-                            tool_idx += 1
-                            yield ChatChunk(type="tool_call_start", tool_call_id=tcid, tool_name=fn.get("name") or "")
-                            yield ChatChunk(type="tool_call_args_delta", tool_call_id=tcid, args_delta=args)
-                            yield ChatChunk(type="tool_call_end", tool_call_id=tcid)
-                        if data.get("done"):
-                            usage = Usage(
-                                input_tokens=int(data.get("prompt_eval_count") or 0),
-                                output_tokens=int(data.get("eval_count") or 0),
-                            )
-                            yield ChatChunk(type="usage", usage=usage)
-                            yield ChatChunk(type="finish", finish_reason=data.get("done_reason") or "stop")
+            while True:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(chat_timeout_seconds(), connect=10.0)) as client:
+                    # a fresh copy per attempt: the retry may change `think`
+                    async with client.stream("POST", url, json=dict(payload)) as resp:
+                        if resp.status_code >= 400:
+                            body = (await resp.aread()).decode("utf-8", errors="replace")
+                            if not retried and _is_tool_parse_error(resp.status_code, body):
+                                # gpt-oss-class models sometimes prefix a tool call
+                                # with a stray word ("Need August.{...}"); Ollama
+                                # answers 500 before any token reached us, so one
+                                # retry is safe. A higher reasoning level makes the
+                                # call well-formed far more often.
+                                retried = True
+                                if payload.get("think") in (False, "low"):
+                                    payload["think"] = "medium"
+                                logger.warning("Ollama could not parse a tool call; retrying once (think=%s)", payload.get("think"))
+                                continue
+                            raise LLMUnavailableError(f"Ollama {resp.status_code}: {body}", status=resp.status_code)
+                        tool_idx = 0
+                        async for line in resp.aiter_lines():
+                            if not line.strip():
+                                continue
+                            data = json.loads(line)
+                            msg = data.get("message") or {}
+                            # Thinking models stream their reasoning in a separate
+                            # `thinking` field. It is never user-facing text, so it
+                            # is deliberately not surfaced as a text_delta.
+                            content = msg.get("content") or ""
+                            if content:
+                                yield ChatChunk(type="text_delta", text=content)
+                            for call in (msg.get("tool_calls") or []):
+                                fn = call.get("function") or {}
+                                args = fn.get("arguments") or {}
+                                if not isinstance(args, str):
+                                    args = json.dumps(args)
+                                tcid = call.get("id") or f"call_{tool_idx}"
+                                tool_idx += 1
+                                yield ChatChunk(type="tool_call_start", tool_call_id=tcid, tool_name=fn.get("name") or "")
+                                yield ChatChunk(type="tool_call_args_delta", tool_call_id=tcid, args_delta=args)
+                                yield ChatChunk(type="tool_call_end", tool_call_id=tcid)
+                            if data.get("done"):
+                                usage = Usage(
+                                    input_tokens=int(data.get("prompt_eval_count") or 0),
+                                    output_tokens=int(data.get("eval_count") or 0),
+                                )
+                                yield ChatChunk(type="usage", usage=usage)
+                                yield ChatChunk(type="finish", finish_reason=data.get("done_reason") or "stop")
+                        return
         except httpx.HTTPError as exc:
             raise LLMUnavailableError(f"Ollama unreachable: {exc}") from exc
 
