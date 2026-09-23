@@ -112,6 +112,7 @@ def test_registry_contains_finance_tools():
         "list_uncategorized_merchants",
         "list_rules",
         "get_holdings",
+        "fire_projection",
     }
     assert expected <= set(REGISTRY.keys())
     for name in expected:
@@ -395,3 +396,60 @@ async def test_get_holdings_account_filter_returns_only_that_account(
     assert [a["account_id"] for a in result["accounts"]] == [str(other.id)]
     assert result["accounts"][0]["holdings"] == []
     assert result["unlinked_holdings"] == []
+
+
+# --- fire_projection ------------------------------------------------------------------
+
+async def test_fire_projection_derives_defaults_from_data(
+    session: AsyncSession, ctx: CallContext, test_user, test_workspace
+):
+    uid, wid = test_user.id, test_workspace.id
+    checking = await _account(session, uid, wid, "Checking", "checking")
+    brokerage = await _account(session, uid, wid, "Brokerage", "investment")
+    contribution = await _category(session, uid, wid, INVESTMENT_CONTRIBUTION_CATEGORY)
+    activity = await _category(session, uid, wid, "Brokerage activity")
+    session.add_all([
+        _txn(uid, wid, checking, 3000, "debit"),                # expense
+        _txn(uid, wid, checking, 75, "debit", contribution),    # invested
+        _txn(uid, wid, brokerage, 5000, "credit", activity),    # balance, not P&L
+    ])
+    await session.commit()
+    await _asset(session, uid, wid, "VTI", 900, account_id=brokerage.id)  # inside the balance
+    await _asset(session, uid, wid, "BOND", 100)                          # unlinked, BRL → counts
+    await _asset(session, uid, wid, "BTC", 400, currency="USD")           # unlinked, USD → listed only
+
+    result = await REGISTRY["fire_projection"].handler(session=session, ctx=ctx)
+
+    assert result["currency"] == "BRL"
+    assert result["derived"]["annual_spend"]["value"] == 3000.0
+    assert result["derived"]["annual_contribution"]["value"] == 75.0
+    assert result["derived"]["invested_assets"]["value"] == 5100.0
+    assert result["derived"]["invested_assets"]["unconverted"]["holdings_by_currency"] == {"USD": 400.0}
+    assert result["inputs"] == {
+        "annual_spend": 3000.0, "invested_assets": 5100.0, "annual_contribution": 75.0,
+        "real_return": 0.05, "withdrawal_rate": 0.04, "max_years": 60,
+    }
+    assert result["fi_number"] == 75_000.0
+    assert result["gap"] == 75_000.0 - 5100.0
+    assert result["years_to_fi"] is not None and 40 < result["years_to_fi"] < 60
+    assert result["trajectory"][0]["start"] == 5100.0
+    assert result["trajectory_truncated"] is True  # capped at 40 rows
+    assert "notes" in result
+
+
+async def test_fire_projection_uses_explicit_inputs_and_reports_invalid_ones(
+    session: AsyncSession, ctx: CallContext, test_user
+):
+    handler = REGISTRY["fire_projection"].handler
+    result = await handler(
+        session=session, ctx=ctx, annual_spend=40_000, invested_assets=200_000, annual_contribution=30_000,
+    )
+    assert result["derived"] == {}
+    assert result["fi_number"] == 1_000_000.0
+    assert result["progress"] == 0.2
+    assert result["trajectory"][-1]["end"] >= 1_000_000.0
+
+    bad = await handler(
+        session=session, ctx=ctx, annual_spend=40_000, invested_assets=1, annual_contribution=1, withdrawal_rate=0,
+    )
+    assert "withdrawal_rate" in bad["error"]

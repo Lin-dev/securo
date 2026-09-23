@@ -70,6 +70,7 @@ def test_registry_contains_qc7_finance_tools():
         "list_uncategorized_merchants",
         "list_rules",
         "get_holdings",
+        "fire_projection",
     }
     assert expected <= set(REGISTRY.keys()), f"missing: {expected - set(REGISTRY.keys())}"
 
