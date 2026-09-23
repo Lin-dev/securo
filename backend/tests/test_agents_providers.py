@@ -199,6 +199,42 @@ async def test_openai_parser_handles_index_keyed_tool_call_chunks():
     assert len(ends) == 1 and ends[0].tool_call_id == "call_abc"
 
 
+@pytest.mark.asyncio
+async def test_openai_chat_timeout_comes_from_settings(monkeypatch):
+    """The OpenAI-compatible path shares AGENTS_LLM_TIMEOUT_SECONDS."""
+    from unittest.mock import patch
+    from app.agents.config import get_agent_settings
+    from app.agents.providers.openai import OpenAIProvider
+
+    monkeypatch.setattr(get_agent_settings(), "llm_timeout_seconds", 300.0)
+
+    class _StreamResp:
+        status_code = 200
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): pass
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): pass
+        def stream(self, *_a, **_kw): return _StreamResp()
+
+    seen: dict = {}
+
+    def _factory(**kwargs):
+        seen.update(kwargs)
+        return _Client()
+
+    p = OpenAIProvider(api_key="x", base_url="http://lmstudio:1234")
+    with patch("httpx.AsyncClient", side_effect=_factory):
+        async for _ in p.chat_stream([ChatMessage(role="user", content="hi")], model="m"):
+            pass
+    assert seen["timeout"].read == 300.0
+    assert seen["timeout"].connect == 10.0
+
+
 # --- chat() helper assembly -------------------------------------------------
 
 class _ScriptedProvider(LLMProvider):

@@ -13,6 +13,7 @@ import pytest
 
 import app.agents.providers.anthropic as anthropic_module
 import app.agents.providers.ollama as ollama_module
+from app.agents.config import get_agent_settings
 from app.agents.providers.anthropic import AnthropicProvider
 from app.agents.providers.base import (
     ChatMessage,
@@ -59,9 +60,10 @@ class _FakeAsyncClient:
     queue_stream: list[_FakeStreamResponse] = []
     queue_post: list[_FakeResponse] = []
     posted: list[tuple[str, dict]] = []
+    init_kwargs: dict = {}
 
-    def __init__(self, *_, **__):  # accept (timeout=...) kw
-        pass
+    def __init__(self, *_, **kwargs):  # accept (timeout=...) kw
+        type(self).init_kwargs = dict(kwargs)
 
     async def __aenter__(self):
         return self
@@ -84,6 +86,7 @@ def _fake_httpx(monkeypatch):
     _FakeAsyncClient.queue_stream = []
     _FakeAsyncClient.queue_post = []
     _FakeAsyncClient.posted = []
+    _FakeAsyncClient.init_kwargs = {}
     monkeypatch.setattr(ollama_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(anthropic_module.httpx, "AsyncClient", _FakeAsyncClient)
     yield
@@ -175,6 +178,89 @@ async def test_ollama_chat_stream_includes_tools_in_payload():
         pass
     _, payload = _FakeAsyncClient.posted[-1]
     assert payload["tools"][0]["function"]["name"] == "t"
+
+
+# --------------------------------------------------------------------- Ollama: local-model settings
+
+def _done_frame() -> _FakeStreamResponse:
+    return _FakeStreamResponse(status_code=200, lines=[
+        json.dumps({"message": {"content": ""}, "done": True, "done_reason": "stop"}),
+    ])
+
+
+async def _run_ollama_once() -> dict:
+    provider = OllamaProvider()
+    async for _ in provider.chat_stream([ChatMessage(role="user", content="x")], model="m"):
+        pass
+    _, payload = _FakeAsyncClient.posted[-1]
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_ollama_chat_stream_omits_think_num_ctx_keep_alive_by_default():
+    """With the settings at their defaults the payload must not carry
+    `think`, `keep_alive` or `options.num_ctx` — the server decides."""
+    _FakeAsyncClient.queue_stream.append(_done_frame())
+    payload = await _run_ollama_once()
+    assert "think" not in payload
+    assert "keep_alive" not in payload
+    assert "num_ctx" not in payload["options"]
+
+
+@pytest.mark.asyncio
+async def test_ollama_chat_stream_sends_think_level_num_ctx_and_keep_alive(monkeypatch):
+    s = get_agent_settings()
+    monkeypatch.setattr(s, "ollama_think", "low")
+    monkeypatch.setattr(s, "ollama_num_ctx", 32768)
+    monkeypatch.setattr(s, "ollama_keep_alive", "30m")
+    _FakeAsyncClient.queue_stream.append(_done_frame())
+    payload = await _run_ollama_once()
+    assert payload["think"] == "low"
+    assert payload["options"]["num_ctx"] == 32768
+    assert payload["keep_alive"] == "30m"
+
+
+@pytest.mark.asyncio
+async def test_ollama_chat_stream_think_false_is_sent_as_bool(monkeypatch):
+    """qwen3-class models need a literal JSON false to stop thinking."""
+    monkeypatch.setattr(get_agent_settings(), "ollama_think", "false")
+    _FakeAsyncClient.queue_stream.append(_done_frame())
+    payload = await _run_ollama_once()
+    assert payload["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_ollama_chat_stream_drops_thinking_deltas():
+    """Reasoning streamed in `message.thinking` is never surfaced as text."""
+    _FakeAsyncClient.queue_stream.append(_FakeStreamResponse(status_code=200, lines=[
+        json.dumps({"message": {"thinking": "let me think", "content": ""}}),
+        json.dumps({"message": {"thinking": " harder", "content": ""}}),
+        json.dumps({"message": {"content": "42"}}),
+        json.dumps({"message": {"content": ""}, "done": True, "done_reason": "stop"}),
+    ]))
+    provider = OllamaProvider()
+    text = ""
+    async for c in provider.chat_stream([ChatMessage(role="user", content="x")], model="m"):
+        if c.type == "text_delta":
+            text += c.text or ""
+    assert text == "42"
+
+
+@pytest.mark.asyncio
+async def test_chat_timeout_comes_from_settings(monkeypatch):
+    monkeypatch.setattr(get_agent_settings(), "llm_timeout_seconds", 300.0)
+
+    _FakeAsyncClient.queue_stream.append(_done_frame())
+    await _run_ollama_once()
+    assert _FakeAsyncClient.init_kwargs["timeout"].read == 300.0
+    assert _FakeAsyncClient.init_kwargs["timeout"].connect == 10.0
+
+    sse = [f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}, 'usage': {}})}"]
+    _FakeAsyncClient.queue_stream.append(_FakeStreamResponse(status_code=200, lines=sse))
+    provider = AnthropicProvider(api_key="sk-test")
+    async for _ in provider.chat_stream([ChatMessage(role="user", content="x")], model="claude-x"):
+        pass
+    assert _FakeAsyncClient.init_kwargs["timeout"].read == 300.0
 
 
 # --------------------------------------------------------------------- Ollama: embed

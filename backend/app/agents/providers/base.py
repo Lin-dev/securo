@@ -41,6 +41,13 @@ class LLMNotSupportedError(LLMError):
     code = "not_supported"
 
 
+def chat_timeout_seconds() -> float:
+    """Read/write timeout for chat streams, from AGENTS_LLM_TIMEOUT_SECONDS."""
+    from app.agents.config import get_agent_settings  # local: avoid import cycle
+
+    return float(get_agent_settings().llm_timeout_seconds)
+
+
 # --- Messages, tools, chunks ---------------------------------------------
 
 Role = Literal["system", "user", "assistant", "tool"]
