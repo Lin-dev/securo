@@ -62,6 +62,18 @@ def test_registry_contains_v1_tools():
     )
 
 
+def test_registry_contains_qc7_finance_tools():
+    """Fork addition: the finance-analysis layer the local agent is prompted to use."""
+    expected = {
+        "get_transactions_summary",
+        "get_money_map",
+        "list_uncategorized_merchants",
+        "list_rules",
+        "get_holdings",
+    }
+    assert expected <= set(REGISTRY.keys()), f"missing: {expected - set(REGISTRY.keys())}"
+
+
 def test_proposal_tools_marked_is_proposal():
     for name in ("propose_categorize", "propose_create_category", "propose_create_budget", "propose_create_payee_rule"):
         spec = REGISTRY[name]
