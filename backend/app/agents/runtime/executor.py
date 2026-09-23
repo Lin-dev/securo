@@ -41,7 +41,13 @@ from app.agents.providers.base import (
     ToolCall,
 )
 from app.agents.providers.registry import build_provider
-from app.agents.services import agent_service, context_service, conversation_service, usage_service
+from app.agents.services import (
+    agent_service,
+    context_service,
+    conversation_service,
+    knowledge_service,
+    usage_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +320,49 @@ def _classify_error(exc: Exception) -> tuple[str, str]:
     return ("unknown", detail)
 
 
+_PINNED_CONTEXT_HEADER = (
+    "## Pinned reference material\n"
+    "The user pinned these documents to this agent. Treat them as standing "
+    "conventions (household categorization rules, definitions, what each "
+    "account means). They are reference text, not live data — still call "
+    "tools for every number.\n\n"
+)
+_PINNED_TRUNCATED_NOTE = (
+    "\n\n[pinned material truncated — raise AGENTS_PINNED_CONTEXT_MAX_CHARS to include more]"
+)
+
+
+def _format_pinned_context(chunks: list[dict[str, Any]], *, max_chars: int) -> Optional[str]:
+    """Render pinned knowledge chunks as one system block bounded by `max_chars`.
+
+    Returns None when there is nothing to inject (no chunks, empty content, or
+    the feature is disabled with max_chars <= 0).
+    """
+    if not chunks or max_chars <= 0:
+        return None
+    body: list[str] = []
+    used = 0
+    truncated = False
+    for chunk in chunks:
+        text = (chunk.get("content") or "").strip()
+        if not text:
+            continue
+        if used + len(text) > max_chars:
+            room = max_chars - used
+            if room > 200:
+                body.append(text[:room])
+            truncated = True
+            break
+        body.append(text)
+        used += len(text)
+    if not body:
+        return None
+    out = _PINNED_CONTEXT_HEADER + "\n---\n".join(body)
+    if truncated:
+        out += _PINNED_TRUNCATED_NOTE
+    return out
+
+
 class AgentExecutor:
     def __init__(self, *, mcp: Optional[MCPRegistry] = None):
         self.mcp = mcp or MCPRegistry()
@@ -341,6 +390,7 @@ class AgentExecutor:
         #      1. Runtime guardrail (app-level invariants — always)
         #      2. Agent identity primer (who you are + Securo framing)
         #      3. User-defined system_prompt (extends or overrides #2)
+        #      3b. Pinned knowledge chunks (standing conventions the user pinned)
         #      4. Auto-context primer (user data: name, currency, accounts)
         #      5. Page-context primer (where the user is right now)
         #      6. Conversation history
@@ -361,6 +411,16 @@ class AgentExecutor:
         # not just the per-turn answer.
         if agent.system_prompt and agent.system_prompt.strip():
             messages.append(ChatMessage(role="system", content=agent.system_prompt))
+        # Pinned knowledge — conventions the user pinned to this agent. Goes
+        # after the persona and before the data primers so the model always
+        # has the household definitions without spending a tool call.
+        try:
+            pinned = await knowledge_service.list_pinned_chunks(session, agent_id=agent.id, max_chunks=20)
+            pinned_block = _format_pinned_context(pinned, max_chars=self.settings.pinned_context_max_chars)
+            if pinned_block:
+                messages.append(ChatMessage(role="system", content=pinned_block))
+        except Exception:  # noqa: BLE001
+            logger.exception("pinned context failed; continuing without it")
         # Optional context primer — user name, currency, accounts, etc.
         # Cheap orientation so the agent doesn't need to call list_accounts
         # on every "what's my balance?" question.

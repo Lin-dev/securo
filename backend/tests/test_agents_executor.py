@@ -9,6 +9,7 @@ Pattern:
   - `_FakeMCP` exposes one synthetic tool and records calls.
   - We patch `_provider_for` and pass our fake MCP into AgentExecutor.
 """
+import tempfile
 import uuid
 from typing import AsyncIterator
 from unittest.mock import patch
@@ -26,7 +27,7 @@ from app.agents.providers.base import (
     LLMProvider,
     Usage,
 )
-from app.agents.runtime.executor import AgentExecutor, ExecutorEvent
+from app.agents.runtime.executor import AgentExecutor, ExecutorEvent, _format_pinned_context
 
 
 pytestmark = pytest.mark.asyncio
@@ -531,3 +532,139 @@ async def test_max_iterations_terminates_runaway_agent(session, test_user, test_
     done = next((e for e in events if e.type == "done"), None)
     assert err is not None and err.error_code == "max_iterations"
     assert done is not None and done.finish_reason == "max_iterations"
+
+
+# --- pinned knowledge in the system context ---------------------------------
+
+async def _seed_doc_with_chunks(session, test_agent, test_user, monkeypatch, texts, *, pinned=True):
+    """Upload a doc through the service and give it ready chunks directly
+    (no embedding provider involved)."""
+    from app.agents.config import get_agent_settings
+    from app.agents.services import knowledge_service
+
+    monkeypatch.setattr(get_agent_settings(), "knowledge_storage_path", tempfile.mkdtemp(prefix="kb-exec-"))
+    doc = await knowledge_service.upload_doc(
+        session,
+        agent_id=test_agent.id,
+        user_id=test_user.id,
+        filename="conventions.md",
+        mime="text/markdown",
+        payload=b"x",
+        pinned=pinned,
+    )
+    await knowledge_service.replace_chunks(
+        session,
+        doc_id=doc.id,
+        agent_id=test_agent.id,
+        chunks=[(t, [0.0] * 1536) for t in texts],
+        embedding_model="fake",
+    )
+    await knowledge_service.mark_status(session, doc.id, status="ready", chunk_count=len(texts))
+    return doc
+
+
+class _CaptureSystem(_ScriptedProvider):
+    """Scripted provider that records the system messages it was given."""
+
+    def __init__(self, scripts):
+        super().__init__(scripts)
+        self.system: list[str] = []
+
+    async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+        self.system = [m.content for m in messages if m.role == "system"]
+        async for c in super().chat_stream(messages, model=model, tools=tools, temperature=temperature, max_tokens=max_tokens):
+            yield c
+
+
+def _ok_script():
+    return [[ChatChunk(type="text_delta", text="ok"), ChatChunk(type="finish", finish_reason="stop")]]
+
+
+def test_format_pinned_context_returns_none_when_nothing_to_inject():
+    assert _format_pinned_context([], max_chars=6000) is None
+    assert _format_pinned_context([{"content": "   "}], max_chars=6000) is None
+    assert _format_pinned_context([{"content": "rule"}], max_chars=0) is None
+
+
+async def test_pinned_chunks_injected_after_agent_prompt_before_auto_context(
+    session, test_user, test_agent, test_conversation, test_account, monkeypatch
+):
+    await _seed_doc_with_chunks(
+        session, test_agent, test_user, monkeypatch,
+        ["Internal transfer is never income.", "Card payment is a transfer, not an expense."],
+    )
+    provider = _CaptureSystem(_ok_script())
+    executor = AgentExecutor(mcp=_FakeMCP(tools=[]))
+    test_agent.auto_context = True
+    test_agent.system_prompt = "You are helpful."
+    await session.commit()
+
+    with _patch_provider(provider):
+        await _drain(
+            executor,
+            session=session,
+            agent=test_agent,
+            user_id=test_user.id,
+            conversation_id=test_conversation.id,
+            user_message="hi",
+        )
+    sys_msgs = provider.system
+    # guardrail [0] + identity [1] + agent prompt [2] + PINNED [3] + auto-context [4]
+    assert len(sys_msgs) == 5, f"expected 5 system messages, got {len(sys_msgs)}"
+    assert sys_msgs[2] == "You are helpful."
+    assert "Pinned reference material" in sys_msgs[3]
+    assert "Internal transfer is never income." in sys_msgs[3]
+    assert "Card payment is a transfer, not an expense." in sys_msgs[3]
+    assert "Context for this conversation" in sys_msgs[4]
+
+
+async def test_pinned_chunks_respect_max_chars(
+    session, test_user, test_agent, test_conversation, monkeypatch
+):
+    from app.agents.config import get_agent_settings
+
+    monkeypatch.setattr(get_agent_settings(), "pinned_context_max_chars", 300)
+    await _seed_doc_with_chunks(session, test_agent, test_user, monkeypatch, ["A" * 250, "B" * 250])
+    provider = _CaptureSystem(_ok_script())
+    executor = AgentExecutor(mcp=_FakeMCP(tools=[]))
+    test_agent.auto_context = False
+    test_agent.system_prompt = "You are helpful."
+    await session.commit()
+
+    with _patch_provider(provider):
+        await _drain(
+            executor,
+            session=session,
+            agent=test_agent,
+            user_id=test_user.id,
+            conversation_id=test_conversation.id,
+            user_message="hi",
+        )
+    pinned = [m for m in provider.system if "Pinned reference material" in m]
+    assert len(pinned) == 1
+    assert "A" * 250 in pinned[0]
+    assert "B" not in pinned[0]
+    assert "pinned material truncated" in pinned[0]
+
+
+async def test_unpinned_docs_are_not_injected(
+    session, test_user, test_agent, test_conversation, monkeypatch
+):
+    await _seed_doc_with_chunks(session, test_agent, test_user, monkeypatch, ["not pinned"], pinned=False)
+    provider = _CaptureSystem(_ok_script())
+    executor = AgentExecutor(mcp=_FakeMCP(tools=[]))
+    test_agent.auto_context = False
+    test_agent.system_prompt = "You are helpful."
+    await session.commit()
+
+    with _patch_provider(provider):
+        await _drain(
+            executor,
+            session=session,
+            agent=test_agent,
+            user_id=test_user.id,
+            conversation_id=test_conversation.id,
+            user_message="hi",
+        )
+    assert not any("Pinned reference material" in m for m in provider.system)
+    assert len(provider.system) == 3  # guardrail + identity + agent prompt
