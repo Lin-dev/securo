@@ -144,7 +144,11 @@ class OllamaProvider(LLMProvider):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
                 # /api/embed accepts a list under `input` since Ollama 0.2+.
-                resp = await client.post(url, json={"model": model, "input": texts})
+                payload: dict = {"model": model, "input": texts}
+                embed_ctx = int(get_agent_settings().ollama_embed_num_ctx)
+                if embed_ctx > 0:
+                    payload["options"] = {"num_ctx": embed_ctx}
+                resp = await client.post(url, json=payload)
                 if resp.status_code >= 400:
                     raise LLMUnavailableError(f"Ollama embed {resp.status_code}: {resp.text}", status=resp.status_code)
                 data = resp.json()
