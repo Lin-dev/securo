@@ -65,7 +65,7 @@ FINANCE_ANALYST_TOOLS: tuple[str, ...] = (
     "get_transactions_summary",
     "get_money_map",
     "list_uncategorized_merchants",
-    "list_rules",
+    "list_rule_overview",
     "get_holdings",
     "fire_projection",
     # Core reads
