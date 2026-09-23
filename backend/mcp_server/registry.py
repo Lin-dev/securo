@@ -5,6 +5,8 @@ registry holds (name → ToolSpec) for /mcp's `tools/list` and `tools/call`.
 """
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -29,6 +31,7 @@ class ToolSpec:
 
 
 REGISTRY: dict[str, ToolSpec] = {}
+logger = logging.getLogger(__name__)
 
 
 def tool(
@@ -79,4 +82,26 @@ async def call_tool(
     spec = REGISTRY.get(name)
     if spec is None:
         raise KeyError(f"unknown tool: {name}")
-    return await spec.handler(session=session, ctx=ctx, **(arguments or {}))
+    return await spec.handler(session=session, ctx=ctx, **coerce_arguments(spec, arguments))
+
+
+def coerce_arguments(spec: ToolSpec, arguments: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep only the arguments the tool's JSON schema declares.
+
+    Local models pad calls with plausible-looking extras (`status`, `currency`,
+    …) copied from other tools' schemas. Failing the whole call over one stray
+    key sends an error back into the conversation and often derails the next
+    call too; dropping the key and logging it is the useful behaviour. Schemas
+    without a `properties` map (or with `additionalProperties` allowed) pass
+    everything through unchanged.
+    """
+    args = dict(arguments or {})
+    props = spec.parameters.get("properties") if isinstance(spec.parameters, dict) else None
+    if not isinstance(props, dict) or spec.parameters.get("additionalProperties", False) is not False:
+        return args
+    unknown = [k for k in args if k not in props]
+    for k in unknown:
+        args.pop(k, None)
+    if unknown:
+        logger.warning("tool %s: dropped unknown argument(s) %s", spec.name, unknown)
+    return args
