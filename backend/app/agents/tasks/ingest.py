@@ -1,7 +1,9 @@
-"""Celery task: parse → chunk → embed an uploaded knowledge document.
+"""Parse → chunk → embed an uploaded knowledge document.
 
-Registered with the existing celery_app. Only fires when AGENTS_ENABLED
-is on, because the upload endpoint that dispatches it lives behind the
+`ingest_doc` is the Celery task registered with the existing celery_app;
+`ingest_doc_async` is the async core it runs, also used directly by the
+upload endpoint when AGENTS_KNOWLEDGE_INGEST_INLINE is on. Only fires
+when AGENTS_ENABLED is on, because the upload endpoint lives behind the
 same flag.
 """
 from __future__ import annotations
@@ -38,12 +40,17 @@ async def _async_ingest(doc_id_str: str, agent_id_str: str) -> dict:
     engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
     session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     try:
-        return await _do_ingest(session_maker, doc_id, agent_id)
+        return await ingest_doc_async(session_maker, doc_id, agent_id)
     finally:
         await engine.dispose()
 
 
-async def _do_ingest(session_maker, doc_id: uuid.UUID, agent_id: uuid.UUID) -> dict:
+async def ingest_doc_async(session_maker, doc_id: uuid.UUID, agent_id: uuid.UUID) -> dict:
+    """Ingest one document using a session from `session_maker`.
+
+    Shared by the Celery task and the inline (in-process) path; opens and
+    closes its own session so callers never hand over a live one.
+    """
     from app.agents.models.knowledge import KnowledgeDoc
     from app.agents.services import knowledge_service
     from app.agents.services.chunking import chunks_from_upload
@@ -83,3 +90,7 @@ async def _do_ingest(session_maker, doc_id: uuid.UUID, agent_id: uuid.UUID) -> d
         )
         await knowledge_service.mark_status(session, doc_id, status="ready", error=None, chunk_count=n)
         return {"ok": True, "chunks": n}
+
+
+# Backwards-compatible name for callers/tests written against the private helper.
+_do_ingest = ingest_doc_async

@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.agents.services import knowledge_service
-from app.agents.tasks.ingest import _do_ingest
+from app.agents.tasks.ingest import _do_ingest, ingest_doc_async
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +70,12 @@ async def test_do_ingest_happy_path_writes_chunks_and_marks_ready(
     assert refreshed.status == "ready"
     assert refreshed.chunk_count == 2
     assert refreshed.error is None
+
+
+def test_ingest_doc_async_is_public_alias():
+    """The inline upload path imports the public name; the private one stays
+    as an alias so nothing written against it breaks."""
+    assert ingest_doc_async is _do_ingest
 
 
 @pytest.mark.asyncio

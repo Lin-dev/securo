@@ -12,6 +12,7 @@ import uuid
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +80,43 @@ async def test_upload_knowledge_persists_doc_and_dispatches_celery(
     # And it shows up in list_knowledge.
     r = await client.get(f"/api/agents/{aid}/knowledge", headers=auth_headers)
     assert r.json()["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_upload_knowledge_inline_marks_doc_ready(
+    client, auth_headers, test_user, session, monkeypatch, _stub_celery_dispatch
+):
+    """AGENTS_KNOWLEDGE_INGEST_INLINE=true: no Celery dispatch; the ingest
+    runs as a background task of the request and the doc is `ready` by
+    the time the ASGI call returns (httpx's transport awaits it)."""
+    import app.agents.api.knowledge as knowledge_api
+    from app.agents.config import get_agent_settings
+
+    monkeypatch.setattr(get_agent_settings(), "knowledge_ingest_inline", True)
+    monkeypatch.setattr(
+        knowledge_api, "async_session_maker", async_sessionmaker(session.bind, expire_on_commit=False)
+    )
+
+    async def fake_embed(chunks):
+        return [[0.0] * 1536 for _ in chunks], "fake-model"
+
+    monkeypatch.setattr("app.agents.services.embedding.embed_texts", fake_embed)
+
+    aid = await _make_agent(client, auth_headers)
+    r = await client.post(
+        f"/api/agents/{aid}/knowledge",
+        files={"file": ("conventions.md", io.BytesIO(b"# Conventions\nTransfers are not income."), "text/markdown")},
+        headers=auth_headers,
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["status"] == "pending"
+    _stub_celery_dispatch.assert_not_called()
+
+    docs = (await client.get(f"/api/agents/{aid}/knowledge", headers=auth_headers)).json()
+    assert docs["total"] == 1
+    assert docs["items"][0]["status"] == "ready"
+    assert docs["items"][0]["chunk_count"] >= 1
+    assert docs["items"][0]["error"] is None
 
 
 @pytest.mark.asyncio

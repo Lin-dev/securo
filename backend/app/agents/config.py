@@ -64,6 +64,12 @@ class AgentSettings(BaseSettings):
     knowledge_storage_path: str = "/app/data/agent_knowledge"
     knowledge_max_file_size_mb: int = 25
 
+    # Run the knowledge ingest (parse → chunk → embed) inside the API process
+    # as a background task instead of dispatching a Celery task. The API
+    # wrote the file it ingests, so no volume has to be shared with the
+    # worker. Off by default to keep the Celery path for existing installs.
+    knowledge_ingest_inline: bool = False
+
     # Local reasoning models served by Ollama.
     # `ollama_think`: "" = don't send (server default); "false"/"true"; or a
     # level "low|medium|high". gpt-oss only accepts levels (rejects false),

@@ -3,11 +3,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.config import get_agent_settings
 from app.agents.services import agent_service, knowledge_service
-from app.core.database import get_async_session
+from app.core.database import async_session_maker, get_async_session
 from app.core.workspace_context import (
     WorkspaceContext,
     current_workspace,
@@ -50,6 +51,7 @@ async def list_knowledge(
 @router.post("/{agent_id}/knowledge", status_code=status.HTTP_201_CREATED)
 async def upload_knowledge(
     agent_id: uuid.UUID,
+    background: BackgroundTasks,
     file: UploadFile = File(...),
     pinned: bool = Form(False),
     ctx: WorkspaceContext = Depends(current_writable_workspace),
@@ -71,6 +73,14 @@ async def upload_knowledge(
         )
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    if get_agent_settings().knowledge_ingest_inline:
+        # Inline mode: this process wrote the file, so it ingests it itself
+        # once the response is out. No worker and no shared volume needed.
+        from app.agents.tasks.ingest import ingest_doc_async  # lazy: module pulls in celery_app
+
+        background.add_task(ingest_doc_async, async_session_maker, doc.id, agent_id)
+        return _serialize(doc)
 
     # Fire-and-forget Celery dispatch — task does the parsing/embedding.
     try:
