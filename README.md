@@ -223,6 +223,35 @@ AGENTS_BUILTIN_MCP_URL=http://127.0.0.1:8765/mcp
 
 Without that server the agents still chat, but they have no tools and cannot read your data. The backend log says which MCP server it failed to reach.
 
+### Local models with Ollama on another machine
+
+Securo talks to Ollama's native API, so the model server can live on any box on your LAN (a Mac with a GPU, a workstation) while Securo runs on small hosts. On the Ollama machine bind it to the network (`launchctl setenv OLLAMA_HOST 0.0.0.0:11434` on macOS, `Environment="OLLAMA_HOST=0.0.0.0"` in the systemd unit on Linux) and keep the port LAN-only — Ollama has no authentication. Then point Securo at it: `AGENTS_OLLAMA_BASE_URL=http://<ollama-host>:11434` (`http://host.docker.internal:11434` when Ollama runs on the Docker host), or add a connection of kind **Ollama** under `/agents/connections`.
+
+Settings that matter for local models (all optional):
+
+| Variable | Default | Why |
+|----------|---------|-----|
+| `AGENTS_OLLAMA_NUM_CTX` | `0` (server default) | Context window sent as `options.num_ctx`. The tool schemas alone are ~7K tokens, so tool use needs `32768` (or `16384` when memory is tight). |
+| `AGENTS_OLLAMA_THINK` | unset | `false` / `true` / `low` / `medium` / `high`, sent as `think`. gpt-oss accepts levels only; Qwen-class models need `false` to stop emitting thinking. Thinking is never streamed to the UI. |
+| `AGENTS_OLLAMA_KEEP_ALIVE` | unset | How long the model stays loaded after a request, e.g. `30m` or `-1`. |
+| `AGENTS_LLM_TIMEOUT_SECONDS` | `120` | Read timeout of every provider's chat stream. Large local models need `300`: the first token after idle includes the model load. |
+| `AGENTS_EMBEDDING_PROVIDER=ollama` + `AGENTS_EMBEDDING_OLLAMA_BASE_URL` + `AGENTS_EMBEDDING_MODEL` | native fastembed | Knowledge-base embeddings from Ollama (e.g. `qwen3-embedding:0.6b`). Shorter vectors are zero-padded to the 1536-dim column, which leaves cosine similarity unchanged; re-upload documents after switching models. |
+| `AGENTS_KNOWLEDGE_INGEST_INLINE` | `false` | Chunk and embed uploads inside the API process instead of the Celery worker, so the knowledge files need no volume shared with the worker. |
+| `AGENTS_PINNED_CONTEXT_MAX_CHARS` | `6000` | Documents pinned in an agent's Knowledge tab are injected into every conversation, up to this many characters. |
+| `AGENTS_DIGEST_ENABLED`, `AGENTS_DIGEST_HOUR` | `false`, `7` | Weekly (Monday) and monthly (1st) finance reviews written by each workspace's default agent into its own history, at that local hour. |
+
+The chat stream sends an SSE comment every 15 s of silence, so reverse proxies and CDNs with idle limits (Cloudflare closes at 100 s) keep slow first tokens alive.
+
+### Finance analyst
+
+A ready-made agent for personal finance analysis over your data, with a prompt that makes it fetch every number through tools and treat transfer-style categories as movements rather than income or spending. Seed it once (idempotent):
+
+```bash
+python -m app.agents.scripts.seed_finance_analyst --email you@example.com --model gpt-oss:20b --base-url http://ollama:11434
+```
+
+It creates the Ollama connection if needed, the agent, and a 20-tool whitelist including the finance tools: `get_transactions_summary` (income, expense, net, invested, savings rate per period), `get_money_map` (where money went), `list_uncategorized_merchants` + `list_rules` (categorization proposals that become rules on Apply), `get_holdings`, and `fire_projection` (financial-independence math from your own trailing-12-month figures). Pin your household conventions document in the agent's Knowledge tab so every conversation starts from it.
+
 ## Tech Stack
 
 | Layer | Stack |
