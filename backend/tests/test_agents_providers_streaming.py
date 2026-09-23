@@ -416,3 +416,55 @@ async def test_anthropic_embed_raises_not_supported():
     provider = AnthropicProvider(api_key="sk-test")
     with pytest.raises(LLMNotSupportedError):
         await provider.embed(["a"], model="x")
+
+
+# --------------------------------------------------------------------- Ollama: tool-call parse retry
+
+class _RawStream:
+    """Minimal stand-in: a status, a body for aread(), and JSONL lines to stream."""
+
+    def __init__(self, status_code: int, *, body: bytes = b"", lines=None):
+        self.status_code = status_code
+        self._body = body
+        self._lines = list(lines or [])
+
+    async def aread(self) -> bytes:
+        return self._body
+
+    async def aiter_lines(self):
+        for ln in self._lines:
+            yield ln
+
+
+@pytest.mark.asyncio
+async def test_ollama_retries_once_when_a_tool_call_cannot_be_parsed(monkeypatch):
+    """gpt-oss sometimes prefixes the tool-call JSON with a stray word; Ollama answers
+    500 'error parsing tool call' before any token. One retry at reasoning=medium."""
+    monkeypatch.setattr(get_agent_settings(), "ollama_think", "low")
+    err = b'{"error":"error parsing tool call: raw=\'Need August.{\\"from_date\\":\\"2026-08-01\\"}\', err=invalid character"}'
+    ok = [json.dumps({"message": {"role": "assistant", "content": "done"}, "done": True, "done_reason": "stop",
+                      "prompt_eval_count": 10, "eval_count": 2})]
+    _FakeAsyncClient.queue_stream.append(_RawStream(500, body=err))
+    _FakeAsyncClient.queue_stream.append(_RawStream(200, lines=ok))
+    chunks = [c async for c in OllamaProvider().chat_stream([ChatMessage(role="user", content="x")], model="gpt-oss:20b")]
+    assert [c.type for c in chunks][0] == "text_delta" and chunks[-1].type == "finish"
+    assert len(_FakeAsyncClient.posted) == 2
+    first, second = _FakeAsyncClient.posted[0][1], _FakeAsyncClient.posted[1][1]
+    assert first["think"] == "low" and second["think"] == "medium"
+
+
+@pytest.mark.asyncio
+async def test_ollama_does_not_retry_twice_or_on_other_errors():
+    err = b'{"error":"error parsing tool call: raw=..."}'
+    _FakeAsyncClient.queue_stream.append(_RawStream(500, body=err))
+    _FakeAsyncClient.queue_stream.append(_RawStream(500, body=err))
+    with pytest.raises(LLMUnavailableError):
+        async for _ in OllamaProvider().chat_stream([ChatMessage(role="user", content="x")], model="m"):
+            pass
+    assert len(_FakeAsyncClient.posted) == 2  # exactly one retry
+    _FakeAsyncClient.posted.clear()
+    _FakeAsyncClient.queue_stream.append(_RawStream(500, body=b'{"error":"model not found"}'))
+    with pytest.raises(LLMUnavailableError):
+        async for _ in OllamaProvider().chat_stream([ChatMessage(role="user", content="x")], model="m"):
+            pass
+    assert len(_FakeAsyncClient.posted) == 1  # no retry for unrelated errors
