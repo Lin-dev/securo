@@ -65,6 +65,12 @@ x-backend-env: &backend-env
   AGENTS_DEFAULT_PROVIDER: ${AGENTS_DEFAULT_PROVIDER:-ollama}
   AGENTS_DEFAULT_MODEL: ${AGENTS_DEFAULT_MODEL:-}
   AGENTS_OLLAMA_BASE_URL: ${AGENTS_OLLAMA_BASE_URL:-http://ollama:11434}
+  # Local models: context window, thinking control, keep-alive and the chat
+  # read timeout (README → "Local models with Ollama on another machine").
+  AGENTS_OLLAMA_NUM_CTX: ${AGENTS_OLLAMA_NUM_CTX:-0}
+  AGENTS_OLLAMA_THINK: ${AGENTS_OLLAMA_THINK:-}
+  AGENTS_OLLAMA_KEEP_ALIVE: ${AGENTS_OLLAMA_KEEP_ALIVE:-}
+  AGENTS_LLM_TIMEOUT_SECONDS: ${AGENTS_LLM_TIMEOUT_SECONDS:-120}
   AGENTS_OPENAI_API_KEY: ${AGENTS_OPENAI_API_KEY:-}
   AGENTS_ANTHROPIC_API_KEY: ${AGENTS_ANTHROPIC_API_KEY:-}
   AGENTS_OPENAI_COMPAT_BASE_URL: ${AGENTS_OPENAI_COMPAT_BASE_URL:-}
@@ -74,6 +80,13 @@ x-backend-env: &backend-env
   # ollama/openai/openai_compatible for better quality.
   AGENTS_EMBEDDING_PROVIDER: ${AGENTS_EMBEDDING_PROVIDER:-native}
   AGENTS_EMBEDDING_MODEL: ${AGENTS_EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+  AGENTS_EMBEDDING_OLLAMA_BASE_URL: ${AGENTS_EMBEDDING_OLLAMA_BASE_URL:-http://ollama:11434}
+  # Ingest uploads in the API process (no volume shared with the worker), pinned
+  # knowledge injected into every conversation, scheduled finance digests.
+  AGENTS_KNOWLEDGE_INGEST_INLINE: ${AGENTS_KNOWLEDGE_INGEST_INLINE:-false}
+  AGENTS_PINNED_CONTEXT_MAX_CHARS: ${AGENTS_PINNED_CONTEXT_MAX_CHARS:-6000}
+  AGENTS_DIGEST_ENABLED: ${AGENTS_DIGEST_ENABLED:-false}
+  AGENTS_DIGEST_HOUR: ${AGENTS_DIGEST_HOUR:-7}
 
 x-backend-base: &backend-base
   image: ghcr.io/securo-finance/securo-backend:latest
