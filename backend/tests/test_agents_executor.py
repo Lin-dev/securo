@@ -533,6 +533,72 @@ async def test_max_iterations_terminates_runaway_agent(session, test_user, test_
     assert err is not None and err.error_code == "max_iterations"
     assert done is not None and done.finish_reason == "max_iterations"
 
+    # The stop message is localized (the test user prefers pt-BR) and names
+    # the instance default cap; it is streamed and persisted, never Portuguese
+    # by accident for everyone else.
+    from app.agents.runtime.executor import _stop_message
+
+    expected = _stop_message("pt-BR", 10)
+    assert "Parei depois de 10 chamadas" in expected
+    assert [e.text for e in events if e.type == "text_delta"][-1] == expected
+    rows = (await session.execute(
+        select(Message).where(Message.conversation_id == test_conversation.id).order_by(Message.ordinal)
+    )).scalars().all()
+    assert rows[-1].role == "assistant" and rows[-1].content == expected
+    # 20 scripted turns, 10 consumed.
+    assert len(provider._turns) == 10
+
+
+async def test_iteration_cap_from_agent_extra(session, test_user, test_agent, test_conversation):
+    """`agents.extra["max_tool_iterations"]` overrides the instance default."""
+    from app.agents.runtime.executor import _iteration_cap, _stop_message
+    from app.agents.config import get_agent_settings
+
+    test_agent.extra = {"max_tool_iterations": 2}
+    await session.commit()
+    assert _iteration_cap(test_agent, get_agent_settings()) == 2
+
+    tools = [ToolHandle(server="securo", name="loop_tool", description="", parameters={"type": "object"})]
+    fake_mcp = _FakeMCP(tools=tools)
+    turn = [
+        ChatChunk(type="tool_call_start", tool_call_id="t1", tool_name="securo__loop_tool"),
+        ChatChunk(type="tool_call_args_delta", tool_call_id="t1", args_delta="{}"),
+        ChatChunk(type="tool_call_end", tool_call_id="t1"),
+        ChatChunk(type="finish", finish_reason="tool_calls"),
+    ]
+    provider = _ScriptedProvider([list(turn) for _ in range(5)])
+    executor = AgentExecutor(mcp=fake_mcp)
+    with _patch_provider(provider):
+        events = await _drain(
+            executor, session=session, agent=test_agent, user_id=test_user.id,
+            conversation_id=test_conversation.id, user_message="loop",
+        )
+    assert len(provider._turns) == 3  # exactly two provider calls
+    assert len(fake_mcp.calls) == 2
+    assert [e.text for e in events if e.type == "text_delta"][-1] == _stop_message("pt-BR", 2)
+
+
+def test_stop_message_language_fallbacks():
+    from app.agents.runtime.executor import _stop_message
+
+    assert _stop_message("en", 3).startswith("I stopped after 3 tool calls")
+    assert _stop_message("pt", 3).startswith("Parei depois de 3")
+    assert _stop_message("es-MX", 3).startswith("Me detuve después de 3")
+    assert _stop_message("de", 3).startswith("I stopped after 3")
+    assert _stop_message(None, 3).startswith("I stopped after 3")
+
+
+def test_iteration_cap_clamps_and_tolerates_bad_values():
+    from types import SimpleNamespace
+    from app.agents.runtime.executor import _iteration_cap
+
+    settings = SimpleNamespace(max_tool_iterations=10)
+    assert _iteration_cap(SimpleNamespace(extra=None), settings) == 10
+    assert _iteration_cap(SimpleNamespace(extra={"max_tool_iterations": 0}), settings) == 1
+    assert _iteration_cap(SimpleNamespace(extra={"max_tool_iterations": 999}), settings) == 50
+    assert _iteration_cap(SimpleNamespace(extra={"max_tool_iterations": "abc"}), settings) == 10
+    assert _iteration_cap(SimpleNamespace(extra={"max_tool_iterations": "4"}), settings) == 4
+
 
 # --- pinned knowledge in the system context ---------------------------------
 

@@ -26,7 +26,7 @@ from typing import Any, AsyncIterator, Literal, Optional, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.config import get_agent_settings
+from app.agents.config import AgentSettings, get_agent_settings
 from app.agents.mcp.client import MCPRegistry
 from app.agents.models.agent import Agent
 from app.agents.providers.base import (
@@ -48,8 +48,44 @@ from app.agents.services import (
     knowledge_service,
     usage_service,
 )
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
+
+
+def _iteration_cap(agent: Agent, settings: AgentSettings) -> int:
+    """Tool-calling loop ceiling: the agent's `extra["max_tool_iterations"]`
+    when set, else the instance default; always clamped to 1..50."""
+    raw = (agent.extra or {}).get("max_tool_iterations") if isinstance(agent.extra, dict) else None
+    try:
+        n = int(raw) if raw is not None else int(settings.max_tool_iterations)
+    except (TypeError, ValueError):
+        n = int(settings.max_tool_iterations)
+    return max(1, min(n, 50))
+
+
+_STOP_TEMPLATES = {
+    "en": (
+        "I stopped after {n} tool calls without a final answer. Try a narrower "
+        "question, or `/categorize` for categorization."
+    ),
+    "pt-BR": (
+        "Parei depois de {n} chamadas de ferramentas sem uma resposta final. Tente uma "
+        "pergunta mais específica, ou `/categorize` para categorização."
+    ),
+    "es": (
+        "Me detuve después de {n} llamadas a herramientas sin una respuesta final. Prueba "
+        "una pregunta más específica, o `/categorize` para categorizar."
+    ),
+}
+
+
+def _stop_message(language: Optional[str], n: int) -> str:
+    """The assistant message persisted when the loop hits its ceiling, in the
+    user's preferred language (falls back to English)."""
+    base = (language or "en").split("-")[0].lower()
+    key = {"pt": "pt-BR", "es": "es"}.get(base, "en")
+    return _STOP_TEMPLATES[key].format(n=n)
 
 
 @dataclass
@@ -385,6 +421,10 @@ class AgentExecutor:
             session, conversation_id=conversation_id, role="user", content=user_message
         )
         await conversation_service.update_title_if_empty(session, conversation_id, user_message)
+        # The user row and their preferences are needed by several steps
+        # below (context primer, stop message language); load them once.
+        user = await session.get(User, user_id)
+        prefs: dict[str, Any] = (user.preferences if user is not None else None) or {}
 
         # 2. Build the message list. Order, top to bottom:
         #      1. Runtime guardrail (app-level invariants — always)
@@ -426,8 +466,6 @@ class AgentExecutor:
         # on every "what's my balance?" question.
         if getattr(agent, "auto_context", True):
             try:
-                from app.models.user import User
-                user = await session.get(User, user_id)
                 if user is not None:
                     primer = await context_service.build_context_primer(
                         session, user, workspace_id=agent.workspace_id
@@ -492,8 +530,8 @@ class AgentExecutor:
             return
 
         # 4. Tool-calling loop. Cap iterations to prevent runaway agents.
-        MAX_ITERS = 6
-        for iteration in range(MAX_ITERS):
+        max_iters = _iteration_cap(agent, self.settings)
+        for _iteration in range(max_iters):
             text_buf: list[str] = []
             open_calls: dict[str, dict] = {}
             finish_reason = "stop"
@@ -629,15 +667,10 @@ class AgentExecutor:
                 ))
 
         # Reached the tool-call ceiling without the model producing a final
-        # answer. Emit a visible fallback so the UI doesn't show an empty
-        # assistant bubble, and persist it so the conversation has a
-        # readable transcript. The friendliest message reuses any text we
-        # accumulated mid-loop if there is some.
-        fallback = (
-            "Não consegui completar essa consulta — pedi muitas ferramentas em sequência "
-            "e o limite foi atingido. Reformule a pergunta de forma mais específica e eu tento "
-            "de novo (por exemplo, restrinja a um período ou a uma categoria)."
-        )
+        # answer. Emit a visible stop message in the user's language so the
+        # UI doesn't show an empty assistant bubble, and persist it so the
+        # conversation has a readable transcript.
+        fallback = _stop_message(prefs.get("language"), max_iters)
         yield ExecutorEvent(type="text_delta", text=fallback)
         await conversation_service.append_message(
             session, conversation_id=conversation_id, role="assistant", content=fallback,

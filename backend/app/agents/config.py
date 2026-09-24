@@ -102,6 +102,12 @@ class AgentSettings(BaseSettings):
     digest_enabled: bool = False
     digest_hour: int = 7
 
+    # --- Executor hygiene and context budget (qc9) ---------------------------
+    # Tool-calling loop ceiling per user message. Local models tend to make one
+    # call per turn, so 6 was too tight for multi-step tasks; per-agent override
+    # via `agents.extra["max_tool_iterations"]`, clamped to 1..50.
+    max_tool_iterations: int = 10
+
     # Same env_file pair as the main Settings: the CWD-relative ".env" for
     # backward compatibility plus the anchored backend/.env, so the API and the
     # Celery worker/beat read the same file whatever directory they start from.

@@ -69,13 +69,19 @@ async def delete_conversation(
 async def list_messages(
     session: AsyncSession, conversation_id: uuid.UUID, limit: int = 200
 ) -> list[Message]:
+    """The NEWEST `limit` messages of a conversation, in ascending ordinal
+    order. Selecting the window from the top would drop the most recent
+    turns — including the message the user just sent — as soon as a
+    conversation outgrows the limit."""
     q = (
         select(Message)
         .where(Message.conversation_id == conversation_id)
-        .order_by(Message.ordinal.asc())
+        .order_by(Message.ordinal.desc())
         .limit(limit)
     )
-    return list((await session.execute(q)).scalars().all())
+    rows = list((await session.execute(q)).scalars().all())
+    rows.reverse()
+    return rows
 
 
 async def append_message(

@@ -73,6 +73,24 @@ async def test_list_messages_ordered_by_ordinal(session, test_user, test_workspa
 
 
 @pytest.mark.asyncio
+async def test_list_messages_returns_newest_window_in_ascending_order(session, test_user, test_workspace, test_agent):
+    """A limit must keep the NEWEST rows (the turn the user just sent), not
+    the oldest ones, and still hand them back oldest-first."""
+    conv = await svc.create_conversation(
+        session, workspace_id=test_workspace.id, user_id=test_user.id, agent_id=test_agent.id,
+    )
+    for text in ("one", "two", "three", "four", "five"):
+        await svc.append_message(session, conversation_id=conv.id, role="user", content=text)
+
+    window = await svc.list_messages(session, conv.id, limit=2)
+    assert [m.content for m in window] == ["four", "five"]
+    assert [m.ordinal for m in window] == sorted(m.ordinal for m in window)
+
+    everything = await svc.list_messages(session, conv.id, limit=200)
+    assert [m.content for m in everything] == ["one", "two", "three", "four", "five"]
+
+
+@pytest.mark.asyncio
 async def test_append_message_persists_tool_payloads(session, test_user, test_workspace, test_agent):
     conv = await svc.create_conversation(
         session, workspace_id=test_workspace.id, user_id=test_user.id, agent_id=test_agent.id,
