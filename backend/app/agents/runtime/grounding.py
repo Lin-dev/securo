@@ -28,12 +28,7 @@ _NOT_A_FIGURE_RE = re.compile(
 # A number: optional minus (ASCII or U+2212), digits with `.`/`,` groups, or a
 # space / nbsp used as a thousands separator only when exactly three digits
 # follow; optional `k` multiplier; optional `%`.
-NUMBER_RE = re.compile(
-    r"(?<![\w.])"
-    r"[-−]?\d+(?:(?:[.,]|[  ](?=\d{3}(?!\d)))\d+)*"
-    r"(?:\s?[kK](?![A-Za-z]))?"
-    r"(?:\s?%)?"
-)
+NUMBER_RE = re.compile(r"(?<![\w.])[-−]?\d(?:[\d.,\u00a0\u202f\u2009 ]*\d)?(?:\s*[kK](?![\w]))?(?:[\s\u00a0\u202f\u2009]*%)?")
 
 _SMALL_INT_LIMIT = 12
 
@@ -78,8 +73,47 @@ def _candidates(body: str) -> list[tuple[float, int]]:
     return out
 
 
-def extract_numbers(text: str) -> list[NumberToken]:
-    cleaned = _NOT_A_FIGURE_RE.sub(" ", text or "")
+_NAMED_NUMBERS_RE = re.compile(
+    r"\b\d{3}\s*\(\s*[a-z]\s*\)"                                   # 401(k), 403(b), 457(b)
+    r"|\b(?:S\s*&\s*P|SP|Nasdaq|NASDAQ|Russell|FTSE|Dow|Nikkei|CAC|DAX|MSCI|Fidelity|Vanguard|Schwab|iShares|SPDR)\s*\d{2,4}\b"
+    r"|\b529\b",
+    re.IGNORECASE,
+)
+
+
+def pack_strings(pack: Any, *, min_len: int = 3) -> list[str]:
+    """Every string leaf of the pack (account names, position names, tickers, labels),
+    longest first, so names like 'Bloomberg L.P. 401(k) Plan (2-01)' or 'S&P 500 ETF'
+    can be removed from a narration before its digits are checked."""
+    out: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, str):
+            s = node.strip()
+            if len(s) >= min_len and any(ch.isdigit() for ch in s):
+                out.add(s)
+        elif isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, (list, tuple)):
+            for v in node:
+                walk(v)
+
+    walk(pack)
+    return sorted(out, key=len, reverse=True)
+
+
+def strip_named_numbers(text: str, pack: Any = None) -> str:
+    """Remove digit-bearing names (plan types, index names, and any name that
+    appears in the pack) so their digits are never mistaken for figures."""
+    cleaned = text or ""
+    for s in pack_strings(pack) if pack is not None else []:
+        cleaned = re.sub(re.escape(s), " ", cleaned, flags=re.IGNORECASE)
+    return _NAMED_NUMBERS_RE.sub(" ", cleaned)
+
+
+def extract_numbers(text: str, pack: Any = None) -> list[NumberToken]:
+    cleaned = _NOT_A_FIGURE_RE.sub(" ", strip_named_numbers(text or "", pack))
     tokens: list[NumberToken] = []
     for m in NUMBER_RE.finditer(cleaned):
         raw = m.group(0)
@@ -151,7 +185,7 @@ def ungrounded(text: str, pack: Any, *, rel_tol: float = 0.0, abs_tol: float = 0
     digits ("11,781.20" for 11,781.43, "28%" for 27.48)."""
     values = pack_values(pack)
     offenders: list[str] = []
-    for tok in extract_numbers(text):
+    for tok in extract_numbers(text, pack):
         tols = tok.tolerances or tuple(0.0 for _ in tok.candidates)
         if any(_matches(c, max(tl, abs_tol), values, rel_tol=rel_tol) for c, tl in zip(tok.candidates, tols)):
             continue
