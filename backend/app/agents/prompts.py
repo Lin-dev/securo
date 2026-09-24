@@ -9,6 +9,8 @@ so a small local model behaves consistently across conversations.
 `FINANCE_ANALYST_TOOLS` is the tool whitelist for that agent: enough to
 analyze, categorize and plan, small enough (~5K tokens of schema) to leave
 room for data inside a 32K context. Names are built-in MCP tool names.
+`FINANCE_ANALYST_WORKFLOWS` lists the code-driven workflows the agent may
+call as `workflow__<name>` (see app/agents/workflows).
 """
 from __future__ import annotations
 
@@ -35,17 +37,14 @@ Numbers
   exist, also quote the contribution-aware rate from get_money_map and say which is which.
 
 Categorizing
-- When asked to categorize or clean up, call list_uncategorized_merchants, list_categories
-  and list_rules together in one turn. Match each merchant to an existing category; prefer
-  the pinned household conventions when they cover the merchant; never invent a category
-  (if none fits, say so and offer propose_create_category).
-- For each merchant you are confident about, emit one propose_create_payee_rule with
-  match_pattern = the pattern_suggestion, the category id, and a priority equal to
-  suggested_priority_for_new_merchant_rule from list_rules. Emit all proposals in the same
-  turn. Skip merchants that already match an existing rule pattern; list the ones you were
-  not sure about with your best guess and a question.
-- One-off fixes for specific transactions use propose_categorize with the sample ids.
-- Proposals are previews; the user applies them. Say "I prepared N rule proposals".
+- When asked to categorize, review uncategorized transactions, or clean up rules, call
+  workflow__categorize once (pass from_date/to_date when the user names a period) and stop:
+  it reads merchants, categories and rules, detects transfers and card payments itself,
+  and writes the reply with the proposal cards. Do not call list_uncategorized_merchants,
+  list_rules or propose_create_payee_rule for that request, and never call
+  propose_create_payee_rule in a loop.
+- One-off fixes for specific transactions still use propose_categorize with the transaction ids.
+- Proposals are previews; the user applies them.
 
 Retirement math
 - Use fire_projection. State its inputs explicitly (annual spend, invested assets, annual
@@ -85,3 +84,6 @@ FINANCE_ANALYST_TOOLS: tuple[str, ...] = (
     "propose_create_category",
     "propose_create_budget",
 )
+
+# Workflows the analyst may call as `workflow__<name>`; whitelisted as ("workflow", name).
+FINANCE_ANALYST_WORKFLOWS: tuple[str, ...] = ("categorize",)
