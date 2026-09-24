@@ -203,7 +203,10 @@ PACK = {"income": 5234.5, "savings_rate": 0.2748, "window": {"days": 30}, "items
         ("Over 30 days you saved.", True),
         ("Across 5 categories.", True),
         ("Income was −5,234.50 (negative).", True),
-        ("Income was about 5.2k.", False),
+        ("Income was about 5.2k.", True),  # 5,234.50 rounds to 5.2k at the precision written
+    ("Income was 5,234.7 BRL.", False),  # an altered digit is not a rounding
+    ("Income was about 5,235 BRL.", True),  # rounding to whole units is fine
+    ("Income was about 5,236 BRL.", False),
         ("The savings rate was 28%.", False),
         ("Fees were 12% of income.", False),
         ("On 2026-09-01 at 07:30 you earned 5,234.50.", True),
@@ -501,7 +504,7 @@ async def test_analysis_mode_uses_medium_reasoning_and_keeps_grounding(session: 
     decision = RouteDecision(intent="holdings", confidence=0.92, analysis=True)
     events = [ev async for ev in answer(ctx, decision, user_message="looking at my holdings do you see any patterns?")]
     call = provider.calls[0]
-    assert call["reasoning"] == "medium" and call["max_tokens"] == 520 and call["tools"] is None
+    assert call["reasoning"] == "medium" and call["max_tokens"] == 1600 and call["tools"] is None
     assert events[-1].text.strip().startswith("Brokerage carries 75.0%")
 
     bad = _ScriptedProvider([_text_turn("You are 62% in one stock."), _text_turn("Roughly 3.4k sits idle.")])

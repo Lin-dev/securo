@@ -43,28 +43,36 @@ class NumberToken:
     raw: str
     candidates: tuple[float, ...]
     is_percent: bool
+    # half of the last written decimal place, per candidate: the narration may
+    # round a figure to the precision it writes, but every digit it writes must
+    # be right ("15,614" may stand for 15,614.39; "11,781.20" may not stand for 11,781.43)
+    tolerances: tuple[float, ...] = ()
 
 
-def _candidates(body: str) -> list[float]:
-    """All plausible readings of a numeric string given ambiguous separators."""
-    s = body.replace(" ", "").replace(" ", "").replace("−", "-")
+def _decimals(digits: str) -> int:
+    return len(digits.split(".", 1)[1]) if "." in digits else 0
+
+
+def _candidates(body: str) -> list[tuple[float, int]]:
+    """All plausible readings of a numeric string given ambiguous separators,
+    each with the number of decimals that reading was written with."""
+    s = body.replace(" ", "").replace("\u00a0", "").replace("−", "-")
     has_dot, has_comma = "." in s, "," in s
-    out: list[float] = []
+    out: list[tuple[float, int]] = []
     try:
         if has_dot and has_comma:
             # The last separator is the decimal mark; the other one groups thousands.
-            if s.rfind(".") > s.rfind(","):
-                out.append(float(s.replace(",", "")))
-            else:
-                out.append(float(s.replace(".", "").replace(",", ".")))
+            norm = s.replace(",", "") if s.rfind(".") > s.rfind(",") else s.replace(".", "").replace(",", ".")
+            out.append((float(norm), _decimals(norm)))
         elif has_comma:
-            out.append(float(s.replace(",", "")))       # 5,234 -> 5234
-            out.append(float(s.replace(",", ".")))      # 1,5   -> 1.5
+            out.append((float(s.replace(",", "")), 0))                       # 5,234 -> 5234
+            norm = s.replace(",", ".")
+            out.append((float(norm), _decimals(norm)))  # 1,5 -> 1.5
         elif has_dot:
-            out.append(float(s))                        # 27.5
-            out.append(float(s.replace(".", "")))       # 5.234 -> 5234
+            out.append((float(s), _decimals(s)))                             # 27.5
+            out.append((float(s.replace(".", "")), 0))                       # 5.234 -> 5234
         else:
-            out.append(float(s))
+            out.append((float(s), 0))
     except ValueError:
         return []
     return out
@@ -87,13 +95,16 @@ def extract_numbers(text: str) -> list[NumberToken]:
                     continue  # ordinals, "10 categories", "12 months"
             except ValueError:
                 pass
-        cands = _candidates(body)
+        pairs = _candidates(body)
         if has_k:
-            cands = [c * 1000 for c in cands]
+            pairs = [(c * 1000, d) for c, d in pairs]
+        cands = [c for c, _ in pairs]
+        tols = [(0.5 * 10 ** (-d)) * (1000 if has_k else 1) for _, d in pairs]
         if is_percent:
             cands = cands + [c / 100 for c in cands]
+            tols = tols + [tl / 100 for tl in tols]
         if cands:
-            tokens.append(NumberToken(raw=raw.strip(), candidates=tuple(cands), is_percent=is_percent))
+            tokens.append(NumberToken(raw=raw.strip(), candidates=tuple(cands), is_percent=is_percent, tolerances=tuple(tols)))
     return tokens
 
 
@@ -123,25 +134,26 @@ def pack_values(pack: Any) -> set[float]:
     return values
 
 
-def _matches(candidate: float, values: set[float], *, rel_tol: float, abs_tol: float) -> bool:
-    """Relative tolerance everywhere (rounding a money figure to the nearest
-    unit is fine); the absolute tolerance only covers money-sized values, so a
-    fraction such as 0.28 cannot pass for 0.2748."""
+def _matches(candidate: float, tol: float, values: set[float], *, rel_tol: float) -> bool:
+    """A written number matches a pack value when the value rounds to it at the
+    precision it was written with (tol = half the last written decimal place),
+    plus any extra relative slack the caller allows (off by default)."""
     for v in values:
-        tol = rel_tol * abs(v)
-        if abs(v) >= 1.0:
-            tol = max(tol, abs_tol)
-        if abs(candidate - v) <= tol:
+        if abs(candidate - v) <= tol + rel_tol * abs(v) + 1e-9:
             return True
     return False
 
 
-def ungrounded(text: str, pack: Any, *, rel_tol: float = 0.005, abs_tol: float = 0.05) -> list[str]:
-    """Return the raw number tokens in `text` that do not match any pack value."""
+def ungrounded(text: str, pack: Any, *, rel_tol: float = 0.0, abs_tol: float = 0.0) -> list[str]:
+    """Return the raw number tokens in `text` that do not match any pack value.
+    `abs_tol` is kept for callers that want extra absolute slack; the default
+    accepts only faithful roundings ("15,614" for 15,614.39) and rejects altered
+    digits ("11,781.20" for 11,781.43, "28%" for 27.48)."""
     values = pack_values(pack)
     offenders: list[str] = []
     for tok in extract_numbers(text):
-        if any(_matches(c, values, rel_tol=rel_tol, abs_tol=abs_tol) for c in tok.candidates):
+        tols = tok.tolerances or tuple(0.0 for _ in tok.candidates)
+        if any(_matches(c, max(tl, abs_tol), values, rel_tol=rel_tol) for c, tl in zip(tok.candidates, tols)):
             continue
         if tok.raw not in offenders:
             offenders.append(tok.raw)
