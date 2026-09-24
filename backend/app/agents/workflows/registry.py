@@ -160,7 +160,7 @@ def _parse_params(raw: str, schema: dict[str, Any]) -> dict[str, Any]:
 
 # Modules that register the shipped workflows on import (idempotent: Python
 # caches the module, and `register` refuses duplicates anyway).
-_BUILTIN_MODULES: tuple[str, ...] = ()
+_BUILTIN_MODULES: tuple[str, ...] = ("app.agents.workflows.categorize",)
 
 
 def load_builtin() -> None:
