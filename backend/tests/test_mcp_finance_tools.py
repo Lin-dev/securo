@@ -312,7 +312,7 @@ def test_merchant_key_and_pattern_suggestion_strip_noise():
 async def test_list_rules_includes_category_names_and_priority_stats(
     session: AsyncSession, ctx: CallContext, test_rules, test_categories
 ):
-    result = await REGISTRY["list_rules"].handler(session=session, ctx=ctx)
+    result = await REGISTRY["list_rules"].handler(session=session, ctx=ctx, verbose=True)
 
     assert result["total"] == 3
     assert [r["priority"] for r in result["items"]] == [10, 10, 10]
@@ -322,12 +322,36 @@ async def test_list_rules_includes_category_names_and_priority_stats(
     assert result["priority_stats"] == {"min": 10, "max": 10, "most_common": 10}
     assert result["suggested_priority_for_new_merchant_rule"] == 10
 
+    # Compact form (the default): one short line per rule, no ids or JSON conditions.
+    compact = await REGISTRY["list_rules"].handler(session=session, ctx=ctx)
+    assert compact["total"] == 3 and compact["priority_stats"] == result["priority_stats"]
+    uber_c = next(r for r in compact["items"] if r["name"] == "UBER rule")
+    assert set(uber_c) == {"name", "priority", "category_name", "pattern"}
+    assert uber_c["category_name"] == test_categories[1].name
+    assert uber_c["pattern"] == "starts_with:UBER"
+    import json
+    assert len(json.dumps(compact["items"])) < len(json.dumps(result["items"]))
+
     test_rules[0].is_active = False
     await session.commit()
     active_only = await REGISTRY["list_rules"].handler(session=session, ctx=ctx)
     assert active_only["total"] == 2
+    assert all("is_active" not in r for r in active_only["items"])
     everything = await REGISTRY["list_rules"].handler(session=session, ctx=ctx, include_inactive=True)
     assert everything["total"] == 3
+    assert {r["is_active"] for r in everything["items"]} == {True, False}
+
+
+def test_first_description_pattern_walks_groups_and_renders_ops():
+    from mcp_server.tools.finance import _first_description_pattern
+
+    assert _first_description_pattern([{"field": "description", "op": "contains", "value": "NETFLIX"}]) == "NETFLIX"
+    assert _first_description_pattern([{"field": "amount", "op": "gt", "value": 10},
+                                       {"field": "description", "op": "regex", "value": "^UBER"}]) == "regex:^UBER"
+    nested = [{"op": "or", "conditions": [{"field": "description", "op": "contains", "value": "AMZN"}]}]
+    assert _first_description_pattern(nested) == "AMZN"
+    assert _first_description_pattern([{"field": "account_id", "op": "equals", "value": "x"}]) is None
+    assert _first_description_pattern(None) is None
 
 
 # --- get_holdings ---------------------------------------------------------------------

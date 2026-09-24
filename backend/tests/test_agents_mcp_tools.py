@@ -321,6 +321,11 @@ async def test_list_categories(session: AsyncSession, ctx: CallContext, test_cat
     for c in result["items"]:
         uuid.UUID(c["id"])  # raises if not a UUID
 
+    compact = await handler(session=session, ctx=ctx, compact=True)
+    assert compact["total"] == result["total"]
+    assert all(set(c) == {"id", "name"} for c in compact["items"])
+    assert {c["name"] for c in compact["items"]} == names
+
 
 async def test_list_payees_empty(session: AsyncSession, ctx: CallContext):
     handler = REGISTRY["list_payees"].handler

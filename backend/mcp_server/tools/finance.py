@@ -460,18 +460,43 @@ async def list_uncategorized_merchants(
 
 # --- rules -----------------------------------------------------------------------
 
+def _first_description_pattern(conditions: Any) -> Optional[str]:
+    """The first `description` leaf condition of a rule, rendered as the bare
+    value for `contains` and `op:value` otherwise; nested groups are walked."""
+    for c in conditions or []:
+        if not isinstance(c, dict):
+            continue
+        if isinstance(c.get("conditions"), list):
+            found = _first_description_pattern(c["conditions"])
+            if found is not None:
+                return found
+            continue
+        if c.get("field") == "description":
+            value = c.get("value")
+            return str(value) if c.get("op") == "contains" else f"{c.get('op')}:{value}"
+    return None
+
+
 @tool(
     name="list_rules",
     description=(
         "The workspace's categorization rules with category names resolved, in the "
         "order they run (ascending priority; the first rule that sets a category wins). "
-        "Read this before proposing rules so new ones use existing categories, do not "
-        "duplicate a pattern, and take suggested_priority_for_new_merchant_rule."
+        "Compact by default: name, priority, category_name and the description pattern "
+        "each rule matches on. Pass verbose=true only when you need the full conditions "
+        "and actions. Read this before proposing rules so new ones use existing "
+        "categories, do not duplicate a pattern, and take "
+        "suggested_priority_for_new_merchant_rule."
     ),
     parameters={
         "type": "object",
         "properties": {
             "include_inactive": {"type": "boolean", "default": False},
+            "verbose": {
+                "type": "boolean",
+                "default": False,
+                "description": "Full conditions and actions per rule; the default is the compact form",
+            },
         },
         "additionalProperties": False,
     },
@@ -482,6 +507,7 @@ async def list_rules(
     session: AsyncSession,
     ctx: CallContext,
     include_inactive: bool = False,
+    verbose: bool = False,
 ) -> dict[str, Any]:
     ws_id = await resolve_workspace_id(session, ctx)
     rules = await rule_service.get_rules(session, ws_id)
@@ -502,18 +528,37 @@ async def list_rules(
             return {**a, "category_name": names.get(str(a.get("value")))}
         return a
 
-    items = [
-        {
-            "id": str(r.id),
-            "name": r.name,
-            "priority": int(r.priority),
-            "is_active": bool(r.is_active),
-            "conditions_op": r.conditions_op,
-            "conditions": r.conditions or [],
-            "actions": [_action(a) for a in (r.actions or [])],
-        }
-        for r in rules
-    ]
+    def _category_name(r: Any) -> Optional[str]:
+        for a in r.actions or []:
+            if isinstance(a, dict) and a.get("op") == "set_category":
+                return names.get(str(a.get("value")))
+        return None
+
+    if verbose:
+        items = [
+            {
+                "id": str(r.id),
+                "name": r.name,
+                "priority": int(r.priority),
+                "is_active": bool(r.is_active),
+                "conditions_op": r.conditions_op,
+                "conditions": r.conditions or [],
+                "actions": [_action(a) for a in (r.actions or [])],
+            }
+            for r in rules
+        ]
+    else:
+        items = []
+        for r in rules:
+            item: dict[str, Any] = {
+                "name": r.name,
+                "priority": int(r.priority),
+                "category_name": _category_name(r),
+                "pattern": _first_description_pattern(r.conditions),
+            }
+            if include_inactive:
+                item["is_active"] = bool(r.is_active)
+            items.append(item)
     active_priorities = [int(r.priority) for r in rules if r.is_active]
     counts = Counter(active_priorities)
     most_common = counts.most_common(1)[0][0] if counts else None

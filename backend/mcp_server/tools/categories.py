@@ -15,18 +15,33 @@ from mcp_server.tools._helpers import resolve_workspace_id
     description=(
         "List the user's categories. Each category has an id, name, optional "
         "group_id, icon, and color. Use the ids when filtering or proposing "
-        "categorization."
+        "categorization. Pass compact=true to get only id and name (a third of "
+        "the size) when you just need to map names to ids."
     ),
-    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    parameters={
+        "type": "object",
+        "properties": {
+            "compact": {
+                "type": "boolean",
+                "default": False,
+                "description": "Return only id and name per category",
+            },
+        },
+        "additionalProperties": False,
+    },
     tags=["read", "categories"],
 )
 async def list_categories(
     *,
     session: AsyncSession,
     ctx: CallContext,
+    compact: bool = False,
 ) -> dict[str, Any]:
     ws_id = await resolve_workspace_id(session, ctx)
     cats = await category_service.get_categories(session, ws_id)
+    if compact:
+        items = [{"id": str(c.id), "name": c.name} for c in cats]
+        return {"items": items, "total": len(items)}
     items = [
         {
             "id": str(c.id),
