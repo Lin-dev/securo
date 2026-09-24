@@ -132,6 +132,15 @@ class AgentSettings(BaseSettings):
     guided_mode: bool = True
     guided_min_confidence: float = 0.7
 
+    # Workflows — code-driven procedures around the model (app/agents/workflows).
+    # `workflow_auto_apply`: when a run is asked to apply and this is on (or the
+    # agent's extra.auto_apply_rules is), confident rules are created in code
+    # instead of waiting for a click. Budgets bound every run: model calls and
+    # wall-clock seconds.
+    workflow_auto_apply: bool = False
+    workflow_max_llm_calls: int = 8
+    workflow_max_seconds: int = 240
+
     # Same env_file pair as the main Settings: the CWD-relative ".env" for
     # backward compatibility plus the anchored backend/.env, so the API and the
     # Celery worker/beat read the same file whatever directory they start from.
