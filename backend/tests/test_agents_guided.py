@@ -392,13 +392,14 @@ async def test_holdings_handler(session: AsyncSession, test_user, test_workspace
 
 
 def test_render_pack_lines_formats_money_percent_and_counts():
+    # human labels: the narrator must never see machine paths like `a.income` to parrot back
     lines = guided._render_pack_lines({
         "kind": "compare_periods", "currency": "BRL",
         "a": {"label": "Sep 2026", "income": 1000.0, "savings_rate_pct": 97.0},
         "delta": {"savings_rate_pts": -3.5}, "window": {"days": 30}, "points": [{"date": "2026-01", "value": 1.0}] * 15,
     })
-    assert "- a (Sep 2026).income: 1,000.00 BRL" in lines
-    assert "- a (Sep 2026).savings_rate_pct: 97.0%" in lines
-    assert "- delta.savings_rate_pts: -3.5 pts" in lines
-    assert "- window.days: 30" in lines
-    assert "- points: 15 entries (first 12 listed)" in lines
+    assert "- Income (Sep 2026): 1,000.00 BRL" in lines
+    assert "- Savings rate (Sep 2026): 97.0%" in lines
+    assert "- Savings rate (pts) change: -3.5 pts" in lines
+    assert "- Days: 30" in lines
+    assert "- Points: 15 entries (first 12 listed)" in lines

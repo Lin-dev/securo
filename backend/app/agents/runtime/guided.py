@@ -913,10 +913,13 @@ HANDLERS: dict[str, Callable[[GuidedContext, RouteDecision], Awaitable[Prepared]
 
 NARRATION_SYSTEM = (
     "You are {agent_name}, inside Securo. Write a short narration in {language} (at most 120 words, 2-4 plain "
-    "sentences) about the figures below, which Securo computed. Rules: use ONLY these figures; copy each number "
-    "exactly as written (same digits, decimals and sign); never add, subtract, average, annualize or compute a "
-    "percentage or any new number; do not mention a figure that is not listed; no headings, bullets, tables, code "
-    "fences or charts; name the period once. If a figure is n/a, say it is unavailable.\n\nFigures:\n{figures}"
+    "sentences) about the figures below, which Securo computed. Write natural prose for the user, the way an "
+    "analyst would sum up a table: compare, point out the biggest change, and stop. Rules: use ONLY these figures; "
+    "copy each number exactly as written (same digits, decimals and sign); never add, subtract, average, annualize "
+    "or compute a percentage or any new number; do not mention a figure that is not listed; never repeat the figure "
+    "labels or field names verbatim (say 'income rose to 1,200.00 USD in Aug 2026 from 900.00 USD in Jul 2026', "
+    "not 'Income (Aug 2026): 1,200.00 USD'); no headings, bullets, tables, code fences or charts; name each period "
+    "once. If a figure is n/a, say it is unavailable.\n\nFigures:\n{figures}"
 )
 
 _COUNT_KEYS = frozenset({
@@ -938,36 +941,78 @@ def _fmt_leaf(key: str, value: Any, currency: str) -> Optional[str]:
     return None
 
 
+_LABEL_WORDS = {
+    "savings_rate_pct": "Savings rate", "savings_rate_pts": "Savings rate (pts)", "cash_savings_rate": "Cash savings rate",
+    "contribution_aware_savings_rate": "Savings rate incl. contributions", "progress_pct": "Progress to FI",
+    "fi_number": "FI number", "years_to_fi": "Years to FI", "balance_primary": "Balance", "accounts_total_primary": "Total across accounts",
+    "share_pct": "Share",
+}
+# containers whose children are figures ABOUT the parent's name: "income" under "delta" -> "Income change"
+_SUFFIX_CONTAINERS = {"delta": "change", "delta_pct": "change %", "deltas": "change"}
+# containers that only scope their children (period a/b, current/previous, ...) and add no words
+_SCOPE_CONTAINERS = {"a", "b", "current", "previous", "period", "window", "inputs", "totals", "lanes", "sources",
+                     "items", "top", "trajectory", "points", "accounts", "unlinked", "holdings", "first", "last", "min", "max"}
+
+
+def _humanize_key(key: str) -> str:
+    if key in _LABEL_WORDS:
+        return _LABEL_WORDS[key]
+    words = key.replace("_pct", " %").replace("_pts", " (pts)").replace("_", " ").strip()
+    return words[:1].upper() + words[1:] if words else key
+
+
 def _render_pack_lines(pack: dict[str, Any]) -> str:
-    """One bullet per numeric leaf, with a readable path, so the narrator sees
-    every figure exactly as it may quote it."""
+    """One bullet per numeric leaf with a human label ("Income (Aug 2026): 1,200.00 USD",
+    "Income change %: 32.5%"), so the narrator sees every figure exactly as it may
+    quote it and has nothing machine-looking to parrot back."""
     currency = str(pack.get("currency") or "")
     lines: list[str] = []
 
-    def walk(node: Any, path: str, key: str) -> None:
+    def emit(head: str, scope: str, text: str) -> None:
+        head = head[:1].upper() + head[1:]
+        lines.append(f"- {head} ({scope}): {text}" if scope else f"- {head}: {text}")
+
+    def walk(node: Any, prefix: str, suffix: str, scope: str, key: str, pct: bool) -> None:
         if isinstance(node, dict):
             label = node.get("label") or node.get("category") or node.get("name") or node.get("date")
+            own_scope = str(label) if isinstance(label, str) and label else scope
             for k, v in node.items():
                 if k in ("kind", "currency", "label"):
                     continue
-                sub = f"{path}.{k}" if path else k
-                if isinstance(label, str) and path and k not in ("category", "name", "date", "from", "to"):
-                    sub = f"{path} ({label}).{k}"
-                walk(v, sub, k)
+                if isinstance(v, (dict, list)):
+                    if k in _SUFFIX_CONTAINERS:
+                        walk(v, prefix, _SUFFIX_CONTAINERS[k], own_scope, k, pct or k.endswith("_pct"))
+                    elif k in _SCOPE_CONTAINERS:
+                        walk(v, prefix, suffix, own_scope, k, pct)
+                    else:
+                        walk(v, f"{prefix} {_humanize_key(k).lower()}".strip() if prefix else _humanize_key(k), suffix, own_scope, k, pct)
+                else:
+                    walk(v, prefix, suffix, own_scope, k, pct or k.endswith("_pct"))
             return
         if isinstance(node, list):
-            for i, item in enumerate(node[:_MAX_LIST_LINES]):
-                walk(item, f"{path}[{i}]", key)
+            for item in node[:_MAX_LIST_LINES]:
+                walk(item, prefix, suffix, scope, key, pct)
             if len(node) > _MAX_LIST_LINES:
-                lines.append(f"- {path}: {len(node)} entries (first {_MAX_LIST_LINES} listed)")
+                lines.append(f"- {_humanize_key(key) if key else 'Items'}: {len(node)} entries (first {_MAX_LIST_LINES} listed)")
             return
-        text = _fmt_leaf(key, node, currency)
-        if text is not None:
-            lines.append(f"- {path}: {text}")
-        elif isinstance(node, str) and key in ("from", "to", "label", "date"):
-            lines.append(f"- {path}: {node}")
+        if key in ("from", "to", "date"):
+            if isinstance(node, str):
+                emit({"from": "From", "to": "To", "date": "Date"}[key], scope, node)
+            return
+        if pct and isinstance(node, (int, float)) and not isinstance(node, bool):
+            text: Optional[str] = f"{float(node):.1f}%"
+        else:
+            text = _fmt_leaf(key, node, currency)
+        if text is None:
+            return
+        name = _humanize_key(key)
+        if suffix:
+            head = f"{name} {suffix}" if key not in _LABEL_WORDS or not name.lower().endswith(suffix.split()[0]) else name
+        else:
+            head = f"{prefix} {name.lower()}".strip() if prefix else name
+        emit(head, scope, text)
 
-    walk(pack, "", "")
+    walk(pack, "", "", "", "", False)
     return "\n".join(lines)
 
 
