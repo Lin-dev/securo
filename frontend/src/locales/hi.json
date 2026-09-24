@@ -2191,7 +2191,17 @@
       "loading": "टूल लोड हो रहे हैं…"
     },
     "chat": {
-      "placeholder": "{{name}} से बात करें..."
+      "placeholder": "{{name}} से बात करें...",
+      "errors": {
+        "max_iterations": "The assistant stopped after too many tool calls without a final answer. Try a narrower question.",
+        "unavailable": "The model server could not be reached or returned an error.",
+        "config": "This agent has no model configured. Pick a connection or set a model.",
+        "empty_response": "The model returned nothing. Check the connection's base URL and model name.",
+        "auth": "The model provider rejected the credentials.",
+        "rate_limit": "The model provider is rate-limiting requests. Try again in a moment.",
+        "not_supported": "This provider does not support what the agent tried to do.",
+        "unknown": "Something went wrong while talking to the model."
+      }
     },
     "chart": {
       "noData": "चार्ट बनाने के लिए कोई डेटा नहीं"
@@ -2201,6 +2211,10 @@
       "applied": "लागू हुआ",
       "apply": "लागू करें",
       "applyFailed": "लागू करने में विफल",
+      "applyAll": "Apply all ({{count}})",
+      "applyAllProgress": "Applying {{done}} of {{total}}…",
+      "applyAllDone": "All {{count}} applied",
+      "applyAllFailed": "{{failed}} of {{total}} failed",
       "showRaw": "टूल विवरण",
       "collision": "नाम पहले से {{name}} द्वारा उपयोग में है",
       "kind": {

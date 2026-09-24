@@ -2177,7 +2177,17 @@
       "loading": "Carregando ferramentas…"
     },
     "chat": {
-      "placeholder": "Converse com {{name}}..."
+      "placeholder": "Converse com {{name}}...",
+      "errors": {
+        "max_iterations": "O assistente parou depois de muitas chamadas de ferramentas sem uma resposta final. Tente uma pergunta mais específica.",
+        "unavailable": "Não foi possível alcançar o servidor do modelo ou ele retornou um erro.",
+        "config": "Este agente não tem um modelo configurado. Escolha uma conexão ou defina um modelo.",
+        "empty_response": "O modelo não retornou nada. Verifique a URL base e o nome do modelo da conexão.",
+        "auth": "O provedor do modelo rejeitou as credenciais.",
+        "rate_limit": "O provedor do modelo está limitando as requisições. Tente novamente em instantes.",
+        "not_supported": "Este provedor não suporta o que o agente tentou fazer.",
+        "unknown": "Algo deu errado ao falar com o modelo."
+      }
     },
     "chart": {
       "noData": "Sem dados para o gráfico"
@@ -2187,6 +2197,10 @@
       "applied": "aplicada",
       "apply": "Aplicar",
       "applyFailed": "Falha ao aplicar",
+      "applyAll": "Aplicar todas ({{count}})",
+      "applyAllProgress": "Aplicando {{done}} de {{total}}…",
+      "applyAllDone": "Todas as {{count}} aplicadas",
+      "applyAllFailed": "{{failed}} de {{total}} falharam",
       "showRaw": "Detalhes da ferramenta",
       "collision": "nome já usado por {{name}}",
       "kind": {

@@ -10,6 +10,9 @@ import { WORKSPACE_STORAGE_KEY } from '@/lib/api'
 export type AgentStreamEvent =
   | { kind: 'conversation'; conversation_id: string }
   | { kind: 'text_delta'; text: string }
+  // The model's text so far was commentary preceding tool calls, not the
+  // answer: drop it from the draft bubble (the backend does not persist it).
+  | { kind: 'text_discard' }
   | { kind: 'tool_call'; tool_name: string; tool_args: Record<string, unknown> }
   | { kind: 'tool_result'; tool_name: string; tool_result: { ok?: boolean; data?: unknown; text?: string | null } }
   | { kind: 'error'; error_code?: string; error_message?: string }

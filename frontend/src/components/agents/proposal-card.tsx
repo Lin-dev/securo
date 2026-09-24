@@ -6,89 +6,38 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
-  budgets,
-  categories,
-  goals,
-  recurring,
-  rules,
-  transactions,
-} from '@/lib/api'
-
-type ProposalKind =
-  | 'categorize'
-  | 'create_category'
-  | 'create_budget'
-  | 'create_payee_rule'
-  | 'create_transaction'
-  | 'create_recurring_transaction'
-  | 'update_recurring_transaction'
-  | 'cancel_recurring_transaction'
-  | 'create_goal'
-
-interface ProposalData {
-  kind?: ProposalKind
-  proposed?: Record<string, unknown>
-  target?: Record<string, unknown>
-  changes?: Record<string, unknown>
-  affected?: { id: string; description?: string; amount?: number; currency?: string }[]
-  affected_count?: number
-  target_category?: { id: string; name: string }
-  name_collision?: { id: string; name: string }
-  mode?: 'deactivate' | 'delete'
-  apply_endpoint?: string
-  error?: string
-}
+  applyErrorDetail,
+  applyProposal,
+  invalidateProposalQueries,
+  markProposalApplied,
+  type ProposalData,
+  type ProposalKind,
+} from '@/lib/agent-proposals'
+import { useProposalApplied } from '@/hooks/use-proposal-applied'
 
 interface Props {
   toolCallId: string
   data: ProposalData
 }
 
-const APPLIED_KEY = 'securo:agent-proposal-applied'
-
-function loadApplied(): Record<string, { ts: number; ref?: string }> {
-  try {
-    return JSON.parse(localStorage.getItem(APPLIED_KEY) || '{}')
-  } catch {
-    return {}
-  }
-}
-
-function persistApplied(toolCallId: string, ref?: string) {
-  const all = loadApplied()
-  all[toolCallId] = { ts: Date.now(), ref }
-  localStorage.setItem(APPLIED_KEY, JSON.stringify(all))
-}
-
 export function ProposalCard({ toolCallId, data }: Props) {
   const { t } = useTranslation()
   const qc = useQueryClient()
-  const initiallyApplied = loadApplied()[toolCallId]
-  const [appliedAt, setAppliedAt] = useState<number | null>(initiallyApplied?.ts ?? null)
+  // Shared store: flips to applied whether this card's button or the
+  // message-level "Apply all" did the work, and survives reloads.
+  const appliedAt = useProposalApplied(toolCallId)
   const [showJson, setShowJson] = useState(false)
 
   const apply = useMutation({
     mutationFn: () => applyProposal(data),
     onSuccess: (ref) => {
-      persistApplied(toolCallId, typeof ref === 'string' ? ref : undefined)
-      setAppliedAt(Date.now())
+      markProposalApplied(toolCallId, typeof ref === 'string' ? ref : undefined)
       toast.success(t('agents.proposal.applied'))
       // Invalidate the broad surface that proposals may have changed.
-      ;[
-        'transactions',
-        'accounts',
-        'categories',
-        'category-groups',
-        'recurring-transactions',
-        'budgets',
-        'rules',
-        'goals',
-        'dashboard',
-      ].forEach((key) => qc.invalidateQueries({ queryKey: [key] }))
+      invalidateProposalQueries(qc)
     },
     onError: (err: unknown) => {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(detail || t('agents.proposal.applyFailed'))
+      toast.error(applyErrorDetail(err) || t('agents.proposal.applyFailed'))
     },
   })
 
@@ -291,140 +240,4 @@ function SplitPreview({ proposed }: { proposed?: Record<string, unknown> }) {
       </ul>
     </div>
   )
-}
-
-// Each kind maps to one Securo endpoint already exposed via lib/api.ts.
-// Returns a string ref (id of the new entity) when available — used as a
-// breadcrumb in the localStorage record so a future "view created entity"
-// affordance can deep-link to it.
-async function applyProposal(data: ProposalData): Promise<string | void> {
-  const p = (data.proposed || {}) as Record<string, unknown>
-  switch (data.kind) {
-    case 'categorize': {
-      const ids = (data.affected || []).map((a) => a.id)
-      const res = await transactions.bulkCategorize(ids, data.target_category!.id)
-      return `${res.updated} updated`
-    }
-    case 'create_category': {
-      const c = await categories.create({
-        name: String(p.name),
-        group_id: (p.group_id as string) || undefined,
-        icon: (p.icon as string) || undefined,
-        color: (p.color as string) || undefined,
-      })
-      return c.id
-    }
-    case 'create_budget': {
-      const b = await budgets.create({
-        category_id: String(p.category_id),
-        amount: Number(p.amount),
-        month: String(p.month),
-      })
-      return b.id
-    }
-    case 'create_payee_rule': {
-      const r = await rules.create({
-        name: String(p.name ?? `Rule: ${String(p.match_pattern).slice(0, 60)}`).slice(0, 255),
-        conditions_op: 'and',
-        conditions: [
-          { field: 'description', op: 'contains', value: String(p.match_pattern) },
-        ],
-        actions: [{ op: 'set_category', value: String(p.category_id) }],
-        priority: Number.isFinite(Number(p.priority)) ? Number(p.priority) : 10,
-        is_active: true,
-      })
-      return r.id
-    }
-    case 'create_transaction': {
-      // If the proposal includes group splits, translate the agent's
-      // {member_id, share_amount, share_pct} preview into the API's
-      // {group_member_id, share_amount, share_pct} schema. The backend
-      // service re-runs the math in `equal` mode so passing the per-
-      // member amounts back is not required, but we keep them so an
-      // exact/percent split round-trips identically to the preview.
-      const splitsBlock = p.splits as { share_type?: string; items?: Array<Record<string, unknown>> } | undefined
-      const splitsPayload = splitsBlock && Array.isArray(splitsBlock.items) && splitsBlock.items.length > 0
-        ? {
-            share_type: String(splitsBlock.share_type || 'equal'),
-            splits: splitsBlock.items.map((it) => ({
-              group_member_id: String(it.member_id),
-              ...(it.share_amount != null ? { share_amount: Number(it.share_amount) } : {}),
-              ...(it.share_pct != null ? { share_pct: Number(it.share_pct) } : {}),
-            })),
-          }
-        : undefined
-      const t = await transactions.create({
-        description: String(p.description),
-        amount: Number(p.amount),
-        currency: (p.currency as string) || undefined,
-        type: (p.type as string) || undefined,
-        date: (p.date as string) || undefined,
-        account_id: (p.account_id as string) || undefined,
-        category_id: (p.category_id as string) || undefined,
-        notes: (p.notes as string) || undefined,
-        ...(splitsPayload ? { splits: splitsPayload } : {}),
-      } as Parameters<typeof transactions.create>[0])
-      return t.id
-    }
-    case 'create_recurring_transaction': {
-      const rt = await recurring.create({
-        description: String(p.description),
-        amount: Number(p.amount),
-        currency: (p.currency as string) || undefined,
-        type: (p.type as string) || undefined,
-        frequency: (p.frequency as string) || undefined,
-        day_of_month: (p.day_of_month as number) ?? undefined,
-        start_date: (p.start_date as string) || undefined,
-        end_date: (p.end_date as string) || undefined,
-        account_id: (p.account_id as string) || undefined,
-        category_id: (p.category_id as string) || undefined,
-      } as Parameters<typeof recurring.create>[0])
-      return rt.id
-    }
-    case 'update_recurring_transaction': {
-      const id = String((data.target as Record<string, unknown>).id)
-      await recurring.update(id, (data.changes || {}) as Parameters<typeof recurring.update>[1])
-      return id
-    }
-    case 'cancel_recurring_transaction': {
-      const id = String((data.target as Record<string, unknown>).id)
-      if (data.mode === 'delete') {
-        await recurring.delete(id)
-      } else {
-        await recurring.update(id, { is_active: false } as Parameters<typeof recurring.update>[1])
-      }
-      return id
-    }
-    case 'create_goal': {
-      const g = await goals.create({
-        name: String(p.name),
-        target_amount: Number(p.target_amount),
-        currency: (p.currency as string) || undefined,
-        deadline: (p.deadline as string) || undefined,
-        initial_amount: (p.initial_amount as number) ?? undefined,
-        icon: (p.icon as string) || undefined,
-        color: (p.color as string) || undefined,
-      } as Parameters<typeof goals.create>[0])
-      return g.id
-    }
-  }
-}
-
-/** Heuristic: a tool result is a proposal if its data has a known kind. */
-export function isProposalData(data: unknown): data is ProposalData {
-  if (!data || typeof data !== 'object') return false
-  const k = (data as { kind?: unknown }).kind
-  return typeof k === 'string' && [
-    'categorize', 'create_category', 'create_budget', 'create_payee_rule',
-    'create_transaction', 'create_recurring_transaction',
-    'update_recurring_transaction', 'cancel_recurring_transaction',
-    'create_goal',
-  ].includes(k)
-}
-
-/** Treat the data as a proposal even when only `error` is present, since
- * a proposal that failed validation should still render a small error card
- * instead of a generic tool-debug chip. */
-export function isProposalToolName(name: string): boolean {
-  return name.includes('propose_')
 }

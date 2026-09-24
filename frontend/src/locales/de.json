@@ -2192,7 +2192,17 @@
       "loading": "Werkzeuge werden geladen…"
     },
     "chat": {
-      "placeholder": "Schreibe mit {{name}}..."
+      "placeholder": "Schreibe mit {{name}}...",
+      "errors": {
+        "max_iterations": "The assistant stopped after too many tool calls without a final answer. Try a narrower question.",
+        "unavailable": "The model server could not be reached or returned an error.",
+        "config": "This agent has no model configured. Pick a connection or set a model.",
+        "empty_response": "The model returned nothing. Check the connection's base URL and model name.",
+        "auth": "The model provider rejected the credentials.",
+        "rate_limit": "The model provider is rate-limiting requests. Try again in a moment.",
+        "not_supported": "This provider does not support what the agent tried to do.",
+        "unknown": "Something went wrong while talking to the model."
+      }
     },
     "chart": {
       "noData": "Keine Daten für das Diagramm"
@@ -2202,6 +2212,10 @@
       "applied": "angewendet",
       "apply": "Anwenden",
       "applyFailed": "Anwendung fehlgeschlagen",
+      "applyAll": "Apply all ({{count}})",
+      "applyAllProgress": "Applying {{done}} of {{total}}…",
+      "applyAllDone": "All {{count}} applied",
+      "applyAllFailed": "{{failed}} of {{total}} failed",
       "showRaw": "Werkzeug-Details",
       "collision": "Name bereits verwendet von {{name}}",
       "kind": {
