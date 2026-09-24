@@ -33,6 +33,12 @@ def _think_value(raw: str) -> bool | str | None:
     return None
 
 
+# Per-call `reasoning` → Ollama `think`. "none" is a literal false (qwen3-class
+# models need it to stop thinking; gpt-oss only accepts levels, so callers pass
+# "low" there instead).
+_THINK_BY_REASONING: dict[str, bool | str] = {"none": False, "low": "low", "medium": "medium", "high": "high"}
+
+
 def _serialize_messages(messages: list[ChatMessage]) -> list[dict]:
     out: list[dict] = []
     for m in messages:
@@ -88,6 +94,8 @@ class OllamaProvider(LLMProvider):
         tools: Optional[list[ToolDefinition]] = None,
         temperature: float = 0.4,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
+        reasoning: Optional[str] = None,
     ) -> AsyncIterator[ChatChunk]:
         url = f"{self.base_url.rstrip('/')}/api/chat"
         payload: dict = {
@@ -100,10 +108,15 @@ class OllamaProvider(LLMProvider):
             payload["options"]["num_predict"] = max_tokens
         if tools:
             payload["tools"] = _serialize_tools(tools)
+        if response_format is not None:
+            # Grammar-constrained output (Ollama `format` = a JSON Schema).
+            # Callers must never combine it with `tools`: with both present
+            # Ollama constrains the whole reply and tool calls break.
+            payload["format"] = response_format
         settings = get_agent_settings()
         if settings.ollama_num_ctx > 0:
             payload["options"]["num_ctx"] = int(settings.ollama_num_ctx)
-        think = _think_value(settings.ollama_think)
+        think = _THINK_BY_REASONING.get(reasoning) if reasoning else _think_value(settings.ollama_think)
         if think is not None:
             payload["think"] = think
         if settings.ollama_keep_alive.strip():
