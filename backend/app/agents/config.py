@@ -116,6 +116,12 @@ class AgentSettings(BaseSettings):
     # Oldest whole user turns are dropped until it fits; 20K leaves room for
     # ~7K tokens of tool schemas and the answer inside a 32K window. 0 = off.
     prompt_budget_tokens: int = 20000
+    # Text a model emits in the same turn as its tool calls is planning
+    # commentary ("Need August. Let's call list_rules…"), not an answer. By
+    # default it is discarded from the UI (a `text_discard` event) and from the
+    # model's own history; the first 300 chars are kept on the persisted turn
+    # for debugging. True restores the old behaviour (streamed and persisted).
+    show_tool_commentary: bool = False
 
     # Same env_file pair as the main Settings: the CWD-relative ".env" for
     # backward compatibility plus the anchored backend/.env, so the API and the
