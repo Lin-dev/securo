@@ -141,6 +141,16 @@ class AgentSettings(BaseSettings):
     workflow_max_llm_calls: int = 8
     workflow_max_seconds: int = 240
 
+    # Classifier backend for the categorization workflow's closed question.
+    # "ollama" (default) = the agent's own model with a grammar-constrained
+    # schema; "kev" = a local Kev System One server (small calibrated decision
+    # models, `python -m kev.serve`), reached at `kev_base_url`, falling back to
+    # the model when unreachable.
+    classifier_backend: str = "ollama"
+    kev_base_url: str = ""
+    kev_model: str = "kev-latest"
+    kev_timeout_seconds: float = 20.0
+
     # Same env_file pair as the main Settings: the CWD-relative ".env" for
     # backward compatibility plus the anchored backend/.env, so the API and the
     # Celery worker/beat read the same file whatever directory they start from.
