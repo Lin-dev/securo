@@ -96,7 +96,12 @@ class AnthropicProvider(LLMProvider):
         tools: Optional[list[ToolDefinition]] = None,
         temperature: float = 0.4,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
+        reasoning: Optional[str] = None,
     ) -> AsyncIterator[ChatChunk]:
+        # `response_format` and `reasoning` are accepted for interface parity
+        # and ignored: the Messages API has no JSON-schema mode here, so
+        # callers include the schema in the prompt and validate the reply.
         url = f"{self.base_url.rstrip('/')}/messages"
         system, rest = _split_system(messages)
         payload: dict = {

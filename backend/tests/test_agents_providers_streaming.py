@@ -230,6 +230,43 @@ async def test_ollama_chat_stream_think_false_is_sent_as_bool(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ollama_chat_stream_sends_format_and_reasoning_override(monkeypatch):
+    """A per-call `reasoning` wins over AGENTS_OLLAMA_THINK and a JSON schema
+    goes out as Ollama's `format` (grammar-constrained output)."""
+    monkeypatch.setattr(get_agent_settings(), "ollama_think", "medium")
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
+    _FakeAsyncClient.queue_stream.append(_done_frame())
+    provider = OllamaProvider()
+    async for _ in provider.chat_stream(
+        [ChatMessage(role="user", content="x")], model="gpt-oss:20b", response_format=schema, reasoning="low"
+    ):
+        pass
+    _, payload = _FakeAsyncClient.posted[-1]
+    assert payload["think"] == "low"
+    assert payload["format"] == schema
+    assert "tools" not in payload
+
+
+@pytest.mark.asyncio
+async def test_ollama_reasoning_none_sends_think_false():
+    _FakeAsyncClient.queue_stream.append(_done_frame())
+    provider = OllamaProvider()
+    async for _ in provider.chat_stream([ChatMessage(role="user", content="x")], model="qwen3:8b", reasoning="none"):
+        pass
+    _, payload = _FakeAsyncClient.posted[-1]
+    assert payload["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_ollama_omits_format_when_not_requested(monkeypatch):
+    monkeypatch.setattr(get_agent_settings(), "ollama_think", "medium")
+    _FakeAsyncClient.queue_stream.append(_done_frame())
+    payload = await _run_ollama_once()
+    assert "format" not in payload
+    assert payload["think"] == "medium"  # env default still applies without a per-call override
+
+
+@pytest.mark.asyncio
 async def test_ollama_chat_stream_drops_thinking_deltas():
     """Reasoning streamed in `message.thinking` is never surfaced as text."""
     _FakeAsyncClient.queue_stream.append(_FakeStreamResponse(status_code=200, lines=[

@@ -48,10 +48,14 @@ class _ScriptedProvider(LLMProvider):
     def __init__(self, turns: list[list[ChatChunk]]):
         super().__init__(api_key="x")
         self._turns = list(turns)
+        # One entry per chat_stream() call: the tool list plus any structured
+        # output / reasoning kwargs, so tests can assert what was requested.
+        self.calls: list[dict] = []
 
     async def chat_stream(  # type: ignore[override]
-        self, messages, *, model, tools=None, temperature=0.4, max_tokens=None
+        self, messages, *, model, tools=None, temperature=0.4, max_tokens=None, **kwargs
     ) -> AsyncIterator[ChatChunk]:
+        self.calls.append({"model": model, "tools": tools, "temperature": temperature, "max_tokens": max_tokens, **kwargs})
         if not self._turns:
             # No more scripted turns — emit a generic finish.
             yield ChatChunk(type="finish", finish_reason="stop")

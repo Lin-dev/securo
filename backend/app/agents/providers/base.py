@@ -52,6 +52,10 @@ def chat_timeout_seconds() -> float:
 
 Role = Literal["system", "user", "assistant", "tool"]
 
+# Per-call reasoning effort for thinking models. Providers map it to their own
+# knob (Ollama `think`, OpenAI `reasoning_effort`); None = provider/env default.
+Reasoning = Literal["none", "low", "medium", "high"]
+
 
 @dataclass
 class ToolCall:
@@ -126,8 +130,18 @@ class LLMProvider(ABC):
         tools: Optional[list[ToolDefinition]] = None,
         temperature: float = 0.4,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict[str, Any]] = None,
+        reasoning: Optional[str] = None,
     ) -> AsyncIterator[ChatChunk]:
-        """Yield streaming chunks. Implementations are async generators."""
+        """Yield streaming chunks. Implementations are async generators.
+
+        `response_format` is a JSON Schema (object) the reply must match —
+        grammar-constrained on Ollama, `json_schema` mode on OpenAI, ignored
+        by providers without structured output (callers then validate the
+        text themselves). Never combine it with `tools` in one call.
+        `reasoning` is a per-call effort level (`Reasoning`) overriding the
+        provider/env default; providers without a knob ignore it.
+        """
         ...
 
     async def chat(
@@ -138,14 +152,23 @@ class LLMProvider(ABC):
         tools: Optional[list[ToolDefinition]] = None,
         temperature: float = 0.4,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict[str, Any]] = None,
+        reasoning: Optional[str] = None,
     ) -> ChatResponse:
         """Convenience: collect a streaming response into one ChatResponse."""
         text_parts: list[str] = []
         tool_calls: dict[str, dict] = {}
         finish: str = "stop"
         usage = Usage()
+        # Forward the structured-output kwargs only when set: subclasses
+        # (and test fakes) written against the older signature keep working.
+        extra: dict[str, Any] = {}
+        if response_format is not None:
+            extra["response_format"] = response_format
+        if reasoning is not None:
+            extra["reasoning"] = reasoning
         async for chunk in self.chat_stream(
-            messages, model=model, tools=tools, temperature=temperature, max_tokens=max_tokens
+            messages, model=model, tools=tools, temperature=temperature, max_tokens=max_tokens, **extra
         ):
             if chunk.type == "text_delta" and chunk.text:
                 text_parts.append(chunk.text)

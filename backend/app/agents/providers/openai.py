@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import AsyncIterator, Optional
 from urllib.parse import urlparse
 
@@ -93,6 +94,15 @@ def _raise_for_status(status: int, body: str) -> None:
         raise LLMUnavailableError(f"OpenAI {status}: {body}", status=status)
 
 
+_REASONING_MODEL_RE = re.compile(r"^(o\d|gpt-5)")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """OpenAI accepts `reasoning_effort` only on reasoning models (o-series,
+    gpt-5 family); other models answer 400 to it."""
+    return bool(_REASONING_MODEL_RE.match((model or "").strip().lower()))
+
+
 class OpenAIProvider(LLMProvider):
     name = "openai"
 
@@ -118,6 +128,8 @@ class OpenAIProvider(LLMProvider):
         tools: Optional[list[ToolDefinition]] = None,
         temperature: float = 0.4,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
+        reasoning: Optional[str] = None,
     ) -> AsyncIterator[ChatChunk]:
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         payload: dict = {
@@ -131,6 +143,19 @@ class OpenAIProvider(LLMProvider):
             payload["tools"] = _serialize_tools(tools)
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if response_format is not None:
+            # Structured output: `strict` needs every object in the schema to
+            # set additionalProperties=false and list all properties as required.
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_format.get("title") or "securo_structured",
+                    "schema": response_format,
+                    "strict": True,
+                },
+            }
+        if reasoning and _is_reasoning_model(model):
+            payload["reasoning_effort"] = "low" if reasoning == "none" else reasoning
 
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(chat_timeout_seconds(), connect=10.0)) as client:

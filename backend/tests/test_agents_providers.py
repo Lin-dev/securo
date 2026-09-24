@@ -235,6 +235,122 @@ async def test_openai_chat_timeout_comes_from_settings(monkeypatch):
     assert seen["timeout"].connect == 10.0
 
 
+@pytest.mark.asyncio
+async def test_openai_payload_carries_json_schema_and_reasoning_effort_for_reasoning_models():
+    """`response_format` becomes OpenAI's strict json_schema mode; `reasoning`
+    becomes `reasoning_effort` only for models that accept it (o*, gpt-5*)."""
+    from unittest.mock import patch
+    from app.agents.providers.openai import OpenAIProvider, _is_reasoning_model
+
+    assert _is_reasoning_model("gpt-5-mini") and _is_reasoning_model("o3") and not _is_reasoning_model("gpt-4o-mini")
+
+    class _StreamResp:
+        status_code = 200
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): pass
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    posted: list[dict] = []
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): pass
+        def stream(self, _method, _url, *, json=None, headers=None):
+            posted.append(json or {})
+            return _StreamResp()
+
+    schema = {"title": "route", "type": "object", "properties": {"intent": {"type": "string"}}, "required": ["intent"], "additionalProperties": False}
+    p = OpenAIProvider(api_key="x", base_url="http://lmstudio:1234")
+    with patch("httpx.AsyncClient", return_value=_Client()):
+        async for _ in p.chat_stream([ChatMessage(role="user", content="hi")], model="gpt-4o-mini", response_format=schema, reasoning="low"):
+            pass
+        async for _ in p.chat_stream([ChatMessage(role="user", content="hi")], model="gpt-5-mini", reasoning="none"):
+            pass
+        async for _ in p.chat_stream([ChatMessage(role="user", content="hi")], model="gpt-4o-mini"):
+            pass
+
+    first, second, third = posted
+    assert first["response_format"] == {"type": "json_schema", "json_schema": {"name": "route", "schema": schema, "strict": True}}
+    assert "reasoning_effort" not in first  # gpt-4o-mini rejects it
+    assert "response_format" not in second and second["reasoning_effort"] == "low"  # "none" maps to low on OpenAI
+    assert "response_format" not in third and "reasoning_effort" not in third
+
+
+@pytest.mark.asyncio
+async def test_chat_helper_does_not_forward_unset_structured_kwargs():
+    """A provider written against the old signature (no response_format /
+    reasoning kwargs) still works through the aggregating chat() helper."""
+
+    class _Legacy(LLMProvider):
+        name = "legacy"
+
+        def __init__(self):
+            super().__init__()
+            self.seen: list[dict] = []
+
+        async def chat_stream(  # type: ignore[override]
+            self, messages, *, model, tools=None, temperature=0.4, max_tokens=None
+        ) -> AsyncIterator[ChatChunk]:
+            self.seen.append({"tools": tools, "max_tokens": max_tokens})
+            yield ChatChunk(type="text_delta", text="ok")
+            yield ChatChunk(type="finish", finish_reason="stop")
+
+        async def embed(self, texts, *, model):
+            return []
+
+    p = _Legacy()
+    res = await p.chat([ChatMessage(role="user", content="hi")], model="m", max_tokens=5)
+    assert res.content == "ok" and p.seen == [{"tools": None, "max_tokens": 5}]
+
+    class _Modern(_Legacy):
+        async def chat_stream(  # type: ignore[override]
+            self, messages, *, model, tools=None, temperature=0.4, max_tokens=None, response_format=None, reasoning=None
+        ) -> AsyncIterator[ChatChunk]:
+            self.seen.append({"response_format": response_format, "reasoning": reasoning})
+            yield ChatChunk(type="finish", finish_reason="stop")
+
+    m = _Modern()
+    await m.chat([ChatMessage(role="user", content="hi")], model="m", response_format={"type": "object"}, reasoning="low")
+    assert m.seen == [{"response_format": {"type": "object"}, "reasoning": "low"}]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_accepts_and_ignores_response_format():
+    """Anthropic has no JSON-schema mode in this client: the kwargs are
+    accepted for parity and leave the payload untouched."""
+    from unittest.mock import patch
+    from app.agents.providers.anthropic import AnthropicProvider
+
+    class _StreamResp:
+        status_code = 200
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): pass
+        async def aiter_lines(self):
+            yield 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}'
+
+    posted: list[dict] = []
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): pass
+        def stream(self, _method, _url, *, json=None, headers=None):
+            posted.append(json or {})
+            return _StreamResp()
+
+    p = AnthropicProvider(api_key="sk-test")
+    with patch("httpx.AsyncClient", return_value=_Client()):
+        async for _ in p.chat_stream(
+            [ChatMessage(role="user", content="hi")], model="claude-x",
+            response_format={"type": "object"}, reasoning="high",
+        ):
+            pass
+    assert len(posted) == 1
+    assert "response_format" not in posted[0] and "format" not in posted[0] and "reasoning" not in posted[0]
+    assert "reasoning_effort" not in posted[0]
+
+
 # --- chat() helper assembly -------------------------------------------------
 
 class _ScriptedProvider(LLMProvider):
