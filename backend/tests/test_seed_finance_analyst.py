@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from app.agents.models.agent import Agent, AgentTool
 from app.agents.models.connection import LlmConnection
-from app.agents.prompts import FINANCE_ANALYST_PROMPT, FINANCE_ANALYST_TOOLS
+from app.agents.prompts import FINANCE_ANALYST_PROMPT, FINANCE_ANALYST_TOOLS, FINANCE_ANALYST_WORKFLOWS
 from app.agents.scripts.seed_finance_analyst import DEFAULT_AGENT_NAME, seed
 
 pytestmark = pytest.mark.asyncio
@@ -40,9 +40,13 @@ async def test_seed_creates_default_agent_connection_and_tools(session, test_use
     assert agent.connection_id == conns[0].id
 
     tools = (await session.execute(select(AgentTool).where(AgentTool.agent_id == agent.id))).scalars().all()
-    assert len(tools) == len(FINANCE_ANALYST_TOOLS) == 20
-    assert {t.tool_name for t in tools} == set(FINANCE_ANALYST_TOOLS)
-    assert all(t.enabled and t.server == "securo" for t in tools)
+    assert len(FINANCE_ANALYST_TOOLS) == 20 and FINANCE_ANALYST_WORKFLOWS == ("categorize",)
+    assert len(tools) == 21
+    mcp_rows = [t for t in tools if t.server == "securo"]
+    wf_rows = [t for t in tools if t.server == "workflow"]
+    assert {t.tool_name for t in mcp_rows} == set(FINANCE_ANALYST_TOOLS)
+    assert [t.tool_name for t in wf_rows] == ["categorize"]
+    assert all(t.enabled for t in tools)
 
 
 async def test_seed_twice_updates_instead_of_duplicating(session, test_user, test_workspace):
@@ -58,7 +62,7 @@ async def test_seed_twice_updates_instead_of_duplicating(session, test_user, tes
     assert len(conns) == 1 and conns[0].is_default is True
 
     tools = (await session.execute(select(AgentTool).where(AgentTool.agent_id == first.id))).scalars().all()
-    assert len(tools) == 20
+    assert len(tools) == 21
 
 
 async def test_seed_takes_over_default_from_another_agent(session, test_user, test_workspace, test_agent):

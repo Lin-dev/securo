@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models.agent import Agent
 from app.agents.models.connection import LlmConnection
-from app.agents.prompts import FINANCE_ANALYST_PROMPT, FINANCE_ANALYST_TOOLS
+from app.agents.prompts import FINANCE_ANALYST_PROMPT, FINANCE_ANALYST_TOOLS, FINANCE_ANALYST_WORKFLOWS
 from app.agents.schemas.agent import AgentCreate, AgentUpdate
 from app.agents.services import agent_service, connection_service
 from app.models.user import User
@@ -31,8 +31,10 @@ from app.models.user import User
 DEFAULT_AGENT_NAME = "Finance analyst"
 DEFAULT_CONNECTION_NAME = "Ollama (LAN Mac)"
 DEFAULT_BASE_URL = "http://ollama:11434"
-# Server name the built-in MCP registry uses for Securo's own tools.
+# Server name the built-in MCP registry uses for Securo's own tools, and the
+# pseudo-server the executor uses for code-driven workflows.
 BUILTIN_MCP_SERVER = "securo"
+WORKFLOW_SERVER = "workflow"
 
 
 async def _ollama_connection(
@@ -99,7 +101,10 @@ async def seed(
     agent = await agent_service.update_agent(session, agent.id, workspace_id, AgentUpdate(is_default=True))
     assert agent is not None
     await agent_service.replace_tool_enablement(
-        session, agent.id, [(BUILTIN_MCP_SERVER, tool, True) for tool in FINANCE_ANALYST_TOOLS]
+        session,
+        agent.id,
+        [(BUILTIN_MCP_SERVER, tool, True) for tool in FINANCE_ANALYST_TOOLS]
+        + [(WORKFLOW_SERVER, wf, True) for wf in FINANCE_ANALYST_WORKFLOWS],
     )
     return agent
 
@@ -139,7 +144,8 @@ async def _main(args: argparse.Namespace) -> None:
         )
         print(
             f"agent {agent.id} ({agent.name}) ready in workspace {workspace_id}: "
-            f"model {agent.model}, {len(FINANCE_ANALYST_TOOLS)} tools enabled, default agent"
+            f"model {agent.model}, {len(FINANCE_ANALYST_TOOLS)} tools and "
+            f"{len(FINANCE_ANALYST_WORKFLOWS)} workflows enabled, default agent"
         )
 
 
