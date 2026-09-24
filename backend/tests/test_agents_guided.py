@@ -563,5 +563,22 @@ def test_redact_offending_sentences_keeps_clean_text():
     assert "27.4" not in out and "index funds" in out and "2.2 %" in out
 
 
+def test_redact_offending_sentences_keeps_bullets_and_paragraphs():
+    text = ("Your portfolio leans on index funds.\n\n"
+            "**Concentration**\n"
+            "- Together these three funds hold 27.4 % of assets. The largest is VTI at 10.1 %.\n"
+            "- Crypto is a small slice at 2.2 %.")
+    out = guided._redact_offending_sentences(text, ["27.4 %"])
+    assert "27.4" not in out
+    assert "- The largest is VTI at 10.1 %." in out and "- Crypto is a small slice at 2.2 %." in out
+    assert out.startswith("Your portfolio leans on index funds.\n\n**Concentration**")
+
+
+def test_position_label_hides_share_counts_in_synced_names():
+    assert guided._position_label({"name": "36.864 shares of AAPL", "ticker": "AAPL"}) == "AAPL"
+    assert guided._position_label({"name": "Apple Inc", "ticker": "AAPL"}) == "Apple Inc (AAPL)"
+    assert guided._position_label({"name": "12 shares of VTI", "ticker": ""}) == "VTI"
+
+
 def test_redact_offending_sentences_returns_empty_when_nothing_usable_is_left():
     assert guided._redact_offending_sentences("Only 27.4 % here.", ["27.4 %"]) == ""
