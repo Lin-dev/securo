@@ -123,6 +123,15 @@ class AgentSettings(BaseSettings):
     # for debugging. True restores the old behaviour (streamed and persisted).
     show_tool_commentary: bool = False
 
+    # Guided mode: route each free-form message through a small intent
+    # classifier and answer the known finance intents (period comparison,
+    # spending breakdown, money map, net worth trend, FIRE progress, holdings,
+    # categorization review) from code with a grounded narration; the tool
+    # loop remains the fallback. Per agent: extra.mode = "freeform" opts out;
+    # a message starting with "/" never routes (e.g. "/ask ...").
+    guided_mode: bool = True
+    guided_min_confidence: float = 0.7
+
     # Same env_file pair as the main Settings: the CWD-relative ".env" for
     # backward compatibility plus the anchored backend/.env, so the API and the
     # Celery worker/beat read the same file whatever directory they start from.
