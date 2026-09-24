@@ -60,6 +60,7 @@ INTENTS: tuple[str, ...] = (
     "net_worth_trend",
     "fire_progress",
     "holdings",
+    "holding_lookup",
     "categorize_review",
     "freeform",
 )
@@ -81,6 +82,8 @@ class RouteDecision:
     days: Optional[int] = None
     months: Optional[int] = None
     category: Optional[str] = None
+    query: Optional[str] = None      # a specific entity: stock/ticker, merchant, account
+    analysis: bool = False           # the user wants interpretation, not just the figures
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -108,6 +111,7 @@ class Prepared:
     chart: Optional[dict[str, Any]]
     fallback_sentence: str
     tool_trace: list[tuple[str, dict[str, Any]]]
+    narrate: bool = True             # False: the deterministic sentence IS the answer (no model call)
 
 
 # --- eligibility -------------------------------------------------------------
@@ -257,9 +261,11 @@ ROUTER_SCHEMA: dict[str, Any] = {
         "days": {"type": ["integer", "null"]},
         "months": {"type": ["integer", "null"]},
         "category": {"type": ["string", "null"]},
+        "query": {"type": ["string", "null"]},
+        "analysis": {"type": "boolean"},
         "confidence": {"type": "number"},
     },
-    "required": ["intent", "period_a", "period_b", "days", "months", "category", "confidence"],
+    "required": ["intent", "period_a", "period_b", "days", "months", "category", "query", "analysis", "confidence"],
     "additionalProperties": False,
 }
 
@@ -271,7 +277,8 @@ Intents:
 - money_map: the money-map lanes over a rolling window ("where did my money go in the last 90 days", "savings rate including 401k").
 - net_worth_trend: net worth over time ("how is my net worth trending", "net worth last 2 years").
 - fire_progress: financial-independence / FIRE progress, FI number, years to FI, when can I retire.
-- holdings: investment accounts and positions ("what do I hold", "how much is invested").
+- holdings: the investment accounts and positions as a whole ("what do I hold", "how much is invested", "any patterns in my portfolio").
+- holding_lookup: whether/how much of ONE specific stock, fund, crypto or ticker the user owns ("do I own Apple?", "how much NVDA do I have and where?").
 - categorize_review: the user wants help categorizing uncategorized transactions or creating categorization rules.
 - freeform: anything else — a specific merchant, payee, account or transaction; budgets, goals, recurring bills; follow-ups that depend on an earlier answer ("and the month before?", "why?"); any request to add, change or delete data; anything ambiguous.
 
@@ -281,19 +288,26 @@ Slots:
   Do not compute dates yourself; pick the expression. For compare_periods, period_a is the later/asked-about period and period_b the one it is compared with.
 - days / months: rolling-window length for money_map (days 7-730 or months 1-24) and net_worth_trend (months 1-60), or null.
 - category: a category name the user mentioned, or null.
+- query: the specific entity the question is about (a company or fund name, a ticker, a merchant, an account), or null. Required for holding_lookup.
+- analysis: true when the user wants interpretation rather than just the figures — patterns, what stands out, risks, concentration, advice, "what do you notice", "should I…". Otherwise false.
 - confidence: 0-1. Use 0.9+ only when the question plainly matches one intent and needs no slot you could not fill. Below 0.7 means freeform will be used.
 
 Examples:
-"How did this month compare to last month?" -> {"intent":"compare_periods","period_a":"this_month","period_b":"last_month","days":null,"months":null,"category":null,"confidence":0.95}
-"Compara {m1_name} com {m2_name}" -> {"intent":"compare_periods","period_a":"month:{m1}","period_b":"month:{m2}","days":null,"months":null,"category":null,"confidence":0.92}
-"What did I spend the most on in {m2_name}?" -> {"intent":"spending_breakdown","period_a":"month:{m2}","period_b":null,"days":null,"months":null,"category":null,"confidence":0.93}
-"Where did my money go over the last 90 days?" -> {"intent":"money_map","period_a":null,"period_b":null,"days":90,"months":null,"category":null,"confidence":0.9}
-"Como está meu patrimônio líquido nos últimos 2 anos?" -> {"intent":"net_worth_trend","period_a":null,"period_b":null,"days":null,"months":24,"category":null,"confidence":0.92}
-"When can I retire? / Quanto falta para o FIRE?" -> {"intent":"fire_progress","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"confidence":0.9}
-"What do I hold in my brokerage accounts?" -> {"intent":"holdings","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"confidence":0.9}
-"Help me categorize the uncategorized stuff" -> {"intent":"categorize_review","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"confidence":0.9}
-"How much did I pay Uber in June?" -> {"intent":"freeform","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"confidence":0.3}
-"And the month before that?" -> {"intent":"freeform","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"confidence":0.2}
+"How did this month compare to last month?" -> {"intent":"compare_periods","period_a":"this_month","period_b":"last_month","days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.95}
+"Compara {m1_name} com {m2_name}" -> {"intent":"compare_periods","period_a":"month:{m1}","period_b":"month:{m2}","days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.92}
+"What did I spend the most on in {m2_name}?" -> {"intent":"spending_breakdown","period_a":"month:{m2}","period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.93}
+"What stands out in my spending this year?" -> {"intent":"spending_breakdown","period_a":"ytd","period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":true,"confidence":0.9}
+"Where did my money go over the last 90 days?" -> {"intent":"money_map","period_a":null,"period_b":null,"days":90,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.9}
+"Como está meu patrimônio líquido nos últimos 2 anos?" -> {"intent":"net_worth_trend","period_a":null,"period_b":null,"days":null,"months":24,"category":null,"query":null,"analysis":false,"confidence":0.92}
+"When can I retire? / Quanto falta para o FIRE?" -> {"intent":"fire_progress","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.9}
+"What do I hold in my brokerage accounts?" -> {"intent":"holdings","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.9}
+"Looking at my current holdings, do you see any patterns emerge?" -> {"intent":"holdings","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":true,"confidence":0.92}
+"Am I too concentrated?" -> {"intent":"holdings","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":true,"confidence":0.88}
+"Do I own Apple stocks?" -> {"intent":"holding_lookup","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"Apple","analysis":false,"confidence":0.95}
+"How much NVDA do I have and where?" -> {"intent":"holding_lookup","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"NVDA","analysis":false,"confidence":0.94}
+"Help me categorize the uncategorized stuff" -> {"intent":"categorize_review","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.9}
+"How much did I pay Uber in June?" -> {"intent":"freeform","period_a":null,"period_b":null,"days":null,"months":null,"category":"","query":"Uber","analysis":false,"confidence":0.3}
+"And the month before that?" -> {"intent":"freeform","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.2}
 """
 
 
@@ -360,6 +374,12 @@ def _decision_from(obj: dict[str, Any]) -> RouteDecision:
         return v if isinstance(v, str) and _PERIOD_RE.match(v.strip()) else None
 
     category = obj.get("category")
+    query = obj.get("query")
+    analysis_raw = obj.get("analysis")
+    if isinstance(analysis_raw, str):
+        analysis = analysis_raw.strip().lower() in ("true", "yes", "1")
+    else:
+        analysis = bool(analysis_raw)
     return RouteDecision(
         intent=intent,
         confidence=confidence,
@@ -368,6 +388,8 @@ def _decision_from(obj: dict[str, Any]) -> RouteDecision:
         days=_clamp_int(obj.get("days"), 7, 730),
         months=_clamp_int(obj.get("months"), 1, 60),
         category=str(category).strip()[:80] if isinstance(category, str) and category.strip() else None,
+        query=(str(query).strip()[:80] if isinstance(query, str) and 0 < len(str(query).strip()) <= 80 else None),
+        analysis=analysis,
         raw=obj,
     )
 
@@ -461,6 +483,11 @@ _L: dict[str, dict[str, str]] = {
         "fi_number": "FI number", "gap": "Gap to FI", "progress": "Progress", "years_to_fi": "Years to FI",
         "not_reached": "not reached within the projection",
         "account": "Account", "balance": "Balance", "holdings": "Holdings", "unlinked": "Holdings not linked to an account",
+        "position": "Position", "units": "Units", "top_positions": "Top positions", "matches": "Matching positions",
+        "accounts_with_positions": "Accounts that expose positions", "accounts_without_positions": "do not expose positions",
+        "cap_lookup": "Positions matched by ticker or name across all investment accounts; share = value ÷ total of the investment accounts.",
+        "lk_match": "Yes — you hold {tickers} in {n} account(s): {where}; worth {total} ({share}% of your investment accounts).",
+        "lk_none": "No position matching '{query}' in any account that exposes holdings ({with_names}); {k} account(s) do not expose positions ({without_names}).",
         "cap_compare": "Income, expenses and net from the Transactions summary; invested = money moved into investments.",
         "cap_spending": "P&L debits by category (sum of categories); transfers and card payments excluded.",
         "cap_money_map": "Money map lanes for {label}; net = income + direct contributions + transfers in − expenses − investments − transfers out.",
@@ -472,7 +499,7 @@ _L: dict[str, dict[str, str]] = {
         "fb_money_map": "Over {label}, income was {income} and expenses {expenses}; the net is {net}.",
         "fb_net_worth": "Net worth went from {first} to {last} over the last {n} months ({delta}).",
         "fb_fire": "Your FI number is {fi}; you are at {progress}% of it and, at the current pace, FI is {years}.",
-        "fb_holdings": "Your investment accounts total {total} across {n} accounts.",
+        "fb_holdings": "Your investment accounts total {total} across {n} accounts; the largest is {top_account} ({top_account_share}%) and the largest single position is {top_position} ({top_position_share}%).",
         "years": "{n} years away",
         "cash_rate": "Cash savings rate", "contrib_rate": "Contribution-aware savings rate",
         "lane_income": "Income", "lane_direct_contributions": "Direct contributions", "lane_transfers_in": "Transfers in",
@@ -488,6 +515,11 @@ _L: dict[str, dict[str, str]] = {
         "fi_number": "Número FI", "gap": "Falta para FI", "progress": "Progresso", "years_to_fi": "Anos até FI",
         "not_reached": "não alcançado na projeção",
         "account": "Conta", "balance": "Saldo", "holdings": "Posições", "unlinked": "Posições sem conta vinculada",
+        "position": "Posição", "units": "Unidades", "top_positions": "Maiores posições", "matches": "Posições encontradas",
+        "accounts_with_positions": "Contas que expõem posições", "accounts_without_positions": "não expõem posições",
+        "cap_lookup": "Posições encontradas por ticker ou nome em todas as contas de investimento; participação = valor ÷ total das contas de investimento.",
+        "lk_match": "Sim — você tem {tickers} em {n} conta(s): {where}; no total {total} ({share}% das suas contas de investimento).",
+        "lk_none": "Nenhuma posição correspondente a '{query}' nas contas que expõem posições ({with_names}); {k} conta(s) não expõem posições ({without_names}).",
         "cap_compare": "Receitas, despesas e saldo do resumo de Transações; investido = dinheiro movido para investimentos.",
         "cap_spending": "Débitos do resultado por categoria (soma das categorias); transferências e pagamentos de cartão excluídos.",
         "cap_money_map": "Fluxos do mapa do dinheiro para {label}; saldo = receitas + contribuições diretas + transferências recebidas − despesas − investimentos − transferências enviadas.",
@@ -499,7 +531,7 @@ _L: dict[str, dict[str, str]] = {
         "fb_money_map": "Em {label}, as receitas foram {income} e as despesas {expenses}; o saldo é {net}.",
         "fb_net_worth": "O patrimônio líquido foi de {first} para {last} nos últimos {n} meses ({delta}).",
         "fb_fire": "Seu número FI é {fi}; você está em {progress}% dele e, no ritmo atual, a FI está {years}.",
-        "fb_holdings": "Suas contas de investimento somam {total} em {n} contas.",
+        "fb_holdings": "Suas contas de investimento somam {total} em {n} contas; a maior é {top_account} ({top_account_share}%) e a maior posição isolada é {top_position} ({top_position_share}%).",
         "years": "a {n} anos",
         "cash_rate": "Taxa de poupança em caixa", "contrib_rate": "Taxa de poupança com contribuições",
         "lane_income": "Receitas", "lane_direct_contributions": "Contribuições diretas", "lane_transfers_in": "Transferências recebidas",
@@ -515,6 +547,11 @@ _L: dict[str, dict[str, str]] = {
         "fi_number": "Número FI", "gap": "Falta para FI", "progress": "Progreso", "years_to_fi": "Años hasta FI",
         "not_reached": "no alcanzado en la proyección",
         "account": "Cuenta", "balance": "Saldo", "holdings": "Posiciones", "unlinked": "Posiciones sin cuenta vinculada",
+        "position": "Posición", "units": "Unidades", "top_positions": "Mayores posiciones", "matches": "Posiciones encontradas",
+        "accounts_with_positions": "Cuentas que exponen posiciones", "accounts_without_positions": "no exponen posiciones",
+        "cap_lookup": "Posiciones encontradas por ticker o nombre en todas las cuentas de inversión; participación = valor ÷ total de las cuentas de inversión.",
+        "lk_match": "Sí — tienes {tickers} en {n} cuenta(s): {where}; en total {total} ({share}% de tus cuentas de inversión).",
+        "lk_none": "Ninguna posición que coincida con '{query}' en las cuentas que exponen posiciones ({with_names}); {k} cuenta(s) no exponen posiciones ({without_names}).",
         "cap_compare": "Ingresos, gastos y neto del resumen de Transacciones; invertido = dinero movido a inversiones.",
         "cap_spending": "Débitos del resultado por categoría (suma de categorías); transferencias y pagos de tarjeta excluidos.",
         "cap_money_map": "Flujos del mapa del dinero para {label}; neto = ingresos + aportes directos + transferencias recibidas − gastos − inversiones − transferencias enviadas.",
@@ -526,7 +563,7 @@ _L: dict[str, dict[str, str]] = {
         "fb_money_map": "En {label}, los ingresos fueron {income} y los gastos {expenses}; el neto es {net}.",
         "fb_net_worth": "El patrimonio neto pasó de {first} a {last} en los últimos {n} meses ({delta}).",
         "fb_fire": "Tu número FI es {fi}; estás al {progress}% y, al ritmo actual, la FI está {years}.",
-        "fb_holdings": "Tus cuentas de inversión suman {total} en {n} cuentas.",
+        "fb_holdings": "Tus cuentas de inversión suman {total} en {n} cuentas; la mayor es {top_account} ({top_account_share}%) y la mayor posición individual es {top_position} ({top_position_share}%).",
         "years": "a {n} años",
         "cash_rate": "Tasa de ahorro en efectivo", "contrib_rate": "Tasa de ahorro con aportes",
         "lane_income": "Ingresos", "lane_direct_contributions": "Aportes directos", "lane_transfers_in": "Transferencias recibidas",
@@ -604,9 +641,14 @@ def _signed_money(v: Optional[float], currency: str) -> str:
     return ("+" if v > 0 else "") + _money(v, currency)
 
 
+def _cell(text: Any) -> str:
+    """A markdown table cell: pipes escaped, newlines collapsed (account names may contain `|`)."""
+    return str("" if text is None else text).replace("\r", " ").replace("\n", " ").replace("|", "\\|")
+
+
 def _md_table(headers: list[str], rows: list[list[str]]) -> str:
-    out = ["| " + " | ".join(headers) + " |", "|" + "|".join(["---"] * len(headers)) + "|"]
-    out += ["| " + " | ".join(r) + " |" for r in rows]
+    out = ["| " + " | ".join(_cell(h) for h in headers) + " |", "|" + "|".join(["---"] * len(headers)) + "|"]
+    out += ["| " + " | ".join(_cell(c) for c in r) + " |" for r in rows]
     return "\n".join(out)
 
 
@@ -857,46 +899,268 @@ async def _prepare_fire_progress(ctx: GuidedContext, decision: RouteDecision) ->
     return Prepared(pack, table, chart, fallback, [("fire_projection", {})])
 
 
-async def _prepare_holdings(ctx: GuidedContext, decision: RouteDecision) -> Prepared:
+_RETIREMENT_RE = re.compile(r"401\s*\(?k\)?|401k|403\s*\(?b\)?|\b457\b|\bIRA\b|\bRoth\b|Retirement|Pension|Previd|Aposentad", re.IGNORECASE)
+_CRYPTO_RE = re.compile(r"Crypto|Bitcoin|Coinbase|Ethereum", re.IGNORECASE)
+_MAX_POSITIONS_IN_PACK = 40
+_TOP_POSITIONS_IN_TABLE = 15
+
+# Common names → tickers, for lookups like "do I own apple?" when the position's name is just the ticker.
+_TICKER_ALIASES: list[tuple[re.Pattern[str], tuple[str, ...]]] = [
+    (re.compile(r"\bapple\b", re.I), ("AAPL",)),
+    (re.compile(r"\bnvidia\b", re.I), ("NVDA",)),
+    (re.compile(r"\bmicrosoft\b", re.I), ("MSFT",)),
+    (re.compile(r"\bamazon\b", re.I), ("AMZN",)),
+    (re.compile(r"\b(google|alphabet)\b", re.I), ("GOOGL", "GOOG")),
+    (re.compile(r"\btesla\b", re.I), ("TSLA",)),
+    (re.compile(r"\b(meta|facebook)\b", re.I), ("META",)),
+    (re.compile(r"\bbitcoin\b", re.I), ("BTC", "BTC-USD", "BTCUSD")),
+    (re.compile(r"\bethereum\b", re.I), ("ETH", "ETH-USD", "ETHUSD")),
+    (re.compile(r"s\s*&\s*p\s*500|\bspy\b|\bvoo\b|\bivv\b", re.I), ("SPY", "VOO", "IVV")),
+]
+
+
+def _account_bucket(name: str) -> str:
+    if _CRYPTO_RE.search(name or ""):
+        return "crypto"
+    if _RETIREMENT_RE.search(name or ""):
+        return "retirement"
+    return "taxable"
+
+
+def _share(value: Optional[float], total: Optional[float]) -> Optional[float]:
+    if value is None or not total:
+        return None
+    return round(float(value) / float(total) * 100.0, 1)
+
+
+def _position_label(pos: dict[str, Any]) -> str:
+    name, ticker = pos.get("name") or "", pos.get("ticker") or ""
+    if ticker and name and ticker.upper() != name.upper():
+        return f"{name} ({ticker})"
+    return name or ticker or "—"
+
+
+async def _holdings_pack(ctx: GuidedContext) -> dict[str, Any]:
+    """The enriched holdings figures pack shared by `holdings` and `holding_lookup`."""
     res = await call_local_tool(ctx.session, ctx, "get_holdings")
     currency = res.get("currency") or ctx.currency
-    accounts = [
-        {
+    total = _r(res.get("investment_accounts_total_primary"))
+    accounts: list[dict[str, Any]] = []
+    positions: list[dict[str, Any]] = []
+    split_totals = {"retirement": 0.0, "taxable": 0.0, "crypto": 0.0}
+    for a in res.get("accounts") or []:
+        balance_primary = _r(a.get("balance_primary"))
+        if balance_primary is None:
+            balance_primary = _r(a.get("balance"))
+        holdings = a.get("holdings") or []
+        accounts.append({
             "name": a.get("name"),
             "currency": a.get("currency"),
             "balance": _r(a.get("balance")),
-            "balance_primary": _r(a.get("balance_primary")),
-            "holdings_count": len(a.get("holdings") or []),
-        }
-        for a in (res.get("accounts") or [])
-    ]
-    unlinked = [
-        {"name": h.get("name"), "ticker": h.get("ticker"), "currency": h.get("currency"), "current_value": _r(h.get("current_value"))}
-        for h in (res.get("unlinked_holdings") or [])
-    ]
-    pack = {
+            "balance_primary": balance_primary,
+            "share_pct": _share(balance_primary, total),
+            "holdings_count": len(holdings),
+        })
+        split_totals[_account_bucket(a.get("name") or "")] += balance_primary or 0.0
+        for h in holdings:
+            positions.append({
+                "name": h.get("name"),
+                "ticker": h.get("ticker"),
+                "account": a.get("name"),
+                "units": h.get("units"),
+                "value": _r(h.get("current_value")),
+                "share_pct": _share(h.get("current_value"), total),
+                "gain_loss": _r(h.get("gain_loss")),
+            })
+    unlinked = []
+    for h in res.get("unlinked_holdings") or []:
+        item = {"name": h.get("name"), "ticker": h.get("ticker"), "currency": h.get("currency"), "current_value": _r(h.get("current_value"))}
+        unlinked.append(item)
+        positions.append({
+            "name": h.get("name"), "ticker": h.get("ticker"), "account": _t(ctx.language, "unlinked"),
+            "units": h.get("units"), "value": _r(h.get("current_value")), "share_pct": _share(h.get("current_value"), total),
+            "gain_loss": _r(h.get("gain_loss")),
+        })
+    positions.sort(key=lambda p: (p["value"] or 0.0), reverse=True)
+    top5 = sum((p["value"] or 0.0) for p in positions[:5])
+    largest_pos = positions[0] if positions else None
+    largest_acc = max(accounts, key=lambda a: (a["balance_primary"] or 0.0), default=None)
+    split_sum = sum(split_totals.values())
+    pack: dict[str, Any] = {
         "kind": "holdings",
         "currency": currency,
         "accounts": accounts,
-        "accounts_total_primary": _r(res.get("investment_accounts_total_primary")),
+        "accounts_total_primary": total,
+        "accounts_with_positions": sum(1 for a in accounts if a["holdings_count"]),
+        "zero_balance_accounts": [a["name"] for a in accounts if not a["balance_primary"]],
+        "zero_balance_count": sum(1 for a in accounts if not a["balance_primary"]),
+        "positions": positions[:_MAX_POSITIONS_IN_PACK],
+        "positions_total_count": len(positions),
+        "concentration": {
+            "largest_position": (
+                {"name": largest_pos["name"], "ticker": largest_pos["ticker"], "account": largest_pos["account"],
+                 "value": largest_pos["value"], "share_pct": largest_pos["share_pct"]} if largest_pos else None
+            ),
+            "top5_share_pct": _share(top5, total) if positions else None,
+            "largest_account": ({"name": largest_acc["name"], "share_pct": largest_acc["share_pct"]} if largest_acc else None),
+        },
+        "split": {
+            "retirement_pct": _share(split_totals["retirement"], split_sum) if split_sum else None,
+            "taxable_pct": _share(split_totals["taxable"], split_sum) if split_sum else None,
+            "crypto_pct": _share(split_totals["crypto"], split_sum) if split_sum else None,
+        },
         "unlinked": unlinked,
         "unlinked_total_by_currency": {k: _r(v) for k, v in (res.get("unlinked_holdings_total_by_currency") or {}).items()},
         "unconverted_count": len(res.get("unconverted_accounts") or []),
     }
+    return pack
+
+
+def _positions_table(ctx: GuidedContext, positions: list[dict[str, Any]], currency: str, *, with_units: bool = False) -> str:
     lang = ctx.language
-    rows = [[a["name"] or "—", a["currency"] or "", _money(a["balance"], a["currency"] or currency), _money(a["balance_primary"], currency), str(a["holdings_count"])] for a in accounts]
-    rows.append([f"**{_t(lang, 'total')}**", "", "", f"**{_money(pack['accounts_total_primary'], currency)}**", ""])
-    table = _md_table([_t(lang, "account"), "Ccy", _t(lang, "balance"), f"{_t(lang, 'balance')} ({currency})", _t(lang, "holdings")], rows)
-    if unlinked:
+    headers = [_t(lang, "position"), _t(lang, "account")] + ([_t(lang, "units")] if with_units else []) + [_t(lang, "value"), _t(lang, "share")]
+    rows = []
+    for p in positions:
+        row = [_position_label(p), p.get("account") or "—"]
+        if with_units:
+            row.append(_fmt_units(p.get("units")))
+        row += [_money(p.get("value"), currency), _fmt_pct_value(p.get("share_pct"))]
+        rows.append(row)
+    return _md_table(headers, rows)
+
+
+def _fmt_units(units: Any) -> str:
+    if units is None:
+        return ""
+    try:
+        text = f"{float(units):.4f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return str(units)
+    return text or "0"
+
+
+async def _prepare_holdings(ctx: GuidedContext, decision: RouteDecision) -> Prepared:
+    pack = await _holdings_pack(ctx)
+    currency = pack["currency"]
+    accounts = pack["accounts"]
+    lang = ctx.language
+    rows = [
+        [a["name"] or "—", a["currency"] or "", _money(a["balance"], a["currency"] or currency), _money(a["balance_primary"], currency),
+         _fmt_pct_value(a["share_pct"]), str(a["holdings_count"])]
+        for a in accounts
+    ]
+    rows.append([f"**{_t(lang, 'total')}**", "", "", f"**{_money(pack['accounts_total_primary'], currency)}**", "100.0%" if pack["accounts_total_primary"] else "n/a", ""])
+    table = _md_table([_t(lang, "account"), "Ccy", _t(lang, "balance"), f"{_t(lang, 'balance')} ({currency})", _t(lang, "share"), _t(lang, "holdings")], rows)
+    if pack["positions"]:
+        table += f"\n\n**{_t(lang, 'top_positions')}**\n\n" + _positions_table(ctx, pack["positions"][:_TOP_POSITIONS_IN_TABLE], currency)
+    if pack["unlinked"]:
         table += f"\n\n**{_t(lang, 'unlinked')}**\n\n" + _md_table(
             [_t(lang, "holdings"), "Ticker", _t(lang, "value")],
-            [[h["name"] or "—", h["ticker"] or "", _money(h["current_value"], h["currency"] or currency)] for h in unlinked],
+            [[h["name"] or "—", h["ticker"] or "", _money(h["current_value"], h["currency"] or currency)] for h in pack["unlinked"]],
         )
     table += "\n\n_" + _t(lang, "cap_holdings") + "_"
     chart = _chart("pie", f"{_t(lang, 'holdings')} — {currency}", [{"name": a["name"], "value": a["balance_primary"]} for a in accounts if a["balance_primary"]], currency=currency)
-    fallback = _t(lang, "fb_holdings", total=_money(pack["accounts_total_primary"], currency), n=len(accounts))
+    conc = pack["concentration"]
+    top_account = conc["largest_account"] or {}
+    top_position = conc["largest_position"] or {}
+    fallback = _t(
+        lang, "fb_holdings",
+        total=_money(pack["accounts_total_primary"], currency), n=len(accounts),
+        top_account=top_account.get("name") or "—", top_account_share=_fmt_pct_value(top_account.get("share_pct")).rstrip("%"),
+        top_position=_position_label(top_position) if top_position else "—",
+        top_position_share=_fmt_pct_value(top_position.get("share_pct")).rstrip("%") if top_position else "n/a",
+    )
     return Prepared(pack, table, chart, fallback, [("get_holdings", {})])
 
+
+def _match_positions(query: str, positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ticker equality first, then name/ticker containment, then common-name aliases."""
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    q_upper = q.upper()
+    alias_tickers: set[str] = set()
+    for pattern, tickers in _TICKER_ALIASES:
+        if pattern.search(q):
+            alias_tickers.update(tickers)
+    matched: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def add(pos: dict[str, Any]) -> None:
+        if id(pos) not in seen:
+            seen.add(id(pos))
+            matched.append(pos)
+
+    for pos in positions:
+        ticker = (pos.get("ticker") or "").upper()
+        if ticker and ticker == q_upper:
+            add(pos)
+    for pos in positions:
+        name = (pos.get("name") or "").lower()
+        ticker = (pos.get("ticker") or "").lower()
+        if (name and q in name) or (ticker and q in ticker):
+            add(pos)
+    for pos in positions:
+        ticker = (pos.get("ticker") or "").upper()
+        name = (pos.get("name") or "").upper()
+        if ticker in alias_tickers or (not ticker and name in alias_tickers):
+            add(pos)
+    return matched
+
+
+async def _prepare_holding_lookup(ctx: GuidedContext, decision: RouteDecision) -> Prepared:
+    if not decision.query:
+        return await _prepare_holdings(ctx, decision)
+    base = await _holdings_pack(ctx)
+    currency = base["currency"]
+    total = base["accounts_total_primary"]
+    # match against every position, not just the 40 kept in the summary pack
+    all_positions = base["positions"]
+    if base["positions_total_count"] > len(all_positions):
+        res = await call_local_tool(ctx.session, ctx, "get_holdings")
+        all_positions = []
+        for a in res.get("accounts") or []:
+            for h in a.get("holdings") or []:
+                all_positions.append({
+                    "name": h.get("name"), "ticker": h.get("ticker"), "account": a.get("name"), "units": h.get("units"),
+                    "value": _r(h.get("current_value")), "share_pct": _share(h.get("current_value"), total), "gain_loss": _r(h.get("gain_loss")),
+                })
+        for h in res.get("unlinked_holdings") or []:
+            all_positions.append({
+                "name": h.get("name"), "ticker": h.get("ticker"), "account": _t(ctx.language, "unlinked"), "units": h.get("units"),
+                "value": _r(h.get("current_value")), "share_pct": _share(h.get("current_value"), total), "gain_loss": _r(h.get("gain_loss")),
+            })
+    matches = _match_positions(decision.query, all_positions)
+    matches.sort(key=lambda p: (p["value"] or 0.0), reverse=True)
+    matched_value = _r(sum((m["value"] or 0.0) for m in matches)) if matches else 0.0
+    with_names = [a["name"] for a in base["accounts"] if a["holdings_count"]]
+    without_names = [a["name"] for a in base["accounts"] if not a["holdings_count"]]
+    pack = {
+        "kind": "holding_lookup",
+        "currency": currency,
+        "query": decision.query,
+        "matches": matches,
+        "matches_total_value": matched_value,
+        "matches_share_pct": _share(matched_value, total) if matches else None,
+        "accounts_total_primary": total,
+        "accounts_with_positions": with_names,
+        "accounts_without_positions": without_names,
+    }
+    lang = ctx.language
+    if matches:
+        tickers = ", ".join(dict.fromkeys((m.get("ticker") or m.get("name") or "—") for m in matches))
+        by_account: dict[str, float] = {}
+        for m in matches:
+            by_account[m["account"] or "—"] = by_account.get(m["account"] or "—", 0.0) + (m["value"] or 0.0)
+        where = "; ".join(f"{acct} {_money(v, currency)}" for acct, v in by_account.items())
+        sentence = _t(lang, "lk_match", tickers=tickers, n=len(by_account), where=where, total=_money(matched_value, currency),
+                      share=_fmt_pct_value(pack["matches_share_pct"]).rstrip("%"))
+        table = f"**{sentence}**\n\n" + _positions_table(ctx, matches, currency, with_units=True)
+        table += "\n\n_" + _t(lang, "cap_lookup") + "_"
+        return Prepared(pack, table, None, sentence, [("get_holdings", {})])
+    sentence = _t(lang, "lk_none", query=decision.query, with_names=", ".join(with_names) or "—", k=len(without_names), without_names=", ".join(without_names) or "—")
+    table = _md_table([_t(lang, "accounts_with_positions"), _t(lang, "holdings")], [[name, str(next((a["holdings_count"] for a in base["accounts"] if a["name"] == name), 0))] for name in with_names])
+    return Prepared(pack, table, None, sentence, [("get_holdings", {})], narrate=False)
 
 HANDLERS: dict[str, Callable[[GuidedContext, RouteDecision], Awaitable[Prepared]]] = {
     "compare_periods": _prepare_compare_periods,
@@ -905,6 +1169,7 @@ HANDLERS: dict[str, Callable[[GuidedContext, RouteDecision], Awaitable[Prepared]
     "net_worth_trend": _prepare_net_worth_trend,
     "fire_progress": _prepare_fire_progress,
     "holdings": _prepare_holdings,
+    "holding_lookup": _prepare_holding_lookup,
 }
 
 
@@ -919,12 +1184,24 @@ NARRATION_SYSTEM = (
     "or compute a percentage or any new number; do not mention a figure that is not listed; never repeat the figure "
     "labels or field names verbatim (say 'income rose to 1,200.00 USD in Aug 2026 from 900.00 USD in Jul 2026', "
     "not 'Income (Aug 2026): 1,200.00 USD'); no headings, bullets, tables, code fences or charts; name each period "
-    "once. If a figure is n/a, say it is unavailable.\n\nFigures:\n{figures}"
+    "once. Answer the user's question directly in the first sentence. If a figure is n/a, say it is unavailable."
+    "\n\nFigures:\n{figures}"
+)
+
+ANALYSIS_SYSTEM = (
+    "You are {agent_name}, inside Securo. The user asked for interpretation, not just numbers. Write in {language}, at most "
+    "220 words, as one or two short paragraphs or up to five bullets. Answer the user's question directly first, then interpret "
+    "the figures below (which Securo computed): concentrations, imbalances, diversification, trends, what looks healthy, what "
+    "deserves a second look next, framed for someone aiming to retire early. You may make qualitative observations without "
+    "numbers. Rules: every number you write must be one of the listed figures, copied exactly (same digits, decimals and sign); "
+    "never add, subtract, average, annualize or compute a percentage or any new number; do not mention a figure that is not "
+    "listed; never repeat the figure labels verbatim; no headings, tables, code fences or charts; no generic disclaimers."
+    "\n\nFigures:\n{figures}"
 )
 
 _COUNT_KEYS = frozenset({
     "count", "months", "days", "category_count", "holdings_count", "year", "unconverted_count",
-    "years_to_fi", "trajectory_truncated",
+    "years_to_fi", "trajectory_truncated", "positions_total_count", "accounts_with_positions", "zero_balance_count", "units",
 })
 _MAX_LIST_LINES = 12
 
@@ -936,7 +1213,7 @@ def _fmt_leaf(key: str, value: Any, currency: str) -> Optional[str]:
         if key.endswith("_pct") or key.endswith("_pts"):
             return f"{value:.1f}%" if key.endswith("_pct") else f"{value:+.1f} pts"
         if key in _COUNT_KEYS:
-            return f"{value}"
+            return _fmt_units(value) if key == "units" else f"{value}"
         return _money(float(value), currency)
     return None
 
@@ -944,14 +1221,18 @@ def _fmt_leaf(key: str, value: Any, currency: str) -> Optional[str]:
 _LABEL_WORDS = {
     "savings_rate_pct": "Savings rate", "savings_rate_pts": "Savings rate (pts)", "cash_savings_rate": "Cash savings rate",
     "contribution_aware_savings_rate": "Savings rate incl. contributions", "progress_pct": "Progress to FI",
-    "fi_number": "FI number", "years_to_fi": "Years to FI", "balance_primary": "Balance", "accounts_total_primary": "Total across accounts",
-    "share_pct": "Share",
+    "fi_number": "FI number", "years_to_fi": "Years to FI", "balance_primary": "Balance (primary currency)", "accounts_total_primary": "Total across accounts",
+    "share_pct": "Share", "matches_total_value": "Matched value", "matches_share_pct": "Matched share",
+    "positions_total_count": "Positions", "accounts_with_positions": "Accounts with positions", "zero_balance_count": "Zero-balance accounts",
+    "top5_share_pct": "Top 5 positions share", "retirement_pct": "Retirement share", "taxable_pct": "Taxable share", "crypto_pct": "Crypto share",
+    "gain_loss": "Gain/loss", "units": "Units",
 }
 # containers whose children are figures ABOUT the parent's name: "income" under "delta" -> "Income change"
 _SUFFIX_CONTAINERS = {"delta": "change", "delta_pct": "change %", "deltas": "change"}
 # containers that only scope their children (period a/b, current/previous, ...) and add no words
 _SCOPE_CONTAINERS = {"a", "b", "current", "previous", "period", "window", "inputs", "totals", "lanes", "sources",
-                     "items", "top", "trajectory", "points", "accounts", "unlinked", "holdings", "first", "last", "min", "max"}
+                     "items", "top", "trajectory", "points", "accounts", "unlinked", "holdings", "first", "last", "min", "max",
+                     "positions", "matches", "concentration", "split"}
 
 
 def _humanize_key(key: str) -> str:
@@ -975,6 +1256,8 @@ def _render_pack_lines(pack: dict[str, Any]) -> str:
     def walk(node: Any, prefix: str, suffix: str, scope: str, key: str, pct: bool) -> None:
         if isinstance(node, dict):
             label = node.get("label") or node.get("category") or node.get("name") or node.get("date")
+            if isinstance(label, str) and label and isinstance(node.get("account"), str) and node.get("account") and node.get("account") != label:
+                label = f"{label}, {node['account']}"
             own_scope = str(label) if isinstance(label, str) and label else scope
             for k, v in node.items():
                 if k in ("kind", "currency", "label"):
@@ -1021,13 +1304,13 @@ def _strip_think(text: str) -> str:
     return (parts[-1] if parts else text or "").strip()
 
 
-async def _narrate(ctx: GuidedContext, prep: Prepared, *, user_message: str) -> tuple[str, int, int, bool]:
-    """Returns (text, input_tokens, output_tokens, used_fallback)."""
+async def _narrate(ctx: GuidedContext, prep: Prepared, *, user_message: str, analysis: bool = False) -> tuple[str, int, int, bool]:
+    """Returns (text, input_tokens, output_tokens, used_fallback). `analysis` switches to the
+    longer, interpretive prompt at reasoning medium; grounding applies either way."""
     from app.agents.runtime.grounding import ungrounded
 
-    system = NARRATION_SYSTEM.format(
-        agent_name=ctx.agent.name, language=ctx.language, figures=_render_pack_lines(prep.pack)
-    )
+    template = ANALYSIS_SYSTEM if analysis else NARRATION_SYSTEM
+    system = template.format(agent_name=ctx.agent.name, language=ctx.language, figures=_render_pack_lines(prep.pack))
     usage_in = usage_out = 0
     offenders: list[str] = []
     for attempt in range(2):
@@ -1044,8 +1327,8 @@ async def _narrate(ctx: GuidedContext, prep: Prepared, *, user_message: str) -> 
                 model=ctx.model,
                 tools=None,
                 temperature=0.2,
-                max_tokens=220,
-                reasoning="low",
+                max_tokens=520 if analysis else 220,
+                reasoning="medium" if analysis else "low",
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("guided narration call failed (attempt %d): %s", attempt + 1, exc)
@@ -1113,7 +1396,11 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
 
     started = time.monotonic()
     try:
-        narration, usage_in, usage_out, used_fallback = await _narrate(ctx, prep, user_message=user_message)
+        if prep.narrate:
+            narration, usage_in, usage_out, used_fallback = await _narrate(ctx, prep, user_message=user_message, analysis=decision.analysis)
+        else:
+            # the deterministic sentence is the whole answer (e.g. a lookup that found nothing)
+            narration, usage_in, usage_out, used_fallback = prep.fallback_sentence, 0, 0, False
     except Exception:  # noqa: BLE001
         logger.exception("guided narration crashed; using the fallback sentence")
         narration, usage_in, usage_out, used_fallback = prep.fallback_sentence, 0, 0, True
