@@ -23,8 +23,10 @@ from app.agents.models.conversation import Conversation, Message
 from app.agents.models.usage import LlmUsage
 from app.agents.providers.base import (
     ChatChunk,
+    ChatMessage,
     LLMAuthError,
     LLMProvider,
+    ToolCall,
     Usage,
 )
 from app.agents.runtime.executor import AgentExecutor, ExecutorEvent, _format_pinned_context
@@ -389,6 +391,164 @@ async def test_tool_result_passed_to_llm_in_full(session, test_user, test_agent,
         assert f"Transaction number {i}" in last, (
             f"item {i} missing from tool message of length {len(last)} — likely truncation regression"
         )
+
+
+class _CaptureAll(_ScriptedProvider):
+    """Scripted provider that records every message list it was given."""
+
+    def __init__(self, scripts):
+        super().__init__(scripts)
+        self.seen: list[list] = []
+
+    async def chat_stream(self, messages, *, model, tools=None, temperature=0.4, max_tokens=None):
+        self.seen.append(list(messages))
+        async for c in super().chat_stream(messages, model=model, tools=tools, temperature=temperature, max_tokens=max_tokens):
+            yield c
+
+
+def _tool_turn(name="securo__list_transactions"):
+    return [
+        ChatChunk(type="tool_call_start", tool_call_id="t1", tool_name=name),
+        ChatChunk(type="tool_call_args_delta", tool_call_id="t1", args_delta="{}"),
+        ChatChunk(type="tool_call_end", tool_call_id="t1"),
+        ChatChunk(type="finish", finish_reason="tool_calls"),
+    ]
+
+
+async def test_tool_result_capped_keeps_json_and_marks_truncation(session, test_user, test_agent, test_conversation):
+    """A 300-item result is cut to the longest list prefix that fits 4000
+    chars, stays valid JSON, and says how much was left out — while the
+    persisted tool_result keeps every item for the UI."""
+    import json
+
+    big_items = [{"id": f"id-{i}", "description": f"Transaction number {i}", "amount": i * 10} for i in range(300)]
+    fake_mcp = _FakeMCP(
+        tools=[ToolHandle(server="securo", name="list_transactions", description="d", parameters={"type": "object"})],
+        canned_result={"ok": True, "data": {"items": big_items, "total": 300}, "text": "unused"},
+    )
+    provider = _CaptureAll([_tool_turn(), [ChatChunk(type="text_delta", text="ok"), ChatChunk(type="finish", finish_reason="stop")]])
+    executor = AgentExecutor(mcp=fake_mcp)
+    with _patch_provider(provider):
+        await _drain(executor, session=session, agent=test_agent, user_id=test_user.id,
+                     conversation_id=test_conversation.id, user_message="list everything")
+
+    tool_msgs = [m.content for m in provider.seen[-1] if m.role == "tool"]
+    assert len(tool_msgs) == 1
+    body = json.loads(tool_msgs[0])
+    assert len(tool_msgs[0]) <= 4000
+    assert body["truncated"] is True
+    assert body["total"] == 300
+    assert body["omitted_items"] == 300 - len(body["items"])
+    assert 1 <= len(body["items"]) < 300
+    assert "hint" in body
+
+    row = (await session.execute(
+        select(Message).where(Message.conversation_id == test_conversation.id, Message.role == "tool")
+    )).scalars().one()
+    assert len(row.tool_result["data"]["items"]) == 300  # full payload persisted for the UI
+    assert row.content == tool_msgs[0]
+
+
+async def test_replay_recaps_full_tool_data(session, test_user, test_agent, test_conversation):
+    """History rows written before the cap (or with a different cap) carry
+    huge `content`; replay must re-cap from `tool_result.data`."""
+    from app.agents.services import conversation_service
+
+    items = [{"id": i, "note": "x" * 90} for i in range(300)]  # ~30K chars
+    full = __import__("json").dumps({"items": items, "total": 300})
+    await conversation_service.append_message(session, conversation_id=test_conversation.id, role="user", content="earlier")
+    await conversation_service.append_message(
+        session, conversation_id=test_conversation.id, role="assistant", content=None,
+        tool_calls=[{"id": "old1", "name": "securo__list_transactions", "arguments": {}}],
+    )
+    await conversation_service.append_message(
+        session, conversation_id=test_conversation.id, role="tool", content=full,
+        tool_result={"tool_call_id": "old1", "name": "securo__list_transactions", "data": {"items": items, "total": 300}, "ok": True},
+    )
+    await conversation_service.append_message(session, conversation_id=test_conversation.id, role="assistant", content="done")
+
+    provider = _CaptureAll([[ChatChunk(type="text_delta", text="ok"), ChatChunk(type="finish", finish_reason="stop")]])
+    executor = AgentExecutor(mcp=_FakeMCP(tools=[]))
+    with _patch_provider(provider):
+        await _drain(executor, session=session, agent=test_agent, user_id=test_user.id,
+                     conversation_id=test_conversation.id, user_message="and now?")
+
+    tool_msgs = [m for m in provider.seen[0] if m.role == "tool"]
+    assert len(tool_msgs) == 1
+    assert len(tool_msgs[0].content) <= 4000
+    assert __import__("json").loads(tool_msgs[0].content)["truncated"] is True
+    assert tool_msgs[0].tool_call_id == "old1"
+
+
+def test_cap_tool_content_behaviour():
+    import json
+    from app.agents.runtime.executor import _cap_tool_content
+
+    small = {"items": [{"a": 1}], "total": 1}
+    assert _cap_tool_content(small, max_chars=4000) == json.dumps(small)
+    assert _cap_tool_content(small, max_chars=0) == json.dumps(small)  # 0 = uncapped
+    long_text = "y" * 5000
+    capped = _cap_tool_content(long_text, max_chars=1000)
+    assert len(capped) <= 1000 + 120 and "truncated" in capped  # string cut with marker
+    nested = {"lanes": {"income": {"items": [{"v": i} for i in range(500)]}}}  # no top-level list → string cut
+    out = _cap_tool_content(nested, max_chars=500)
+    assert len(out) <= 620 and "truncated" in out
+
+
+def test_trim_to_budget_drops_whole_old_turns_never_the_last_user():
+    from app.agents.runtime.executor import _estimate_tokens, _trim_to_budget
+
+    def msgs(pairs):
+        out = [ChatMessage(role="system", content="guardrail " * 20), ChatMessage(role="system", content="persona")]
+        for i in range(pairs):
+            out.append(ChatMessage(role="user", content=f"q{i} " + "u" * 2000))
+            out.append(ChatMessage(role="assistant", content=None, tool_calls=[ToolCall(id=f"c{i}", name="securo__x", arguments={})]))
+            out.append(ChatMessage(role="tool", content="r" * 2000, tool_call_id=f"c{i}", name="securo__x"))
+            out.append(ChatMessage(role="assistant", content=f"a{i} " + "a" * 500))
+        out.append(ChatMessage(role="user", content="final question"))
+        return out
+
+    original = msgs(12)
+    trimmed, dropped = _trim_to_budget(original, budget_tokens=3000)
+    assert dropped > 0
+    assert trimmed[0].role == "system" and trimmed[1].role == "system"
+    assert trimmed[-1].content == "final question"
+    users = [m for m in trimmed if m.role == "user"]
+    assert 1 <= len(users) < 13
+    # whole turns only: every remaining tool row still follows its assistant call
+    for i, m in enumerate(trimmed):
+        if m.role == "tool":
+            assert trimmed[i - 1].role == "assistant" and trimmed[i - 1].tool_calls
+    assert sum(map(_estimate_tokens, trimmed)) <= 3000 or len(users) == 1
+
+    # An oversized final turn alone is never dropped.
+    huge = [ChatMessage(role="system", content="s"), ChatMessage(role="user", content="x" * 40000)]
+    kept, dropped = _trim_to_budget(huge, budget_tokens=100)
+    assert kept == huge and dropped == 0
+    # Budget off → untouched.
+    assert _trim_to_budget(original, budget_tokens=0) == (original, 0)
+
+
+async def test_history_trimmed_to_prompt_budget(session, test_user, test_agent, test_conversation, monkeypatch):
+    from app.agents.config import get_agent_settings
+    from app.agents.services import conversation_service
+
+    monkeypatch.setattr(get_agent_settings(), "prompt_budget_tokens", 3000)
+    for i in range(12):
+        await conversation_service.append_message(session, conversation_id=test_conversation.id, role="user", content=f"q{i} " + "u" * 2000)
+        await conversation_service.append_message(session, conversation_id=test_conversation.id, role="assistant", content=f"a{i} " + "a" * 2000)
+
+    provider = _CaptureAll([[ChatChunk(type="text_delta", text="ok"), ChatChunk(type="finish", finish_reason="stop")]])
+    executor = AgentExecutor(mcp=_FakeMCP(tools=[]))
+    with _patch_provider(provider):
+        await _drain(executor, session=session, agent=test_agent, user_id=test_user.id,
+                     conversation_id=test_conversation.id, user_message="latest question")
+
+    seen = provider.seen[0]
+    assert seen[0].role == "system"
+    assert seen[-1].role == "user" and seen[-1].content == "latest question"
+    assert len([m for m in seen if m.role == "user"]) < 13
+    assert all(m.role == "system" for m in seen[:2])
 
 
 async def test_auto_context_primer_prepended_when_enabled(session, test_user, test_agent, test_conversation, test_account):

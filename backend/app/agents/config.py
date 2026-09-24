@@ -107,6 +107,15 @@ class AgentSettings(BaseSettings):
     # call per turn, so 6 was too tight for multi-step tasks; per-agent override
     # via `agents.extra["max_tool_iterations"]`, clamped to 1..50.
     max_tool_iterations: int = 10
+    # Largest tool result (characters of JSON) the MODEL is shown, live and on
+    # history replay. Lists are cut to the longest prefix that fits and marked
+    # `truncated`/`omitted_items`; the UI and the persisted `tool_result.data`
+    # always keep the full payload. 0 = uncapped.
+    tool_result_max_chars: int = 4000
+    # Rough token budget (len/4) for system prompts + history sent per turn.
+    # Oldest whole user turns are dropped until it fits; 20K leaves room for
+    # ~7K tokens of tool schemas and the answer inside a 32K window. 0 = off.
+    prompt_budget_tokens: int = 20000
 
     # Same env_file pair as the main Settings: the CWD-relative ".env" for
     # backward compatibility plus the anchored backend/.env, so the API and the

@@ -488,9 +488,13 @@ class AgentExecutor:
             tool_call_id = (m.tool_result or {}).get("tool_call_id") if m.role == "tool" else None
             content = m.content
             if m.role == "tool":
-                # Encode tool result as content for the LLM.
+                # Encode the tool result for the LLM from the persisted full
+                # `data`, re-capped every time: the row's `content` may predate
+                # the cap (or a different cap), and the model must never see
+                # a 30K payload just because it did once.
                 tr = m.tool_result or {}
-                content = tr.get("text") or _safe_json(tr.get("data"))
+                payload = tr.get("data") if tr.get("data") is not None else (tr.get("text") or m.content)
+                content = _cap_tool_content(payload, max_chars=self.settings.tool_result_max_chars)
             messages.append(ChatMessage(
                 role=cast(Role, m.role),
                 content=content,
@@ -531,7 +535,18 @@ class AgentExecutor:
 
         # 4. Tool-calling loop. Cap iterations to prevent runaway agents.
         max_iters = _iteration_cap(agent, self.settings)
+        trim_logged = False
         for _iteration in range(max_iters):
+            # Keep system prompts + history inside the prompt budget: tool
+            # results accumulate across iterations and a 32K local window
+            # silently loses the guardrail once it overflows.
+            messages, dropped = _trim_to_budget(messages, budget_tokens=self.settings.prompt_budget_tokens)
+            if dropped and not trim_logged:
+                trim_logged = True
+                logger.info(
+                    "conversation %s: dropped %d history rows to fit %d prompt tokens",
+                    conversation_id, dropped, self.settings.prompt_budget_tokens,
+                )
             text_buf: list[str] = []
             open_calls: dict[str, dict] = {}
             finish_reason = "stop"
@@ -638,14 +653,21 @@ class AgentExecutor:
                 for c in assembled_calls
             ])
             for c, res in zip(assembled_calls, results):
-                # Two views of the same result:
+                # Three views of the same result:
                 #   - `summary` is a SHORT preview for the UI chip header
                 #     (e.g. "5 items returned"). Truncating this is fine.
-                #   - `llm_content` is the FULL JSON for the model to read.
-                #     Truncating this is what caused the model to think the
-                #     data was incomplete and report fake "truncated" rows.
+                #   - `tool_result.data` (persisted) is the FULL payload for
+                #     cards, the debug chip and re-capping on replay.
+                #   - `llm_content` is what the model reads: the full JSON when
+                #     it fits, else the longest list prefix that fits plus an
+                #     explicit `truncated`/`omitted_items`/`hint` — never a
+                #     silent cut, which is what made models invent
+                #     "truncated" rows in the past.
                 summary = _summarize_result(res)
-                llm_content = _safe_json(res.get("data") if res.get("data") is not None else res.get("text"))
+                llm_content = _cap_tool_content(
+                    res.get("data") if res.get("data") is not None else res.get("text"),
+                    max_chars=self.settings.tool_result_max_chars,
+                )
                 yield ExecutorEvent(type="tool_result", tool_name=c.name, tool_result=summary)
                 await conversation_service.append_message(
                     session,
@@ -743,10 +765,81 @@ def _summarize_result(res: dict[str, Any]) -> dict[str, Any]:
 
 
 def _safe_json(obj: Any) -> str:
-    """Serialize tool data for the LLM to read. No length cap — the
-    model needs the full payload or it'll hallucinate truncation."""
+    """Serialize tool data for the LLM to read. No length cap here — capping
+    is `_cap_tool_content`'s job, and it is explicit about what it dropped."""
     import json
     try:
         return json.dumps(obj, default=str)
     except Exception:
         return str(obj)
+
+
+_TRUNCATION_HINT = "narrow the query or ask for fewer fields"
+
+
+def _cap_tool_content(data: Any, *, max_chars: int) -> str:
+    """The model-facing text of a tool result, at most `max_chars` long.
+
+    A dict whose bulk is a list (`items`, `trend`, `accounts`, …) keeps the
+    longest prefix of that list that fits, plus `truncated: true`,
+    `omitted_items` and a hint, so the JSON stays parseable and the model
+    knows exactly what it is missing. Anything else is cut as a string with
+    a marker. `max_chars <= 0` disables the cap.
+    """
+    s = _safe_json(data)
+    if max_chars <= 0 or len(s) <= max_chars:
+        return s
+    if isinstance(data, dict):
+        list_keys = [k for k, v in data.items() if isinstance(v, list) and v]
+        if list_keys:
+            key = max(list_keys, key=lambda k: len(_safe_json(data[k])))
+            items = data[key]
+
+            def _probe(k: int) -> str:
+                return _safe_json({
+                    **data,
+                    key: items[:k],
+                    "truncated": True,
+                    "omitted_items": len(items) - k,
+                    "hint": _TRUNCATION_HINT,
+                })
+
+            lo, hi = 0, len(items)
+            while lo < hi:  # largest k whose serialization fits
+                mid = (lo + hi + 1) // 2
+                if len(_probe(mid)) <= max_chars:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            if lo >= 1:
+                return _probe(lo)
+    cut = max(0, max_chars - 80)
+    return s[:cut] + f" …[truncated {len(s) - cut} chars; {_TRUNCATION_HINT}]"
+
+
+def _estimate_tokens(m: ChatMessage) -> int:
+    """Cheap token estimate (≈4 chars per token) for budgeting only."""
+    n = len(m.content or "") + sum(len(_safe_json(tc.arguments)) + len(tc.name or "") for tc in m.tool_calls)
+    return n // 4 + 4
+
+
+def _trim_to_budget(messages: list[ChatMessage], *, budget_tokens: int) -> tuple[list[ChatMessage], int]:
+    """Drop the oldest whole user turns (a user row plus the assistant/tool
+    rows that follow it) until the estimated size fits `budget_tokens`.
+    System rows and the last user turn are never dropped, so an oversized
+    final turn is sent as-is rather than mangled. Returns (messages, dropped)."""
+    if budget_tokens <= 0:
+        return messages, 0
+    first = next((i for i, m in enumerate(messages) if m.role != "system"), len(messages))
+    last_user = max((i for i, m in enumerate(messages) if m.role == "user"), default=-1)
+    out, dropped = list(messages), 0
+    while sum(map(_estimate_tokens, out)) > budget_tokens:
+        if first >= len(out) or first >= last_user:
+            break
+        nxt = next((i for i in range(first + 1, len(out)) if out[i].role == "user"), None)
+        if nxt is None:
+            break
+        dropped += nxt - first
+        del out[first:nxt]
+        last_user -= nxt - first
+    return out, dropped
