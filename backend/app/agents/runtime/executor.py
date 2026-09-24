@@ -427,6 +427,104 @@ class AgentExecutor:
         user = await session.get(User, user_id)
         prefs: dict[str, Any] = (user.preferences if user is not None else None) or {}
 
+        # Resolve provider+model once per request, before any routing: the
+        # slash-command and guided paths need a provider but no tool
+        # discovery. Monkey-patched in tests via _provider_for; production
+        # prefers _provider_and_model_for.
+        try:
+            provider, model = await _provider_and_model_for(session, agent)
+        except Exception:  # noqa: BLE001
+            logger.exception("provider resolution failed; falling back to legacy path")
+            provider = _provider_for(agent)
+            model = _model_for(agent)
+        if not model:
+            yield ExecutorEvent(
+                type="error",
+                error_code="config",
+                error_message="Agent has no model configured. Pick a connection or set agent.model.",
+            )
+            yield ExecutorEvent(type="done", finish_reason="error")
+            return
+
+        history = await conversation_service.list_messages(session, conversation_id, limit=agent.max_history_messages * 2 + 2)
+
+        # 1b. Deterministic entry points. `/ask <text>` forces the free-form
+        # loop (the model then sees <text>, the row keeps the original); any
+        # other `/<workflow>` runs that workflow in code and ends the turn.
+        from app.agents.workflows import registry as workflow_registry  # local import: cycle safety
+
+        workflow_registry.load_builtin()
+        ask_text = workflow_registry.strip_ask_prefix(user_message)
+        force_freeform = ask_text is not None
+        loop_text = (ask_text or user_message) if force_freeform else user_message
+        if not force_freeform:
+            slash = workflow_registry.parse_slash_command(user_message)
+            if slash is not None:
+                wf, params = slash
+                await _title_after_slash(session, conversation_id, raw=user_message, title=wf.title)
+                outcome: dict[str, Any] = {}
+                async for ev in self._run_workflow(
+                    wf, params, session=session, agent=agent, user=user, user_id=user_id,
+                    workspace_id=workspace_id, conversation_id=conversation_id,
+                    provider=provider, model=model, language=prefs.get("language"), outcome=outcome,
+                ):
+                    yield ev
+                yield ExecutorEvent(type="done", finish_reason=outcome.get("finish_reason", "stop"))
+                return
+
+        # 1c. Guided mode: classify the question once (schema-constrained) and
+        # answer the well-known intents from code with a grounded narration.
+        # Anything the router is unsure about falls through to the tool loop.
+        if not force_freeform:
+            from app.agents.runtime import guided  # local import: cycle safety
+
+            if guided.is_eligible(agent=agent, settings=self.settings, channel=channel, user_message=user_message):
+                prior_user = [m.content for m in history if m.role == "user" and m.content]
+                prior_user_message = prior_user[-2] if len(prior_user) >= 2 else None
+                gctx = guided.GuidedContext(
+                    session=session,
+                    agent=agent,
+                    user=user,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    conversation_id=conversation_id,
+                    provider=provider,
+                    model=model,
+                    settings=self.settings,
+                    today=guided.local_today(prefs.get("timezone")),
+                    tz=prefs.get("timezone") or "UTC",
+                    language=prefs.get("language") or "en",
+                    currency=prefs.get("currency_display") or "USD",
+                )
+                decision = await guided.route(gctx, user_message=user_message, prior_user_message=prior_user_message)
+                confident = decision.confidence >= float(self.settings.guided_min_confidence)
+                if decision.intent == "categorize_review" and confident:
+                    wf = workflow_registry.get("categorize")
+                    if wf is not None:
+                        outcome = {}
+                        async for ev in self._run_workflow(
+                            wf, {}, session=session, agent=agent, user=user, user_id=user_id,
+                            workspace_id=workspace_id, conversation_id=conversation_id,
+                            provider=provider, model=model, language=prefs.get("language"), outcome=outcome,
+                        ):
+                            yield ev
+                        yield ExecutorEvent(type="done", finish_reason=outcome.get("finish_reason", "stop"))
+                        return
+                elif decision.intent != "freeform" and confident:
+                    gen = guided.answer(gctx, decision, user_message=user_message)
+                    try:
+                        first = await gen.__anext__()
+                    except guided.GuidedFallthrough as exc:
+                        logger.info("guided %s fell through to the tool loop: %s", decision.intent, exc)
+                    except StopAsyncIteration:
+                        logger.info("guided %s produced no events; using the tool loop", decision.intent)
+                    else:
+                        yield first
+                        async for ev in gen:
+                            yield ev
+                        yield ExecutorEvent(type="done", finish_reason="stop")
+                        return
+
         # 2. Build the message list. Order, top to bottom:
         #      1. Runtime guardrail (app-level invariants — always)
         #      2. Agent identity primer (who you are + Securo framing)
@@ -435,8 +533,7 @@ class AgentExecutor:
         #      4. Auto-context primer (user data: name, currency, accounts)
         #      5. Page-context primer (where the user is right now)
         #      6. Conversation history
-        #      7. The new user message (appended in step 4 below)
-        history = await conversation_service.list_messages(session, conversation_id, limit=agent.max_history_messages * 2 + 2)
+        #      7. The new user message (already persisted; part of the history)
         messages: list[ChatMessage] = []
         # Runtime guardrail goes FIRST and applies to every conversation,
         # regardless of agent settings or per-agent system prompt. Locks
@@ -488,6 +585,10 @@ class AgentExecutor:
                 tcs.append(ToolCall(id=raw.get("id"), name=raw.get("name"), arguments=raw.get("arguments") or {}))
             tool_call_id = (m.tool_result or {}).get("tool_call_id") if m.role == "tool" else None
             content = m.content
+            if force_freeform and m.role == "user" and m is history[-1] and content == user_message:
+                # `/ask <text>`: the row keeps what the user typed; the model
+                # only sees the question.
+                content = loop_text
             if m.role == "assistant" and tcs and not self.settings.show_tool_commentary:
                 # Commentary that accompanied tool calls (rows written before
                 # the discard behaviour, or with it switched off) is not part
@@ -520,24 +621,9 @@ class AgentExecutor:
             logger.exception("MCP discovery failed; running without tools")
             handles = []
         allowed = await agent_service.allowed_tool_pairs(session, agent.id)
-        tool_defs = self.mcp.to_provider_tools(handles, allowed=allowed)
-
-        # Resolve provider+model once per request. Monkey-patched in tests
-        # via _provider_for; production prefers _provider_and_model_for.
-        try:
-            provider, model = await _provider_and_model_for(session, agent)
-        except Exception:  # noqa: BLE001
-            logger.exception("provider resolution failed; falling back to legacy path")
-            provider = _provider_for(agent)
-            model = _model_for(agent)
-        if not model:
-            yield ExecutorEvent(
-                type="error",
-                error_code="config",
-                error_message="Agent has no model configured. Pick a connection or set agent.model.",
-            )
-            yield ExecutorEvent(type="done", finish_reason="error")
-            return
+        # Workflows are offered to the model as `workflow__<name>` tools under
+        # the same whitelist (pairs `("workflow", name)`); they run in-process.
+        tool_defs = self.mcp.to_provider_tools(handles, allowed=allowed) + workflow_registry.as_tool_definitions(allowed)
 
         # 4. Tool-calling loop. Cap iterations to prevent runaway agents.
         max_iters = _iteration_cap(agent, self.settings)
@@ -662,15 +748,19 @@ class AgentExecutor:
                 yield ExecutorEvent(type="done", finish_reason=finish_reason)
                 return
 
-            # 5. Run tool calls in parallel, persist + emit results, loop.
+            # 5. Run tool calls, persist + emit results, loop. MCP calls run in
+            # parallel; workflow calls run one at a time in-process afterwards
+            # because they stream their own events and may end the turn.
             for ev in [ExecutorEvent(type="tool_call", tool_name=c.name, tool_args=c.arguments) for c in assembled_calls]:
                 yield ev
 
+            mcp_calls = [c for c in assembled_calls if not workflow_registry.is_workflow_tool(c.name)]
+            wf_calls = [c for c in assembled_calls if workflow_registry.is_workflow_tool(c.name)]
             results = await asyncio.gather(*[
                 _safe_call_tool(self.mcp, c, user_id=user_id, workspace_id=workspace_id, conversation_id=conversation_id, agent_id=agent.id)
-                for c in assembled_calls
+                for c in mcp_calls
             ])
-            for c, res in zip(assembled_calls, results):
+            for c, res in zip(mcp_calls, results):
                 # Three views of the same result:
                 #   - `summary` is a SHORT preview for the UI chip header
                 #     (e.g. "5 items returned"). Truncating this is fine.
@@ -706,6 +796,43 @@ class AgentExecutor:
                     name=c.name,
                 ))
 
+            seen_workflows: set[str] = set()
+            turn_final = False
+            final_reason = "stop"
+            for c in wf_calls:
+                wf = workflow_registry.workflow_for_tool(c.name)
+                assert wf is not None  # filtered above
+                if wf.name in seen_workflows or turn_final:
+                    # Every tool_calls entry needs a matching tool row or the
+                    # next replay is invalid; skipped calls get an explicit one.
+                    reason = "duplicate workflow call" if wf.name in seen_workflows else "turn already ended by a final workflow"
+                    skipped = {"skipped": reason}
+                    summary = _summarize_result({"ok": False, "data": skipped})
+                    yield ExecutorEvent(type="tool_result", tool_name=c.name, tool_result=summary)
+                    await conversation_service.append_message(
+                        session, conversation_id=conversation_id, role="tool", content=_safe_json(skipped),
+                        tool_result={"tool_call_id": c.id, "name": c.name, "data": skipped, "ok": False},
+                    )
+                    messages.append(ChatMessage(role="tool", content=_safe_json(skipped), tool_call_id=c.id, name=c.name))
+                    continue
+                seen_workflows.add(wf.name)
+                outcome: dict[str, Any] = {}
+                async for ev in self._run_workflow(
+                    wf, c.arguments, session=session, agent=agent, user=user, user_id=user_id,
+                    workspace_id=workspace_id, conversation_id=conversation_id,
+                    provider=provider, model=model, language=prefs.get("language"),
+                    messages=messages, model_turn_tool_call=c, outcome=outcome,
+                ):
+                    yield ev
+                if outcome.get("final"):
+                    # The workflow wrote the reply itself; no further model turn
+                    # (remaining workflow calls of this turn get skipped rows).
+                    turn_final = True
+                    final_reason = outcome.get("finish_reason", "stop")
+            if turn_final:
+                yield ExecutorEvent(type="done", finish_reason=final_reason)
+                return
+
         # Reached the tool-call ceiling without the model producing a final
         # answer. Emit a visible stop message in the user's language so the
         # UI doesn't show an empty assistant bubble, and persist it so the
@@ -717,6 +844,167 @@ class AgentExecutor:
         )
         yield ExecutorEvent(type="error", error_code="max_iterations", error_message="Agent reached its tool-call limit.")
         yield ExecutorEvent(type="done", finish_reason="max_iterations")
+
+    async def _run_workflow(
+        self,
+        wf: Any,
+        params: dict[str, Any],
+        *,
+        session: AsyncSession,
+        agent: Agent,
+        user: Optional[User],
+        user_id: uuid.UUID,
+        workspace_id: Optional[uuid.UUID],
+        conversation_id: uuid.UUID,
+        provider: Any,
+        model: str,
+        language: Optional[str] = None,
+        messages: Optional[list[ChatMessage]] = None,
+        model_turn_tool_call: Optional[ToolCall] = None,
+        outcome: Optional[dict[str, Any]] = None,
+    ) -> AsyncIterator[ExecutorEvent]:
+        """Run a code-driven workflow and persist what it produced.
+
+        Streams the workflow's events (progress chips, proposal cards), then
+        writes, in order: the tool row for the model's `workflow__…` call when
+        there is one, one assistant row (the summary when the workflow is
+        final, plus a `tool_calls` entry per proposal) and one `role="tool"`
+        row per proposal — exactly the shape the chat UI renders as applyable
+        cards, live and on reload. A final workflow ends the turn (`done`);
+        otherwise its compact `data` becomes the tool result the model reads
+        next. Failures become an `error` event plus a readable summary, never a
+        half-written transcript. `outcome["final"]` tells the caller which case
+        it was.
+        """
+        from app.agents.workflows import base as workflow_base  # local import: cycle safety
+
+        if outcome is None:
+            outcome = {}
+        ctx = None
+        error_text: Optional[str] = None
+        try:
+            if user is None:
+                raise workflow_base.WorkflowError("user not found")
+            ctx = await workflow_base.build_context(
+                session, user=user, agent=agent, conversation_id=conversation_id,
+                provider=provider, model=model, workspace_id=workspace_id, settings=self.settings,
+            )
+            async for ev in wf.run(ctx, params):
+                yield ev
+        except workflow_base.WorkflowError as exc:
+            error_text = str(exc)
+            logger.warning("workflow %s stopped: %s", getattr(wf, "name", wf), exc)
+        except LLMError as exc:
+            _, error_text = _classify_error(exc)
+            logger.exception("workflow %s: provider call failed", getattr(wf, "name", wf))
+        except Exception as exc:  # noqa: BLE001
+            error_text = str(exc) or type(exc).__name__
+            logger.exception("workflow %s crashed", getattr(wf, "name", wf))
+
+        lang = (ctx.language if ctx is not None else None) or language
+        if error_text is not None:
+            yield ExecutorEvent(type="error", error_code="workflow", error_message=error_text)
+            failed = _workflow_failed_message(lang, getattr(wf, "title", getattr(wf, "name", "workflow")), error_text)
+            if ctx is not None and ctx.result is None:
+                ctx.finish(summary=failed, data={"ok": False, "error": error_text}, ok=False)
+        if ctx is None:
+            # Nothing ran: leave a readable transcript and end the turn.
+            failed = _workflow_failed_message(lang, getattr(wf, "title", getattr(wf, "name", "workflow")), error_text or "")
+            await conversation_service.append_message(
+                session, conversation_id=conversation_id, role="assistant", content=failed,
+            )
+            yield ExecutorEvent(type="text_delta", text=failed)
+            outcome["final"] = True
+            outcome["finish_reason"] = "error"
+            return
+        if ctx.result is None:
+            ctx.finish(summary="", data={"ok": False, "error": "workflow ended without a result"}, ok=False)
+        result = ctx.result
+        assert result is not None
+
+        # (1) the tool row for the model's own call, so history stays valid
+        #     (an assistant tool_calls row must be followed by its results).
+        if model_turn_tool_call is not None:
+            c = model_turn_tool_call
+            llm_content = _cap_tool_content(result.data, max_chars=self.settings.tool_result_max_chars)
+            yield ExecutorEvent(
+                type="tool_result", tool_name=c.name,
+                tool_result=_summarize_result({"ok": result.ok, "data": result.data}),
+            )
+            await conversation_service.append_message(
+                session, conversation_id=conversation_id, role="tool", content=llm_content,
+                tool_result={"tool_call_id": c.id, "name": c.name, "data": result.data, "ok": result.ok},
+            )
+            if messages is not None:
+                messages.append(ChatMessage(role="tool", content=llm_content, tool_call_id=c.id, name=c.name))
+
+        # (2) the workflow's assistant row: summary (when final) + proposal calls.
+        proposals = list(ctx.pending_proposals)
+        proposal_calls = [{"id": p.tool_call_id, "name": p.tool_name, "arguments": p.arguments} for p in proposals] or None
+        summary = result.summary if result.final else None
+        if summary is None and proposal_calls is None and not result.final:
+            # Nothing to persist for the model's benefit beyond the tool row.
+            outcome["final"] = False
+            return
+        await conversation_service.append_message(
+            session,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=summary or None,
+            tool_calls=proposal_calls,
+            input_tokens=ctx.usage_input or None,
+            output_tokens=ctx.usage_output or None,
+        )
+        # (3) one tool row per proposal card.
+        for p in proposals:
+            await conversation_service.append_message(
+                session, conversation_id=conversation_id, role="tool", content=_safe_json(p.result),
+                tool_result={"tool_call_id": p.tool_call_id, "name": p.tool_name, "data": p.result, "ok": True},
+            )
+        if result.final:
+            if result.summary:
+                yield ExecutorEvent(type="text_delta", text=result.summary)
+            # The caller emits `done` (after any skipped rows of the same turn).
+            outcome["final"] = True
+            outcome["finish_reason"] = "stop" if result.ok else "error"
+            return
+        # (4) not final: the model continues with the rows in its context.
+        if messages is not None:
+            messages.append(ChatMessage(
+                role="assistant", content=None,
+                tool_calls=[ToolCall(id=p.tool_call_id, name=p.tool_name, arguments=p.arguments) for p in proposals],
+            ))
+            for p in proposals:
+                messages.append(ChatMessage(role="tool", content=_safe_json(p.result), tool_call_id=p.tool_call_id, name=p.tool_name))
+        outcome["final"] = False
+
+
+async def _title_after_slash(session: AsyncSession, conversation_id: uuid.UUID, *, raw: str, title: str) -> None:
+    """A conversation started with `/categorize …` is titled after the
+    workflow, not the raw command (which `run()` already stamped as the
+    provisional title). Titles the user set themselves are left alone."""
+    from app.agents.models.conversation import Conversation  # local import: cycle safety
+
+    conv = await session.get(Conversation, conversation_id)
+    if conv is None:
+        return
+    provisional = (raw or "").strip()[:200] or None
+    if not conv.title or conv.title == provisional:
+        conv.title = (title or "").strip()[:200] or conv.title
+        await session.commit()
+
+
+_WORKFLOW_FAILED_TEMPLATES = {
+    "en": "The {title} workflow stopped before finishing: {error}",
+    "pt-BR": "O fluxo {title} parou antes de terminar: {error}",
+    "es": "El flujo {title} se detuvo antes de terminar: {error}",
+}
+
+
+def _workflow_failed_message(language: Optional[str], title: str, error: str) -> str:
+    base = (language or "en").split("-")[0].lower()
+    key = {"pt": "pt-BR", "es": "es"}.get(base, "en")
+    return _WORKFLOW_FAILED_TEMPLATES[key].format(title=title, error=(error or "unknown error")[:300])
 
 
 async def _process_chunk(chunk: ChatChunk, text_buf: list[str], open_calls: dict[str, dict]) -> AsyncIterator[ExecutorEvent]:

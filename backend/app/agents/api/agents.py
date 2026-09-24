@@ -102,8 +102,14 @@ async def get_agent_tools(
     if agent is None:
         raise HTTPException(status_code=404, detail="agent not found")
 
+    from app.agents.workflows import registry as workflow_registry  # local import: cycle safety
+
+    workflow_registry.load_builtin()
     mcp = MCPRegistry()
     handles = await mcp.discover(user_id=ctx.user_id, workspace_id=ctx.workspace.id)
+    # Code-driven workflows are listed under the pseudo-server `workflow` so
+    # the whitelist UI can toggle them like any tool.
+    handles = list(handles) + workflow_registry.as_tool_handles()
     rows = await agent_service.list_tools(session, agent_id)
     enabled_lookup = {(r.server, r.tool_name): r.enabled for r in rows}
     no_explicit_rows = len(rows) == 0
@@ -118,7 +124,8 @@ async def get_agent_tools(
         }
         for h in handles
     ]
-    return {"servers": [{"name": s} for s in mcp.server_names()], "tools": tools}
+    servers = [{"name": s} for s in mcp.server_names()] + [{"name": workflow_registry.SERVER_NAME}]
+    return {"servers": servers, "tools": tools}
 
 
 @router.put("/{agent_id}/tools")

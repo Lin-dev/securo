@@ -452,7 +452,13 @@ async def test_tools_endpoint_returns_empty_when_no_mcp(client: AsyncClient, aut
     r = await client.get(f"/api/agents/{aid}/tools", headers=auth_headers)
     assert r.status_code == 200
     body = r.json()
-    assert body["tools"] == []
+    # No MCP server reachable → no `securo` tools; the code-driven workflows
+    # are still listed under the pseudo-server `workflow` (allow-all default).
+    assert [t for t in body["tools"] if t["server"] == "securo"] == []
+    workflows = [t for t in body["tools"] if t["server"] == "workflow"]
+    assert [t["name"] for t in workflows] == ["categorize"]
+    assert workflows[0]["enabled"] is True and workflows[0]["is_proposal"] is False
+    assert {"name": "workflow"} in body["servers"]
 
 
 async def test_put_tools_persists_selection(

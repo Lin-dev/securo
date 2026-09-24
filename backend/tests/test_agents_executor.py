@@ -96,6 +96,17 @@ def _patch_provider(p: LLMProvider):
     return patch("app.agents.runtime.executor._provider_for", return_value=p)
 
 
+@pytest.fixture(autouse=True)
+def _freeform_loop_only(monkeypatch):
+    """These tests script the model's turns for the free-form loop. Guided
+    mode (on by default) would spend the first scripted turn on the intent
+    router, so it is switched off here; `test_agents_executor_workflows.py`
+    covers the routing paths explicitly."""
+    from app.agents.config import get_agent_settings
+
+    monkeypatch.setattr(get_agent_settings(), "guided_mode", False)
+
+
 async def _drain(executor: AgentExecutor, **kwargs) -> list[ExecutorEvent]:
     return [ev async for ev in executor.run(**kwargs)]
 
