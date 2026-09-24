@@ -18,10 +18,23 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from app.agents.workflows import registry
+from app.agents.workflows.backends import (  # noqa: F401  (re-exported for callers and tests)
+    CLASSIFY_SYSTEM,
+    UNKNOWN,
+    BackendUnavailable,
+    Classified,
+    ClassificationBatch,
+    ClassifiedItem,
+    DecisionBackend,
+    OllamaStructuredBackend,
+    batch_schema,
+    render_batch,
+    render_categories,
+    select_backend,
+)
 from app.agents.workflows.base import WorkflowBudgetExceeded, WorkflowContext, WorkflowStepError
 from app.agents.workflows.classifiers import (
     AccountFacts,
@@ -48,143 +61,7 @@ BATCH_SIZE = 12
 MAX_PROPOSALS = 25
 AUTO_APPLY_MIN_CONFIDENCE = 0.90
 CONVENTIONS_MAX_CHARS = 3000
-UNKNOWN = "Unknown"
 PROPOSAL_TOOL = "securo__propose_create_payee_rule"
-
-
-# --- the closed question --------------------------------------------------------------
-
-
-class ClassifiedItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    id: str
-    category: str
-    confidence: float = Field(ge=0, le=1)
-    reason: str = ""
-
-
-class ClassificationBatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    items: list[ClassifiedItem]
-
-
-@dataclass
-class Classified:
-    merchant_id: str
-    category_name: str
-    confidence: float
-    reason: str = ""
-    probabilities: Optional[dict[str, float]] = None
-
-
-def batch_schema(ids: list[str], category_names: list[str]) -> dict[str, Any]:
-    """Strict JSON schema with both enums patched in; the object shape mirrors
-    `ClassificationBatch`, which validates the parsed reply."""
-    return {
-        "title": "classification_batch",
-        "type": "object",
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string", "enum": list(ids)},
-                        "category": {"type": "string", "enum": list(category_names) + [UNKNOWN]},
-                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                        "reason": {"type": "string"},
-                    },
-                    "required": ["id", "category", "confidence", "reason"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["items"],
-        "additionalProperties": False,
-    }
-
-
-CLASSIFY_SYSTEM = """\
-You classify bank-transaction merchants into the user's existing categories for Securo, a personal-finance app.
-
-Categories (use the exact name; nothing else is allowed):
-{categories}
-- {unknown} — use this whenever you are not reasonably sure.
-
-Household conventions (authoritative; they override your general knowledge):
-{conventions}
-
-Rules:
-1. Pick exactly one category per merchant from the list above, or {unknown}.
-2. A merchant that only ever shows credits (money in) can only be an income category or a transfer-type category. A merchant that only shows debits (money out) is never income unless it is a refund category.
-3. Payments to the user's own credit card, transfers between the user's own accounts, and contributions to investment or retirement accounts are transfer-type categories, not income or expenses.
-4. confidence is your probability that the category is right: 0.95 only for unmistakable merchants (airlines, supermarkets, pharmacies, streaming brands), 0.7-0.85 when the name is suggestive but ambiguous, below 0.6 when you are guessing. When in doubt prefer {unknown} over a wrong category.
-5. reason: at most 120 characters, name the clue you used (brand, keyword, convention).
-6. Reply with JSON only, matching the schema; no prose, no markdown."""
-
-
-def render_categories(cats: list[CategoryFacts]) -> str:
-    lines = []
-    for cat in cats:
-        flag = (
-            "; transfer-type (money moved between the user's own accounts or into investments; never income or expense)"
-            if cat.treat_as_transfer
-            else ""
-        )
-        lines.append(f"- {cat.name} — group: {cat.group_name or 'none'}{flag}")
-    return "\n".join(lines)
-
-
-def render_batch(batch: list[tuple[str, Merchant]], currency: str) -> str:
-    lines = [f"Classify these {len(batch)} merchants. Amounts are in {currency}.", ""]
-    for mid, m in batch:
-        accounts = ", ".join(m.accounts) or "unknown account"
-        lines.append(
-            f"{mid} | pattern: {m.pattern} | debits: {m.debits}, credits: {m.credits} "
-            f"| avg: {m.average:.2f}, total: {m.total:.2f} | accounts: {accounts}"
-        )
-        samples = "; ".join(f'"{d}"' for d in m.sample_descriptions[:2]) or f'"{m.merchant}"'
-        lines.append(f"     samples: {samples}")
-    lines.append("")
-    lines.append(f"Return one item per id ({batch[0][0]}..{batch[-1][0]}).")
-    return "\n".join(lines)
-
-
-class OllamaStructuredBackend:
-    """Default classifier: one schema-constrained model call per batch."""
-
-    name = "ollama"
-
-    async def classify(
-        self,
-        ctx: WorkflowContext,
-        batch: list[tuple[str, Merchant]],
-        categories: list[CategoryFacts],
-        conventions: str,
-        *,
-        currency: str,
-    ) -> list[Classified]:
-        ids = [mid for mid, _ in batch]
-        names = [c.name for c in categories]
-        system = CLASSIFY_SYSTEM.format(
-            categories=render_categories(categories),
-            conventions=conventions.strip() or "none provided",
-            unknown=UNKNOWN,
-        )
-        result = await ctx.llm_structured(
-            system,
-            render_batch(batch, currency),
-            ClassificationBatch,
-            reasoning="low",
-            temperature=0.0,
-            max_tokens=2500,
-            retries=1,
-            json_schema=batch_schema(ids, names),
-        )
-        return [
-            Classified(merchant_id=item.id, category_name=item.category, confidence=float(item.confidence), reason=item.reason[:120])
-            for item in result.items
-        ]
 
 
 # --- the workflow ---------------------------------------------------------------------
@@ -228,8 +105,8 @@ class CategorizeWorkflow:
     def __init__(self, backend: Any = None):
         self._backend = backend
 
-    def backend(self, ctx: WorkflowContext):
-        return self._backend or OllamaStructuredBackend()
+    def backend(self, ctx: WorkflowContext) -> DecisionBackend:
+        return self._backend or select_backend(ctx.settings)
 
     async def run(self, ctx: WorkflowContext, params: dict[str, Any]) -> AsyncIterator[Any]:
         params = params or {}
@@ -295,7 +172,18 @@ class CategorizeWorkflow:
                 continue
             stats.batches += 1
             try:
-                classified = await backend.classify(ctx, batch, cats, conventions, currency=currency)
+                try:
+                    classified = await backend.classify(ctx, batch, cats, conventions, currency=currency)
+                except BackendUnavailable as exc:
+                    # Kev (or another external classifier) is down: say so once and
+                    # let the agent's own model answer the rest of the run.
+                    if getattr(backend, "name", "") != "ollama":
+                        logger.warning("categorize: %s backend unavailable (%s); falling back to the model", backend.name, exc)
+                        stats.notes.append(f"the {backend.name} classifier was unreachable; the model answered instead")
+                        backend = OllamaStructuredBackend()
+                        classified = await backend.classify(ctx, batch, cats, conventions, currency=currency)
+                    else:
+                        raise WorkflowStepError(str(exc)) from exc
             except (WorkflowStepError, WorkflowBudgetExceeded) as exc:
                 logger.warning("categorize: batch %d failed: %s", stats.batches, exc)
                 decisions.extend(Decision(m, None, 0.0, "budget", "review", f"not reviewed ({exc})") for m in chunk)
