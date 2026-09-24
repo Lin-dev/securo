@@ -551,6 +551,99 @@ async def test_history_trimmed_to_prompt_budget(session, test_user, test_agent, 
     assert all(m.role == "system" for m in seen[:2])
 
 
+def _commentary_script():
+    return [
+        [
+            ChatChunk(type="text_delta", text="Need August. "),
+            ChatChunk(type="text_delta", text="Let's call the tool."),
+            ChatChunk(type="tool_call_start", tool_call_id="t1", tool_name="securo__list_transactions"),
+            ChatChunk(type="tool_call_args_delta", tool_call_id="t1", args_delta="{}"),
+            ChatChunk(type="tool_call_end", tool_call_id="t1"),
+            ChatChunk(type="finish", finish_reason="tool_calls"),
+        ],
+        [ChatChunk(type="text_delta", text="Here is the answer."), ChatChunk(type="finish", finish_reason="stop")],
+    ]
+
+
+async def test_commentary_discarded_when_turn_has_tool_calls(session, test_user, test_agent, test_conversation):
+    """Text streamed in a turn that ends with tool calls is planning
+    commentary: the UI is told to discard it, the persisted turn keeps only a
+    short trace, and the model never sees it again."""
+    fake_mcp = _FakeMCP(tools=[ToolHandle(server="securo", name="list_transactions", description="", parameters={"type": "object"})])
+    provider = _CaptureAll(_commentary_script())
+    executor = AgentExecutor(mcp=fake_mcp)
+    with _patch_provider(provider):
+        events = await _drain(executor, session=session, agent=test_agent, user_id=test_user.id,
+                              conversation_id=test_conversation.id, user_message="compare months")
+
+    kinds = [e.type for e in events]
+    assert "text_discard" in kinds
+    # The discard arrives after the commentary deltas and before the tool_call events.
+    assert kinds.index("text_discard") > kinds.index("text_delta")
+    assert kinds.index("text_discard") < kinds.index("tool_call")
+    # The final answer is still streamed normally after the tool round.
+    assert [e.text for e in events if e.type == "text_delta"][-1] == "Here is the answer."
+
+    rows = (await session.execute(
+        select(Message).where(Message.conversation_id == test_conversation.id).order_by(Message.ordinal)
+    )).scalars().all()
+    turn1 = next(r for r in rows if r.role == "assistant" and r.tool_calls)
+    assert turn1.content is None
+    assert turn1.tool_calls[0]["commentary"] == "Need August. Let's call the tool."
+    assert turn1.tool_calls[0]["name"] == "securo__list_transactions"
+    final = rows[-1]
+    assert final.role == "assistant" and final.content == "Here is the answer."
+
+    # Turn 2's message list carries the tool-calling assistant row with no text.
+    turn2_assistant = [m for m in provider.seen[1] if m.role == "assistant" and m.tool_calls]
+    assert turn2_assistant and turn2_assistant[-1].content is None
+
+
+async def test_commentary_kept_when_setting_is_on(session, test_user, test_agent, test_conversation, monkeypatch):
+    from app.agents.config import get_agent_settings
+
+    monkeypatch.setattr(get_agent_settings(), "show_tool_commentary", True)
+    fake_mcp = _FakeMCP(tools=[ToolHandle(server="securo", name="list_transactions", description="", parameters={"type": "object"})])
+    provider = _CaptureAll(_commentary_script())
+    executor = AgentExecutor(mcp=fake_mcp)
+    with _patch_provider(provider):
+        events = await _drain(executor, session=session, agent=test_agent, user_id=test_user.id,
+                              conversation_id=test_conversation.id, user_message="compare months")
+
+    assert "text_discard" not in [e.type for e in events]
+    rows = (await session.execute(
+        select(Message).where(Message.conversation_id == test_conversation.id).order_by(Message.ordinal)
+    )).scalars().all()
+    turn1 = next(r for r in rows if r.role == "assistant" and r.tool_calls)
+    assert turn1.content == "Need August. Let's call the tool."
+    assert "commentary" not in turn1.tool_calls[0]
+    turn2_assistant = [m for m in provider.seen[1] if m.role == "assistant" and m.tool_calls]
+    assert turn2_assistant[-1].content == "Need August. Let's call the tool."
+
+
+async def test_replay_hides_commentary_on_old_rows(session, test_user, test_agent, test_conversation):
+    """Rows persisted before the discard behaviour still carry commentary in
+    `content`; replay strips it for the model."""
+    from app.agents.services import conversation_service
+
+    await conversation_service.append_message(session, conversation_id=test_conversation.id, role="user", content="earlier")
+    await conversation_service.append_message(
+        session, conversation_id=test_conversation.id, role="assistant", content="We have 47 categories. Let's call list_rules.",
+        tool_calls=[{"id": "old1", "name": "securo__list_rules", "arguments": {}}],
+    )
+    await conversation_service.append_message(
+        session, conversation_id=test_conversation.id, role="tool", content="{}",
+        tool_result={"tool_call_id": "old1", "name": "securo__list_rules", "data": {"items": []}, "ok": True},
+    )
+    provider = _CaptureAll([[ChatChunk(type="text_delta", text="ok"), ChatChunk(type="finish", finish_reason="stop")]])
+    executor = AgentExecutor(mcp=_FakeMCP(tools=[]))
+    with _patch_provider(provider):
+        await _drain(executor, session=session, agent=test_agent, user_id=test_user.id,
+                     conversation_id=test_conversation.id, user_message="next")
+    replayed = [m for m in provider.seen[0] if m.role == "assistant" and m.tool_calls]
+    assert replayed and replayed[0].content is None
+
+
 async def test_auto_context_primer_prepended_when_enabled(session, test_user, test_agent, test_conversation, test_account):
     """Captures the system messages the provider sees and verifies the
     primer is the first one when auto_context=True (default), with the

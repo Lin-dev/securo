@@ -92,6 +92,7 @@ def _stop_message(language: Optional[str], n: int) -> str:
 class ExecutorEvent:
     type: Literal[
         "text_delta",
+        "text_discard",   # the text streamed so far this turn was commentary; clear it
         "tool_call",      # tool name + args (after assembly)
         "tool_result",    # tool name + ok + summary
         "citation",
@@ -487,6 +488,11 @@ class AgentExecutor:
                 tcs.append(ToolCall(id=raw.get("id"), name=raw.get("name"), arguments=raw.get("arguments") or {}))
             tool_call_id = (m.tool_result or {}).get("tool_call_id") if m.role == "tool" else None
             content = m.content
+            if m.role == "assistant" and tcs and not self.settings.show_tool_commentary:
+                # Commentary that accompanied tool calls (rows written before
+                # the discard behaviour, or with it switched off) is not part
+                # of the conversation the model should reason over.
+                content = None
             if m.role == "tool":
                 # Encode the tool result for the LLM from the persisted full
                 # `data`, re-capped every time: the row's `content` may predate
@@ -592,17 +598,29 @@ class AgentExecutor:
                     args = {"_raw": tc["args_buf"]}
                 assembled_calls.append(ToolCall(id=tc["id"], name=tc["name"], arguments=args))
 
+            # Text emitted in a turn that also calls tools is the model's
+            # planning commentary, not an answer: tell the UI to drop what it
+            # streamed, keep a short trace on the persisted turn, and never
+            # feed it back to the model.
+            hide_commentary = bool(assembled_calls) and bool(assistant_text) and not self.settings.show_tool_commentary
+            if hide_commentary:
+                yield ExecutorEvent(type="text_discard")
+            persisted_calls = [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in assembled_calls] or None
+            if hide_commentary and persisted_calls:
+                persisted_calls[0]["commentary"] = assistant_text[:300]
+            turn_content = None if hide_commentary else (assistant_text or None)
+
             # Persist assistant turn.
             assistant_msg = await conversation_service.append_message(
                 session,
                 conversation_id=conversation_id,
                 role="assistant",
-                content=assistant_text or None,
-                tool_calls=[{"id": c.id, "name": c.name, "arguments": c.arguments} for c in assembled_calls] or None,
+                content=turn_content,
+                tool_calls=persisted_calls,
                 input_tokens=usage_input or None,
                 output_tokens=usage_output or None,
             )
-            messages.append(ChatMessage(role="assistant", content=assistant_text or None, tool_calls=assembled_calls))
+            messages.append(ChatMessage(role="assistant", content=turn_content, tool_calls=assembled_calls))
 
             # Record one usage row per provider call. Best-effort: a logging
             # failure should never break the user's chat.
