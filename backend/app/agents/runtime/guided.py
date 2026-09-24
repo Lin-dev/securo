@@ -933,8 +933,14 @@ def _share(value: Optional[float], total: Optional[float]) -> Optional[float]:
     return round(float(value) / float(total) * 100.0, 1)
 
 
+_SHARES_OF_RE = re.compile(r"^\s*[\d.,]+\s+shares?\s+of\s+(\S+)\s*$", re.IGNORECASE)
+
+
 def _position_label(pos: dict[str, Any]) -> str:
     name, ticker = pos.get("name") or "", pos.get("ticker") or ""
+    m = _SHARES_OF_RE.match(name)
+    if m:  # some syncs name a position "36.864 shares of AAPL"; the quantity is not a name
+        name = ticker or m.group(1)
     if ticker and name and ticker.upper() != name.upper():
         return f"{name} ({ticker})"
     return name or ticker or "—"
@@ -983,8 +989,12 @@ async def _holdings_pack(ctx: GuidedContext) -> dict[str, Any]:
         })
     positions.sort(key=lambda p: (p["value"] or 0.0), reverse=True)
     top5 = sum((p["value"] or 0.0) for p in positions[:5])
+    top3 = sum((p["value"] or 0.0) for p in positions[:3])
+    top10 = sum((p["value"] or 0.0) for p in positions[:10])
     largest_pos = positions[0] if positions else None
-    largest_acc = max(accounts, key=lambda a: (a["balance_primary"] or 0.0), default=None)
+    accounts_by_value = sorted(accounts, key=lambda a: (a["balance_primary"] or 0.0), reverse=True)
+    largest_acc = accounts_by_value[0] if accounts_by_value else None
+    top2_accounts = sum((a["balance_primary"] or 0.0) for a in accounts_by_value[:2])
     split_sum = sum(split_totals.values())
     pack: dict[str, Any] = {
         "kind": "holdings",
@@ -1001,8 +1011,12 @@ async def _holdings_pack(ctx: GuidedContext) -> dict[str, Any]:
                 {"name": largest_pos["name"], "ticker": largest_pos["ticker"], "account": largest_pos["account"],
                  "value": largest_pos["value"], "share_pct": largest_pos["share_pct"]} if largest_pos else None
             ),
+            "top3_share_pct": _share(top3, total) if positions else None,
             "top5_share_pct": _share(top5, total) if positions else None,
+            "top10_share_pct": _share(top10, total) if positions else None,
             "largest_account": ({"name": largest_acc["name"], "share_pct": largest_acc["share_pct"]} if largest_acc else None),
+            "top2_accounts_share_pct": _share(top2_accounts, total) if accounts else None,
+            "top2_accounts": [a["name"] for a in accounts_by_value[:2]],
         },
         "split": {
             "retirement_pct": _share(split_totals["retirement"], split_sum) if split_sum else None,
@@ -1194,8 +1208,11 @@ ANALYSIS_SYSTEM = (
     "the figures below (which Securo computed): concentrations, imbalances, diversification, trends, what looks healthy, what "
     "deserves a second look next, framed for someone aiming to retire early. You may make qualitative observations without "
     "numbers. Rules: every number you write must be one of the listed figures, copied exactly (same digits, decimals and sign); "
-    "never add, subtract, average, annualize or compute a percentage or any new number; do not mention a figure that is not "
-    "listed; never repeat the figure labels verbatim; no headings, tables, code fences or charts; no generic disclaimers."
+    "never add, subtract, average, annualize or compute a percentage or any new number — in particular do not add shares "
+    "together ('together they hold X%'): combined figures you may use are listed (top 2 accounts, top 3/5/10 positions, "
+    "retirement/taxable/crypto shares); otherwise name the parts separately; do not mention a figure that is not listed; "
+    "never repeat the figure labels verbatim; short bold labels are fine but no # headings, tables, code fences or charts; "
+    "no generic disclaimers."
     "\n\nFigures:\n{figures}"
 )
 
@@ -1224,7 +1241,8 @@ _LABEL_WORDS = {
     "fi_number": "FI number", "years_to_fi": "Years to FI", "balance_primary": "Balance (primary currency)", "accounts_total_primary": "Total across accounts",
     "share_pct": "Share", "matches_total_value": "Matched value", "matches_share_pct": "Matched share",
     "positions_total_count": "Positions", "accounts_with_positions": "Accounts with positions", "zero_balance_count": "Zero-balance accounts",
-    "top5_share_pct": "Top 5 positions share", "retirement_pct": "Retirement share", "taxable_pct": "Taxable share", "crypto_pct": "Crypto share",
+    "top3_share_pct": "Top 3 positions share", "top5_share_pct": "Top 5 positions share", "top10_share_pct": "Top 10 positions share",
+    "top2_accounts_share_pct": "Top 2 accounts combined share", "retirement_pct": "Retirement share", "taxable_pct": "Taxable share", "crypto_pct": "Crypto share",
     "gain_loss": "Gain/loss", "units": "Units",
 }
 # containers whose children are figures ABOUT the parent's name: "income" under "delta" -> "Income change"
@@ -1360,16 +1378,27 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\u00c0-\u00dd*\-•\d])|\n
 
 
 def _redact_offending_sentences(text: str, offenders: list[str]) -> str:
-    """Drop every sentence or bullet that contains one of the offending number
-    tokens; return the remaining text (empty when too little is left)."""
+    """Drop every sentence that contains one of the offending number tokens while
+    keeping the paragraph and bullet structure; return the remaining text
+    (empty when too little is left)."""
     if not text or not offenders:
         return text or ""
-    parts = [p for p in _SENTENCE_SPLIT_RE.split(text) if p is not None]
-    kept = [p for p in parts if p.strip() and not any(o in p for o in offenders)]
-    out = " ".join(s.strip() for s in kept).strip()
-    # collapse a bullet list that lost its members into plain prose spacing
-    out = re.sub(r"\s{2,}", " ", out)
+    out_lines: list[str] = []
+    for line in (text or "").split("\n"):
+        if not line.strip():
+            out_lines.append("")
+            continue
+        bullet = re.match(r"^(\s*(?:[-*•]|\d+[.)])\s+)", line)
+        prefix = bullet.group(1) if bullet else ""
+        body = line[len(prefix):]
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\u00c0-\u00dd*\d(])", body) if s.strip()]
+        kept = [s.strip() for s in sentences if not any(o in s for o in offenders)]
+        if kept:
+            out_lines.append(prefix + " ".join(kept))
+    out = "\n".join(out_lines).strip()
+    out = re.sub(r"\n{3,}", "\n\n", out)
     return out if len(out) >= 40 else ""
+
 
 
 # --- answer --------------------------------------------------------------------
