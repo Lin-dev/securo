@@ -1327,7 +1327,8 @@ async def _narrate(ctx: GuidedContext, prep: Prepared, *, user_message: str, ana
                 model=ctx.model,
                 tools=None,
                 temperature=0.2,
-                max_tokens=520 if analysis else 220,
+                # Ollama counts thinking tokens against num_predict: leave room for the reasoning
+                max_tokens=1600 if analysis else 500,
                 reasoning="medium" if analysis else "low",
             )
         except Exception as exc:  # noqa: BLE001
