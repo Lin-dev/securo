@@ -1313,6 +1313,7 @@ async def _narrate(ctx: GuidedContext, prep: Prepared, *, user_message: str, ana
     system = template.format(agent_name=ctx.agent.name, language=ctx.language, figures=_render_pack_lines(prep.pack))
     usage_in = usage_out = 0
     offenders: list[str] = []
+    last_text = ""
     for attempt in range(2):
         sys_text = system
         if offenders:
@@ -1344,7 +1345,31 @@ async def _narrate(ctx: GuidedContext, prep: Prepared, *, user_message: str, ana
         if not offenders:
             return text, usage_in, usage_out, False
         logger.info("guided.narration.rejected intent=%s offenders=%s", prep.pack.get("kind"), offenders)
+        last_text = text
+    # Both drafts carried a number that is not in the figures. Keep whatever sentences
+    # are clean instead of throwing the whole analysis away; fall back to the template
+    # only when nothing usable is left.
+    redacted = _redact_offending_sentences(last_text, offenders) if offenders and last_text else ""
+    if redacted and not ungrounded(redacted, prep.pack):
+        logger.info("guided.narration.redacted intent=%s dropped=%s", prep.pack.get("kind"), offenders)
+        return redacted, usage_in, usage_out, False
     return prep.fallback_sentence, usage_in, usage_out, True
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\u00c0-\u00dd*\-•\d])|\n+")
+
+
+def _redact_offending_sentences(text: str, offenders: list[str]) -> str:
+    """Drop every sentence or bullet that contains one of the offending number
+    tokens; return the remaining text (empty when too little is left)."""
+    if not text or not offenders:
+        return text or ""
+    parts = [p for p in _SENTENCE_SPLIT_RE.split(text) if p is not None]
+    kept = [p for p in parts if p.strip() and not any(o in p for o in offenders)]
+    out = " ".join(s.strip() for s in kept).strip()
+    # collapse a bullet list that lost its members into plain prose spacing
+    out = re.sub(r"\s{2,}", " ", out)
+    return out if len(out) >= 40 else ""
 
 
 # --- answer --------------------------------------------------------------------

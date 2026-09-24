@@ -532,3 +532,36 @@ def test_render_pack_lines_formats_money_percent_and_counts():
     assert "- Savings rate (pts) change: -3.5 pts" in lines
     assert "- Days: 30" in lines
     assert "- Points: 15 entries (first 12 listed)" in lines
+
+
+
+# --- qc13: names are not figures; redaction keeps the clean sentences ----------------------
+
+def test_grounding_ignores_digits_inside_names_and_pack_strings():
+    from app.agents.runtime.grounding import ungrounded
+
+    pack = {
+        "currency": "USD",
+        "accounts": [{"name": "Bloomberg L.P. 401(k) Plan (2-01)", "share_pct": 11.6}, {"name": "Robinhood individual (6343)", "share_pct": 32.9}],
+        "positions": [{"name": "State Street SPDR Portfolio S&P 500 ETF", "ticker": "SPLG", "share_pct": 8.6}],
+        "split": {"retirement_pct": 52.6},
+    }
+    assert ungrounded("your Traditional 401(k) holds 11.6 %", pack) == []
+    assert ungrounded("the State Street SPDR Portfolio S&P 500 ETF (8.6 %)", pack) == []
+    assert ungrounded("Robinhood individual (6343) holds 32.9%", pack) == []
+    assert ungrounded("a 529 plan and the Russell 2000 fund", pack) == []
+    # a narrow no-break space before % is still a percent
+    assert ungrounded("retirement accounts (52.6\u202f%)", pack) == []
+    # a number the model computed itself is still caught
+    assert ungrounded("together these hold 44.5 % of assets", pack) == ["44.5 %"]
+
+
+def test_redact_offending_sentences_keeps_clean_text():
+    text = ("Your portfolio leans on index funds. Together these three funds hold 27.4 % of assets. "
+            "Crypto is a small slice at 2.2 %.")
+    out = guided._redact_offending_sentences(text, ["27.4 %"])
+    assert "27.4" not in out and "index funds" in out and "2.2 %" in out
+
+
+def test_redact_offending_sentences_returns_empty_when_nothing_usable_is_left():
+    assert guided._redact_offending_sentences("Only 27.4 % here.", ["27.4 %"]) == ""
