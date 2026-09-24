@@ -1,4 +1,3 @@
-import { isProposalData, isProposalToolName } from '@/lib/agent-proposals'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ShellLogo } from '@/components/shell-logo'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -11,6 +10,9 @@ import { streamChat, type AgentStreamEvent } from '@/lib/agents-stream'
 import { Markdown } from '@/components/agents/markdown'
 import { ToolDebugChip } from '@/components/agents/tool-debug-chip'
 import { ProposalCard } from '@/components/agents/proposal-card'
+import { ApplyAllBar, type ApplyAllItem } from '@/components/agents/apply-all-bar'
+import { isProposalData, isProposalToolName, type ProposalData } from '@/lib/agent-proposals'
+import { formatChatError } from '@/lib/agents-errors'
 
 interface Props {
   agent: Agent
@@ -148,6 +150,9 @@ export function ChatPanel({ agent, conversationId, onConversationCreated, focusS
           }
           if (ev.kind === 'text_delta') {
             setDraft((d) => (d ? { ...d, text: d.text + ev.text } : d))
+          } else if (ev.kind === 'text_discard') {
+            // Commentary that preceded tool calls, not an answer.
+            setDraft((d) => (d ? { ...d, text: '' } : d))
           } else if (ev.kind === 'tool_call') {
             setDraft((d) => (d ? { ...d, tools: [...d.tools, { name: ev.tool_name, args: ev.tool_args }] } : d))
           } else if (ev.kind === 'tool_result') {
@@ -160,7 +165,7 @@ export function ChatPanel({ agent, conversationId, onConversationCreated, focusS
               return { ...d, tools: copy }
             })
           } else if (ev.kind === 'error') {
-            errorThisTurn = `${ev.error_code || 'error'}: ${ev.error_message || ''}`
+            errorThisTurn = formatChatError(t, ev.error_code, ev.error_message)
             setDraft((d) => (d ? { ...d, error: errorThisTurn || undefined } : d))
           } else if (ev.kind === 'done') {
             setDraft((d) => (d ? { ...d, pending: false } : d))
@@ -249,7 +254,7 @@ export function ChatPanel({ agent, conversationId, onConversationCreated, focusS
                   <ProposalCard
                     key={i}
                     toolCallId={`draft-${draft.id}-${i}`}
-                    data={tool.result!.data as Record<string, unknown>}
+                    data={tool.result!.data as ProposalData}
                   />
                 )
               }
@@ -263,6 +268,13 @@ export function ChatPanel({ agent, conversationId, onConversationCreated, focusS
                 />
               )
             })}
+            <ApplyAllBar
+              items={draft.tools.flatMap<ApplyAllItem>((tool, i) =>
+                isProposalToolName(tool.name) && tool.result?.data && isProposalData(tool.result.data)
+                  ? [{ toolCallId: `draft-${draft.id}-${i}`, data: tool.result.data }]
+                  : [],
+              )}
+            />
             {(draft.text || draft.pending) && (
               <div className="rounded-lg px-3 py-2 bg-muted">
                 <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1 flex items-center gap-1.5">
@@ -364,6 +376,12 @@ function HistoryView({ agent, history }: { agent: Agent; history: AgentMessage[]
             )
           }
           if (m.role === 'assistant') {
+            const proposalItems: ApplyAllItem[] = (m.tool_calls ?? []).flatMap((tc) => {
+              const data = resultsById[tc.id]?.tool_result?.data
+              return isProposalToolName(tc.name) && data && isProposalData(data)
+                ? [{ toolCallId: tc.id, data }]
+                : []
+            })
             return (
               <div key={m.id} className="space-y-2">
                 {m.tool_calls?.map((tc) => {
@@ -372,7 +390,7 @@ function HistoryView({ agent, history }: { agent: Agent; history: AgentMessage[]
                   if (isProposalToolName(tc.name) && data && isProposalData(data)) {
                     // Persisted tool_call_id is stable across reloads —
                     // perfect localStorage key for the "applied" marker.
-                    return <ProposalCard key={tc.id} toolCallId={tc.id} data={data as Record<string, unknown>} />
+                    return <ProposalCard key={tc.id} toolCallId={tc.id} data={data} />
                   }
                   return (
                     <ToolDebugChip
@@ -392,6 +410,7 @@ function HistoryView({ agent, history }: { agent: Agent; history: AgentMessage[]
                     />
                   )
                 })}
+                {proposalItems.length > 0 && <ApplyAllBar items={proposalItems} />}
                 {m.content && (
                   <div className="rounded-lg px-3 py-2 bg-muted">
                     <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1 flex items-center gap-1.5">
