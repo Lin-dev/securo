@@ -34,7 +34,7 @@ from app.agents.services import conversation_service
 from mcp_server.auth import CallContext
 from mcp_server.registry import REGISTRY
 from tests.test_agents_executor import _ScriptedProvider
-from tests.test_mcp_finance_tools import _account, _category, _ensure_to_char, _seed_summary_rows, _txn  # noqa: F401
+from tests.test_mcp_finance_tools import _account, _asset, _category, _ensure_to_char, _seed_summary_rows, _txn  # noqa: F401
 
 TODAY = date(2026, 9, 23)
 
@@ -389,6 +389,132 @@ async def test_holdings_handler(session: AsyncSession, test_user, test_workspace
     assert pack["accounts_total_primary"] == tool["investment_accounts_total_primary"]
     assert prep.chart is None or (prep.chart["type"] == "pie" and len(prep.chart["data"]) == 2)
     assert "| Brokerage |" in prep.table_md and prep.tool_trace == [("get_holdings", {})]
+
+
+async def _seed_portfolio(session, test_user, test_workspace):
+    """Brokerage 1500 (Apple Inc/AAPL 900 + VTI 600), Roth IRA 500 (VTI 500), an empty Old 401(k); total 2000."""
+    uid, wid = test_user.id, test_workspace.id
+    brokerage = await _account(session, uid, wid, "Brokerage", "investment")
+    ira = await _account(session, uid, wid, "Roth IRA | Econify", "investment")
+    old = await _account(session, uid, wid, "Old 401(k)", "investment")
+    activity = await _category(session, uid, wid, "Brokerage activity")
+    # balances are derived from transactions (not Account.balance), like the finance-tool tests do
+    session.add(_txn(uid, wid, brokerage, 1500, "credit", activity))
+    session.add(_txn(uid, wid, ira, 500, "credit", activity))
+    await session.commit()
+    apple = await _asset(session, uid, wid, "Apple Inc", 900, account_id=brokerage.id)
+    apple.ticker = "AAPL"
+    vti_b = await _asset(session, uid, wid, "VTI", 600, account_id=brokerage.id)
+    vti_b.ticker = "VTI"
+    vti_i = await _asset(session, uid, wid, "VTI", 500, account_id=ira.id)
+    vti_i.ticker = "VTI"
+    await session.commit()
+    return brokerage, ira, old
+
+
+async def test_route_parses_query_and_analysis_slots(session, test_user, test_workspace, test_agent):
+    provider = _ScriptedProvider([
+        _text_turn(_route_json(intent="holding_lookup", query="Apple", analysis=False, confidence=0.95)),
+        _text_turn(_route_json(intent="holdings", query="x" * 120, analysis="true", confidence=0.9)),
+    ])
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, provider)
+    d1 = await route(ctx, user_message="do I own apple stocks?")
+    assert (d1.intent, d1.query, d1.analysis) == ("holding_lookup", "Apple", False)
+    d2 = await route(ctx, user_message="any patterns?")
+    assert (d2.intent, d2.query, d2.analysis) == ("holdings", None, True)
+    assert "holding_lookup" in guided.INTENTS and "query" in guided.ROUTER_SCHEMA["required"] and "analysis" in guided.ROUTER_SCHEMA["required"]
+
+
+def test_router_system_prompt_has_lookup_and_analysis_examples():
+    text = guided.router_system(today=TODAY, tz="UTC", language="en", prior_user_message=None)
+    assert '"Do I own Apple stocks?" -> {"intent":"holding_lookup"' in text and '"query":"Apple"' in text
+    assert '"How much NVDA do I have and where?" -> {"intent":"holding_lookup"' in text
+    assert 'do you see any patterns emerge?" -> {"intent":"holdings"' in text and '"analysis":true' in text
+    assert '"What stands out in my spending this year?" -> {"intent":"spending_breakdown","period_a":"ytd"' in text
+    assert '"How much did I pay Uber in June?" -> {"intent":"freeform"' in text
+
+
+async def test_holdings_pack_positions_concentration_and_split(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_portfolio(session, test_user, test_workspace)
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
+    prep = await guided.HANDLERS["holdings"](ctx, RouteDecision(intent="holdings", confidence=0.9))
+    pack = prep.pack
+    assert pack["accounts_total_primary"] == 2000.0
+    assert {a["name"]: a["share_pct"] for a in pack["accounts"]} == {"Brokerage": 75.0, "Roth IRA | Econify": 25.0, "Old 401(k)": 0.0}
+    assert [(p["ticker"], p["account"], p["value"], p["share_pct"]) for p in pack["positions"]] == [
+        ("AAPL", "Brokerage", 900.0, 45.0), ("VTI", "Brokerage", 600.0, 30.0), ("VTI", "Roth IRA | Econify", 500.0, 25.0),
+    ]
+    assert pack["positions_total_count"] == 3 and pack["accounts_with_positions"] == 2
+    assert pack["zero_balance_accounts"] == ["Old 401(k)"] and pack["zero_balance_count"] == 1
+    conc = pack["concentration"]
+    assert conc["largest_position"]["ticker"] == "AAPL" and conc["largest_position"]["share_pct"] == 45.0
+    assert conc["top5_share_pct"] == 100.0 and conc["largest_account"] == {"name": "Brokerage", "share_pct": 75.0}
+    assert pack["split"] == {"retirement_pct": 25.0, "taxable_pct": 75.0, "crypto_pct": 0.0}
+    assert "**Top positions**" in prep.table_md
+    assert "| Apple Inc (AAPL) | Brokerage | 900.00 BRL | 45.0% |" in prep.table_md
+    assert "| Roth IRA \\| Econify |" in prep.table_md  # pipes in account names are escaped
+    assert "largest is Brokerage (75.0%)" in prep.fallback_sentence and "Apple Inc (AAPL) (45.0%)" in prep.fallback_sentence
+
+
+async def test_holding_lookup_matches_by_ticker_name_and_alias(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_portfolio(session, test_user, test_workspace)
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
+    for query in ("aapl", "Apple", "the apple stock"):
+        prep = await guided.HANDLERS["holding_lookup"](ctx, RouteDecision(intent="holding_lookup", confidence=0.95, query=query))
+        assert [m["ticker"] for m in prep.pack["matches"]] == ["AAPL"], query
+        assert prep.pack["matches_total_value"] == 900.0 and prep.pack["matches_share_pct"] == 45.0
+        assert prep.narrate is True and prep.chart is None
+        assert prep.fallback_sentence.startswith("Yes — you hold AAPL in 1 account(s): Brokerage 900.00 BRL; worth 900.00 BRL (45.0% of your investment accounts).")
+        assert "| Apple Inc (AAPL) | Brokerage | " in prep.table_md
+    prep = await guided.HANDLERS["holding_lookup"](ctx, RouteDecision(intent="holding_lookup", confidence=0.95, query="VTI"))
+    assert [m["account"] for m in prep.pack["matches"]] == ["Brokerage", "Roth IRA | Econify"]
+    assert "in 2 account(s)" in prep.fallback_sentence and prep.pack["matches_total_value"] == 1100.0
+
+
+async def test_holding_lookup_no_match_answers_without_the_model(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_portfolio(session, test_user, test_workspace)
+    provider = _ScriptedProvider([_text_turn("should not be used")])
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, provider, today=date.today())
+    decision = RouteDecision(intent="holding_lookup", confidence=0.95, query="Tesla")
+    events = [ev async for ev in answer(ctx, decision, user_message="do I own tesla?")]
+    assert provider.calls == []
+    text = events[-1].text.strip()
+    assert text.startswith("No position matching 'Tesla' in any account that exposes holdings (Brokerage, Roth IRA | Econify); 1 account(s) do not expose positions (Old 401(k)).")
+    assert events[-1].type == "text_delta" and events[-2].text.startswith("| Accounts that expose positions |")
+    rows = await _rows(session, ctx.conversation_id)
+    assert rows[-1].content.endswith(text) and rows[2].tool_result["data"]["kind"] == "holding_lookup"
+    usage = (await session.execute(select(LlmUsage).where(LlmUsage.conversation_id == ctx.conversation_id))).scalars().all()
+    assert usage == []
+
+
+async def test_holding_lookup_without_query_behaves_like_holdings(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_portfolio(session, test_user, test_workspace)
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
+    prep = await guided.HANDLERS["holding_lookup"](ctx, RouteDecision(intent="holding_lookup", confidence=0.9, query=None))
+    assert prep.pack["kind"] == "holdings" and prep.chart is not None
+
+
+async def test_analysis_mode_uses_medium_reasoning_and_keeps_grounding(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_portfolio(session, test_user, test_workspace)
+    provider = _ScriptedProvider([_text_turn("Brokerage carries 75.0% of the total and Apple alone is 45.0%, so the taxable side is concentrated in one name; the Roth IRA (25.0%) is your only retirement exposure.")])
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, provider, today=date.today())
+    decision = RouteDecision(intent="holdings", confidence=0.92, analysis=True)
+    events = [ev async for ev in answer(ctx, decision, user_message="looking at my holdings do you see any patterns?")]
+    call = provider.calls[0]
+    assert call["reasoning"] == "medium" and call["max_tokens"] == 520 and call["tools"] is None
+    assert events[-1].text.strip().startswith("Brokerage carries 75.0%")
+
+    bad = _ScriptedProvider([_text_turn("You are 62% in one stock."), _text_turn("Roughly 3.4k sits idle.")])
+    ctx2 = await _ctx(session, test_user, test_workspace, test_agent, bad, today=date.today())
+    events2 = [ev async for ev in answer(ctx2, decision, user_message="patterns?")]
+    assert len(bad.calls) == 2 and all(c["reasoning"] == "medium" for c in bad.calls)
+    assert events2[-1].text.strip().startswith("Your investment accounts total 2,000.00 BRL across 3 accounts; the largest is Brokerage (75.0%)")
+
+
+def test_md_table_escapes_pipes_and_newlines():
+    table = guided._md_table(["A", "B"], [["x | y", "line1\nline2"]])
+    assert "| x \\| y | line1 line2 |" in table
+    assert guided._cell(None) == ""
 
 
 def test_render_pack_lines_formats_money_percent_and_counts():
