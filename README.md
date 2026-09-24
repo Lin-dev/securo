@@ -239,6 +239,15 @@ Settings that matter for local models (all optional):
 | `AGENTS_KNOWLEDGE_INGEST_INLINE` | `false` | Chunk and embed uploads inside the API process instead of the Celery worker, so the knowledge files need no volume shared with the worker. |
 | `AGENTS_PINNED_CONTEXT_MAX_CHARS` | `6000` | Documents pinned in an agent's Knowledge tab are injected into every conversation, up to this many characters. |
 | `AGENTS_DIGEST_ENABLED`, `AGENTS_DIGEST_HOUR` | `false`, `7` | Weekly (Monday) and monthly (1st) finance reviews written by each workspace's default agent into its own history, at that local hour. |
+| `AGENTS_MAX_TOOL_ITERATIONS` | `10` | Ceiling of the free-form tool loop per message (per agent: `extra.max_tool_iterations`, clamped 1..50). Hitting it persists a short, localized stop message instead of an empty bubble. |
+| `AGENTS_TOOL_RESULT_MAX_CHARS` | `4000` | What the model reads back from a tool: a dict's biggest list is cut to the longest prefix that fits and marked `truncated`/`omitted_items` (the full payload is still persisted for cards and debugging). `0` disables the cap. |
+| `AGENTS_PROMPT_BUDGET_TOKENS` | `20000` | Oldest whole turns are dropped from the prompt until system prompts + history fit (≈4 chars/token). Sized for a 32K window minus tool schemas and generation. `0` disables. |
+| `AGENTS_SHOW_TOOL_COMMENTARY` | `false` | Text a model emits in the same turn as its tool calls is planning commentary: hidden from the UI (`text_discard`), kept trimmed on the persisted turn, never fed back. `true` restores the old behaviour. |
+| `AGENTS_GUIDED_MODE`, `AGENTS_GUIDED_MIN_CONFIDENCE` | `true`, `0.7` | Route each message through a small schema-constrained intent classifier first and answer the known intents from code (see Guided mode). Below the confidence threshold the ordinary tool loop runs. |
+| `AGENTS_WORKFLOW_AUTO_APPLY` | `false` | Lets `/categorize apply=true` (or `extra.auto_apply_rules` on the agent) create and apply rules with confidence ≥ 0.90 in code instead of proposing them. Off: every rule is a card you apply. |
+| `AGENTS_WORKFLOW_MAX_LLM_CALLS`, `AGENTS_WORKFLOW_MAX_SECONDS` | `8`, `240` | Budget of one workflow run; merchants left when it runs out are listed, never guessed. |
+| `AGENTS_CLASSIFIER_BACKEND` | `ollama` | Model behind the categorization step: `ollama` (schema-constrained call through the agent's connection) or `kev` (a local Kev decision-model server; falls back to Ollama when unreachable). |
+| `AGENTS_KEV_BASE_URL`, `AGENTS_KEV_MODEL`, `AGENTS_KEV_TIMEOUT_SECONDS` | unset, `kev-latest`, `20` | Where the Kev server answers `POST /v1/systemone` (for example `http://192.168.86.22:8009`), the model name, and the per-request timeout. |
 
 The chat stream sends an SSE comment every 15 s of silence, so reverse proxies and CDNs with idle limits (Cloudflare closes at 100 s) keep slow first tokens alive.
 
@@ -251,6 +260,18 @@ python -m app.agents.scripts.seed_finance_analyst --email you@example.com --mode
 ```
 
 It creates the Ollama connection if needed, the agent, and a 20-tool whitelist including the finance tools: `get_transactions_summary` (income, expense, net, invested, savings rate per period), `get_money_map` (where money went), `list_uncategorized_merchants` + `list_rules` (categorization proposals that become rules on Apply), `get_holdings`, and `fire_projection` (financial-independence math from your own trailing-12-month figures). Pin your household conventions document in the agent's Knowledge tab so every conversation starts from it.
+
+### Workflows
+
+Multi-step jobs run as code, not as a chain of model calls. A workflow loads its data in-process, decides everything it can deterministically, asks the model only closed questions (schema-constrained JSON, validated before use), and writes its own reply. The first one is the **categorization review**:
+
+- `/categorize` (alias `/review`, params `from=YYYY-MM-DD to=YYYY-MM-DD limit=60`) reads the uncategorized merchants, your categories and rules; classifies transfers between your own accounts and credit-card payments from the descriptions and the accounts' last four digits; skips merchants an existing rule already covers; sends the rest to the model in batches of 12 with the category list and your pinned conventions; checks every answer (allowed category, money-in vs money-out, confidence); and emits one proposal card per confident merchant plus a summary with a "needs your call" list. Cards apply one by one or with **Apply all**.
+- The model can trigger the same workflow with the `workflow__categorize` tool (whitelisted per agent like any tool); the workflow then ends the turn itself.
+- `/ask <question>` forces the plain tool loop for one message.
+
+### Guided mode
+
+Every ordinary message is first classified by a short, schema-constrained router call (intent + period slots from a closed grammar; dates are resolved in code, in your timezone). Six intents are answered without the tool loop: period comparison, spending breakdown, money map, net worth trend, FIRE progress and holdings. Code fetches the figures, renders the table and the chart, and the model only writes a short narration that is checked number by number against those figures (a narration that invents a number is regenerated once, then replaced by a templated sentence). Categorization requests go to the workflow above; anything the router is unsure about, follow-ups, specific merchants and every request to change data fall through to the tool loop. Set `extra.mode` to `"freeform"` on an agent to opt it out, or `AGENTS_GUIDED_MODE=false` globally.
 
 ## Tech Stack
 
