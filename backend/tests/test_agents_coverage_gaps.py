@@ -139,7 +139,7 @@ async def test_get_agent_tools_returns_merged_state(
         r = await client.get(f"/api/agents/{a['id']}/tools", headers=auth_headers)
         assert r.status_code == 200
         body = r.json()
-        assert body["servers"] == [{"name": "securo"}]
+        assert body["servers"] == [{"name": "securo"}, {"name": "workflow"}]
         by_name = {t["name"]: t for t in body["tools"]}
         # First-run with no AgentTool rows yet → enabled defaults to True.
         assert by_name["list_accounts"]["enabled"] is True
