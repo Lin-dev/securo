@@ -27,6 +27,13 @@ interface Props {
   // the agent can reason about "this row" / "the filters above".
   // Re-read on each send so we always pick up the latest state.
   getPageContext?: () => Record<string, unknown> | null
+  // Called when the persisted conversation no longer exists on the server
+  // (deleted elsewhere). The parent should forget it so the panel starts fresh.
+  onConversationGone?: () => void
+}
+
+function isConversationGone(code?: string, message?: string): boolean {
+  return code === '404' && /conversation not found/i.test(message || '')
 }
 
 interface DraftMessage {
@@ -38,7 +45,7 @@ interface DraftMessage {
   pending?: boolean
 }
 
-export function ChatPanel({ agent, conversationId, onConversationCreated, focusSignal, getPageContext }: Props) {
+export function ChatPanel({ agent, conversationId, onConversationCreated, focusSignal, getPageContext, onConversationGone }: Props) {
   const { t } = useTranslation()
   const qc = useQueryClient()
   const [input, setInput] = useState('')
@@ -55,12 +62,23 @@ export function ChatPanel({ agent, conversationId, onConversationCreated, focusS
   // streaming deltas no longer yank them back down.
   const isAtBottomRef = useRef(true)
 
-  const { data: history } = useQuery({
+  const { data: history, error: historyError } = useQuery({
     queryKey: ['agent-conv-messages', conversationId],
     queryFn: () => (conversationId ? agents.conversations.messages(conversationId) : Promise.resolve([])),
     enabled: !!conversationId,
     staleTime: 1000 * 5,
+    retry: (count, err) => (err as { response?: { status?: number } })?.response?.status !== 404 && count < 2,
   })
+
+  // A remembered conversation that was deleted elsewhere: drop it and start fresh
+  // instead of showing a 404.
+  const goneRef = useRef(onConversationGone)
+  goneRef.current = onConversationGone
+  useEffect(() => {
+    if ((historyError as { response?: { status?: number } } | null)?.response?.status === 404) {
+      goneRef.current?.()
+    }
+  }, [historyError])
 
   // Snap to bottom when the conversation switches (it should look fresh)
   // and move keyboard focus to the input — covers both "+" (null) and
@@ -132,20 +150,28 @@ export function ChatPanel({ agent, conversationId, onConversationCreated, focusS
     // Remember whether this round started a fresh conversation, so we
     // can ask the backend to generate a real title from the LLM after
     // streaming completes successfully.
-    const startedFresh = !conversationId
+    let convForSend = conversationId
+    let startedFresh = !conversationId
     const localId = crypto.randomUUID()
     setPendingUser({ id: 'pending-user-' + localId, role: 'user', text: trimmed, tools: [] })
     setDraft({ id: 'draft-' + localId, role: 'assistant', text: '', tools: [], pending: true })
     try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+      let gone = false
       await streamChat({
         agentId: agent.id,
         content: trimmed,
-        conversationId,
+        conversationId: convForSend,
         pageContext: getPageContext?.() ?? null,
         onEvent: (ev: AgentStreamEvent) => {
           if (ev.kind === 'conversation') {
             activeConvId = ev.conversation_id
-            if (!conversationId) onConversationCreated(ev.conversation_id)
+            if (!convForSend) onConversationCreated(ev.conversation_id)
+            return
+          }
+          if (ev.kind === 'error' && convForSend && attempt === 0 && isConversationGone(ev.error_code, ev.error_message)) {
+            // The remembered conversation was deleted: resend into a new one.
+            gone = true
             return
           }
           if (ev.kind === 'text_delta') {
@@ -172,6 +198,12 @@ export function ChatPanel({ agent, conversationId, onConversationCreated, focusS
           }
         },
       })
+      if (!gone) break
+      onConversationGone?.()
+      convForSend = null
+      activeConvId = null
+      startedFresh = true
+      }
     } catch (err) {
       errorThisTurn = String(err)
       setDraft((d) => (d ? { ...d, error: String(err) } : d))
