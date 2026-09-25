@@ -166,6 +166,10 @@ export default function AgentDetailPage() {
                 setConversationId(cid)
                 qc.invalidateQueries({ queryKey: ['agent-conversations', id] })
               }}
+              onConversationGone={() => {
+                setConversationId(null)
+                qc.invalidateQueries({ queryKey: ['agent-conversations', id] })
+              }}
             />
           </div>
         </TabsContent>

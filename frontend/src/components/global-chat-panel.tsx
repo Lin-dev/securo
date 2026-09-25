@@ -329,6 +329,7 @@ export function GlobalChatPanel({ open, onOpenChange }: Props) {
                 agent={activeAgent}
                 conversationId={conversationId}
                 onConversationCreated={(id) => setConversationForActive(id)}
+                onConversationGone={() => setConversationForActive(null)}
                 focusSignal={focusBump}
                 getPageContext={() => getEffectivePageChatContext()}
               />
