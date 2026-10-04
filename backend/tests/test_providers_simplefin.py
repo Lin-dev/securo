@@ -700,3 +700,37 @@ async def test_claim_keeps_credentials_when_first_read_is_refused():
             await SimpleFinProvider().handle_oauth_callback(_encode_token("https://bridge.example/simplefin/claim/abc"))
     assert info.value.claimed_credentials.get("access_url_enc")
     assert isinstance(info.value, ProviderUserActionRequired)
+
+
+# ----- institution-level reauth must not sink the connection (qc18) -------------
+
+@pytest.mark.asyncio
+async def test_claim_succeeds_when_one_institution_needs_relogin():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, text=ACCESS)
+        return httpx.Response(200, json={
+            "errlist": [{"code": "con.auth", "msg": "Auth required", "conn_id": "CON-APPLE"}],
+            "connections": [{"conn_id": "CON-TD", "name": "TD Bank"}],
+            "accounts": [_account("a1"), _account("a2")],
+        })
+
+    with _patched_client(handler):
+        data = await SimpleFinProvider().handle_oauth_callback(_encode_token("https://bridge.example/simplefin/claim/abc"))
+    assert len(data.accounts) == 2
+    assert data.credentials.get("access_url_enc")
+
+
+@pytest.mark.asyncio
+async def test_gen_auth_in_errlist_still_requires_reconnect_but_keeps_claim():
+    from app.providers.simplefin import SimpleFinClaimedButRefused
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, text=ACCESS)
+        return httpx.Response(200, json={"errlist": [{"code": "gen.auth", "msg": "Forbidden"}], "accounts": []})
+
+    with _patched_client(handler):
+        with pytest.raises(SimpleFinClaimedButRefused) as info:
+            await SimpleFinProvider().handle_oauth_callback(_encode_token("https://bridge.example/simplefin/claim/abc"))
+    assert info.value.claimed_credentials.get("access_url_enc")

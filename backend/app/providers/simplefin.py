@@ -54,7 +54,12 @@ SIMPLEFIN_HTTP_TIMEOUT = 60.0
 # Error codes that signal the user must re-authorize via the Bridge (the
 # stored Access URL is no longer valid). Everything else under con.* / act.*
 # is treated as transient and surfaces as a warning, not a hard failure.
-_REAUTH_ERROR_CODES = frozenset({"gen.auth", "con.auth"})
+# gen.auth: the whole Access URL is refused -> the user must reconnect.
+# con.auth: ONE institution behind the Bridge needs its login renewed (e.g. Apple
+# Card "Auth required"); the other institutions' data is still in the response,
+# so that must not fail the connection.
+_REAUTH_ERROR_CODES = frozenset({"gen.auth"})
+_INSTITUTION_REAUTH_CODES = frozenset({"con.auth"})
 
 
 class SimpleFinClaimedButRefused(ProviderUserActionRequired):
@@ -165,7 +170,7 @@ def _ticker(value: Any) -> Optional[str]:
     return value.strip().upper()[:32] or None
 
 
-def _surface_errors(errlist: list[dict], context: str) -> None:
+def _surface_errors(errlist: list[dict], context: str, *, has_accounts: bool = False) -> None:
     """Raise a typed exception for auth errors; log everything else.
 
     SimpleFIN's spec says: *Always show those errors to your end users.* For
@@ -175,7 +180,10 @@ def _surface_errors(errlist: list[dict], context: str) -> None:
     """
     if not errlist:
         return
-    reauth = [e for e in errlist if (e.get("code") or "").lower() in _REAUTH_ERROR_CODES]
+    # An institution-level auth error only blocks the connection when nothing
+    # usable came back (e.g. a single-bank Bridge account).
+    blocking = _REAUTH_ERROR_CODES | (set() if has_accounts else _INSTITUTION_REAUTH_CODES)
+    reauth = [e for e in errlist if (e.get("code") or "").lower() in blocking]
     if reauth:
         first = reauth[0]
         raise ProviderUserActionRequired(
@@ -184,6 +192,13 @@ def _surface_errors(errlist: list[dict], context: str) -> None:
             help_url="https://bridge.simplefin.org/",
         )
     for entry in errlist:
+        if (entry.get("code") or "").lower() in _INSTITUTION_REAUTH_CODES:
+            logger.warning(
+                "SimpleFIN %s: an institution needs re-login on the Bridge (code=%s msg=%s conn=%s); "
+                "continuing with the others",
+                context, entry.get("code"), entry.get("msg") or entry.get("message"), entry.get("conn_id"),
+            )
+            continue
         logger.warning(
             "SimpleFIN %s warning code=%s msg=%s",
             context,
@@ -334,6 +349,7 @@ class SimpleFinProvider(BankProvider):
         # fetched per-account by ``get_transactions``.
         try:
             payload = await self._fetch_accounts(credentials, pending=False)
+            _surface_errors(payload.get("errlist") or [], context="claim", has_accounts=bool(payload.get("accounts")))
         except ProviderUserActionRequired as exc:
             raise SimpleFinClaimedButRefused(
                 "SimpleFIN accepted the setup token and created the app connection, but refused to "
@@ -342,7 +358,6 @@ class SimpleFinProvider(BankProvider):
                 credentials=credentials,
                 help_url="https://bridge.simplefin.org/",
             ) from exc
-        _surface_errors(payload.get("errlist") or [], context="claim")
         institution_name, accounts = self._parse_accounts(payload)
         return ConnectionData(
             external_id=self._stable_external_id(payload, claim_url),
@@ -486,7 +501,7 @@ class SimpleFinProvider(BankProvider):
 
     async def get_accounts(self, credentials: dict) -> list[AccountData]:
         payload = await self._fetch_accounts(credentials, pending=False)
-        _surface_errors(payload.get("errlist") or [], context="get_accounts")
+        _surface_errors(payload.get("errlist") or [], context="get_accounts", has_accounts=bool(payload.get("accounts")))
         _, accounts = self._parse_accounts(payload)
         return accounts
 
@@ -516,7 +531,7 @@ class SimpleFinProvider(BankProvider):
                 end_date=chunk_end + timedelta(days=1),
                 pending=True,
             )
-            _surface_errors(payload.get("errlist") or [], context="get_transactions")
+            _surface_errors(payload.get("errlist") or [], context="get_transactions", has_accounts=bool(payload.get("accounts")))
             for raw_acc in payload.get("accounts") or []:
                 if str(raw_acc.get("id") or "") != account_external_id:
                     continue
@@ -572,7 +587,7 @@ class SimpleFinProvider(BankProvider):
 
     async def get_holdings(self, credentials: dict) -> list[HoldingData]:
         payload = await self._fetch_accounts(credentials, pending=False)
-        _surface_errors(payload.get("errlist") or [], context="get_holdings")
+        _surface_errors(payload.get("errlist") or [], context="get_holdings", has_accounts=bool(payload.get("accounts")))
         holdings: list[HoldingData] = []
         for raw_acc in payload.get("accounts") or []:
             acc_currency = raw_acc.get("currency") or "USD"
