@@ -57,6 +57,19 @@ SIMPLEFIN_HTTP_TIMEOUT = 60.0
 _REAUTH_ERROR_CODES = frozenset({"gen.auth", "con.auth"})
 
 
+class SimpleFinClaimedButRefused(ProviderUserActionRequired):
+    """The setup token was claimed (the Bridge created an app connection and
+    returned an Access URL) but the first read with it was refused.
+
+    Carries the claimed credentials so the caller can keep them: the setup
+    token is single-use, and throwing the Access URL away would force the
+    user to burn another token just to retry."""
+
+    def __init__(self, message: str, *, credentials: dict, help_url: Optional[str] = None) -> None:
+        super().__init__(message, code="credentials_invalid", help_url=help_url)
+        self.claimed_credentials = credentials
+
+
 def _decode_setup_token(raw: str) -> str:
     """Decode a SimpleFIN Setup Token (Base64-encoded URL).
 
@@ -180,6 +193,18 @@ def _surface_errors(errlist: list[dict], context: str) -> None:
 
 
 class SimpleFinProvider(BankProvider):
+    # One provider instance serves one sync (get_provider builds a new one per
+    # call). The Bridge allows roughly 24 requests a day, and a sync used to make
+    # one request per account; reads now share one response per request shape.
+    _payload_cache: dict
+
+    def _cache(self) -> dict:
+        cache = self.__dict__.get("_payload_cache")
+        if cache is None:
+            cache = {}
+            self.__dict__["_payload_cache"] = cache
+        return cache
+
     """SimpleFIN Bridge connector."""
 
     @property
@@ -236,17 +261,26 @@ class SimpleFinProvider(BankProvider):
             ).timestamp()))
         if account_id:
             params["account"] = account_id
+        cache_key = (access_url, tuple(sorted(params.items())))
+        cached = self._cache().get(cache_key)
+        if cached is not None:
+            return cached
         url, auth = _accounts_url_and_auth(access_url)
         async with await self._client(credentials) as client:
             resp = await client.get(url, params=params, auth=auth)
         if resp.status_code in (401, 403):
+            logger.warning(
+                "SimpleFIN refused /accounts (%s): %s", resp.status_code, (resp.text or "")[:200]
+            )
             raise ProviderUserActionRequired(
                 f"SimpleFIN refused the request ({resp.status_code})",
                 code="credentials_invalid",
                 help_url="https://bridge.simplefin.org/",
             )
         resp.raise_for_status()
-        return resp.json() or {}
+        payload = resp.json() or {}
+        self._cache()[cache_key] = payload
+        return payload
 
     # ----- connection flow ---------------------------------------------------
 
@@ -298,7 +332,16 @@ class SimpleFinProvider(BankProvider):
         # Pull the account list once so we can return an institution name and
         # the initial AccountData list. Filter out transactions here — they're
         # fetched per-account by ``get_transactions``.
-        payload = await self._fetch_accounts(credentials, pending=False)
+        try:
+            payload = await self._fetch_accounts(credentials, pending=False)
+        except ProviderUserActionRequired as exc:
+            raise SimpleFinClaimedButRefused(
+                "SimpleFIN accepted the setup token and created the app connection, but refused to "
+                f"share account data ({exc}). Securo kept the new access so no further token is "
+                "needed once the Bridge allows it; check the app on bridge.simplefin.org.",
+                credentials=credentials,
+                help_url="https://bridge.simplefin.org/",
+            ) from exc
         _surface_errors(payload.get("errlist") or [], context="claim")
         institution_name, accounts = self._parse_accounts(payload)
         return ConnectionData(
@@ -465,11 +508,12 @@ class SimpleFinProvider(BankProvider):
         cursor = start_date
         while cursor <= end_date:
             chunk_end = min(cursor + timedelta(days=SIMPLEFIN_MAX_WINDOW_DAYS), end_date)
+            # No account filter: every account of the connection comes back in
+            # one response, cached for the other accounts' calls in this sync.
             payload = await self._fetch_accounts(
                 credentials,
                 start_date=cursor,
                 end_date=chunk_end + timedelta(days=1),
-                account_id=account_external_id,
                 pending=True,
             )
             _surface_errors(payload.get("errlist") or [], context="get_transactions")

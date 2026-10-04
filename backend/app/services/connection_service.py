@@ -1061,7 +1061,19 @@ async def handle_oauth_callback(
         raise ValueError("OAuth callback missing provider")
 
     provider = get_provider(provider_name)
-    connection_data = await provider.handle_oauth_callback(code)
+    try:
+        connection_data = await provider.handle_oauth_callback(code)
+    except ProviderUserActionRequired as exc:
+        # Token providers (SimpleFIN) may claim a single-use token successfully and
+        # then have the first read refused. Keep the claimed credentials on the
+        # connection being reconnected so a later sync can use them without
+        # another token.
+        claimed = getattr(exc, "claimed_credentials", None)
+        if existing_reconnect is not None and claimed:
+            existing_reconnect.credentials = claimed
+            existing_reconnect.status = "error"
+            await session.commit()
+        raise
 
     if existing_reconnect:
         existing_reconnect.external_id = connection_data.external_id

@@ -253,8 +253,9 @@ async def test_get_transactions_filters_by_account_and_parses_signs():
         assert request.url.path == "/simplefin/accounts"
         assert "u:p@" not in str(request.url)
         assert request.headers["authorization"].startswith("Basic ")
-        # We always request a specific account
-        assert request.url.params.get("account") == "acc-1"
+        # No account filter: one response serves every account of the sync
+        # (Bridge budget); get_transactions still filters to acc-1 below.
+        assert request.url.params.get("account") is None
         assert request.url.params.get("pending") == "1"
         return httpx.Response(
             200,
@@ -643,3 +644,59 @@ async def test_get_holdings_carries_the_owning_account():
     assert by_id["h-1"].account_name == "Employer 401(k)"
     assert by_id["h-2"].account_external_id == "acc-2"
     assert by_id["h-2"].account_name == "Rollover IRA"
+
+
+# ----- request budget and claim resilience (qc16) -------------------------------
+
+ACCESS = "https://user:pass@bridge.example/simplefin"
+
+
+def _creds():
+    from app.agents.services.crypto import encrypt
+
+    return {"access_url_enc": encrypt(ACCESS)}
+
+
+def _account(acc_id: str, txns: list[dict] | None = None) -> dict:
+    return {
+        "id": acc_id, "name": f"Acct {acc_id}", "currency": "USD", "balance": "10.00",
+        "balance-date": 1767225600, "org": {"name": "Bank"}, "transactions": txns or [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_reads_share_one_bridge_request_across_accounts():
+    calls: list[str] = []
+    accounts = [_account(f"a{i}", [{"id": f"t{i}", "posted": 1767225600, "amount": "-5.00", "description": "X"}]) for i in range(19)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"errors": [], "accounts": accounts})
+
+    provider = SimpleFinProvider()
+    since = date.today() - timedelta(days=14)
+    with _patched_client(handler):
+        accs = await provider.get_accounts(_creds())
+        for a in accs:
+            await provider.get_transactions(_creds(), a.external_id, since)
+    assert len(accs) == 19
+    # one /accounts call for the account list + one for the transaction window,
+    # not one per account
+    assert len(calls) == 2
+    assert all("account=" not in c for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_claim_keeps_credentials_when_first_read_is_refused():
+    from app.providers.simplefin import SimpleFinClaimedButRefused
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, text=ACCESS)
+        return httpx.Response(403, json={"errlist": [{"code": "gen.auth", "msg": "Forbidden"}]})
+
+    with _patched_client(handler):
+        with pytest.raises(SimpleFinClaimedButRefused) as info:
+            await SimpleFinProvider().handle_oauth_callback(_encode_token("https://bridge.example/simplefin/claim/abc"))
+    assert info.value.claimed_credentials.get("access_url_enc")
+    assert isinstance(info.value, ProviderUserActionRequired)
