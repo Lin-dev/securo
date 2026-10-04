@@ -33,14 +33,23 @@ async def _sync_all() -> int:
         async with session_maker() as session:
             result = await session.execute(
                 select(
-                    BankConnection.id, BankConnection.user_id, BankConnection.last_sync_at
+                    BankConnection.id, BankConnection.user_id, BankConnection.last_sync_at,
+                    BankConnection.credentials,
                 ).where(
                     BankConnection.status.in_(["active", "error"]),
                     (BankConnection.last_sync_at < cutoff)
                     | (BankConnection.last_sync_at.is_(None)),
                 )
             )
-            connections = result.all()
+            rows = result.all()
+            # Connections whose credentials were refused wait for a reconnect
+            # (which replaces the credentials and clears the flag).
+            connections = [
+                (cid, uid, last) for cid, uid, last, creds in rows
+                if not (creds or {}).get("action_required_at")
+            ]
+            if len(connections) != len(rows):
+                logger.info("Skipping %d connection(s) awaiting reconnect", len(rows) - len(connections))
 
         logger.info(
             "Sync check: found %d stale connections (cutoff=%s)",

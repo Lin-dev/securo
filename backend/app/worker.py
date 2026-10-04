@@ -21,15 +21,15 @@ celery_app.conf.update(
 celery_app.conf.beat_schedule = {
     "sync-all-connections-hourly": {
         "task": "app.tasks.sync_tasks.sync_all_connections",
-        "schedule": 60 * 60,  # every hour; task itself skips connections synced < 4h ago
+        "schedule": 60 * 60, "options": {"expires": 60 * 60},  # every hour; task itself skips connections synced < 4h ago
     },
     "generate-recurring-daily": {
         "task": "app.tasks.recurring_tasks.generate_all_recurring",
-        "schedule": 60 * 60,  # every hour; generate_pending is idempotent (advances next_occurrence)
+        "schedule": 60 * 60, "options": {"expires": 60 * 60},  # every hour; generate_pending is idempotent (advances next_occurrence)
     },
     "apply-asset-growth-daily": {
         "task": "app.tasks.asset_tasks.apply_asset_growth_rules",
-        "schedule": 60 * 60,  # every hour; idempotent (checks last value date)
+        "schedule": 60 * 60, "options": {"expires": 60 * 60},  # every hour; idempotent (checks last value date)
     },
     "refresh-market-prices-daily": {
         "task": "app.tasks.asset_tasks.refresh_market_prices",
@@ -37,28 +37,28 @@ celery_app.conf.beat_schedule = {
         # well under Yahoo's unofficial per-IP caps and avoids the bot
         # heuristics that trip on a chatty schedule. Task upserts today's
         # AssetValue so history stays at one row per day per asset.
-        "schedule": 60 * 60 * 24,
+        "schedule": 60 * 60 * 24, "options": {"expires": 60 * 60 * 24},
     },
     "sync-fx-rates-daily": {
         "task": "app.tasks.fx_rate_tasks.sync_fx_rates",
-        "schedule": 60 * 60 * 12,  # twice daily (~60 API calls/month)
+        "schedule": 60 * 60 * 12, "options": {"expires": 60 * 60 * 12},  # twice daily (~60 API calls/month)
     },
     "restamp-recurring-fx-daily": {
         "task": "app.tasks.fx_rate_tasks.restamp_recurring_fx",
-        "schedule": 60 * 60 * 12,  # twice daily, after FX rate sync
+        "schedule": 60 * 60 * 12, "options": {"expires": 60 * 60 * 12},  # twice daily, after FX rate sync
     },
     "restamp-fallback-fx-daily": {
         "task": "app.tasks.fx_rate_tasks.restamp_fallback_fx",
         # Twice daily, after FX rate sync — heals transactions that were
         # stamped with the 1:1 fallback (or left NULL) once real rates land.
-        "schedule": 60 * 60 * 12,
+        "schedule": 60 * 60 * 12, "options": {"expires": 60 * 60 * 12},
     },
     "finance-digest-hourly-tick": {
         "task": "app.agents.tasks.digest.run_finance_digests",
         # Hourly tick; the task itself decides what is due in each agent
         # owner's local timezone (Monday / 1st at AGENTS_DIGEST_HOUR) and is
         # idempotent per period. No-op unless AGENTS_DIGEST_ENABLED=true.
-        "schedule": 60 * 60,
+        "schedule": 60 * 60, "options": {"expires": 60 * 60},
     },
 }
 

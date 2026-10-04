@@ -51,6 +51,10 @@ from app.core.redis import close_redis
 from app.schemas.user import UserCreate, UserRead, UserUpdate
 
 logger = logging.getLogger(__name__)
+# uvicorn only configures its own loggers; without this, warnings from app
+# modules (providers, guided mode, workflows) never reach the pod log.
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 settings = get_settings()
 
 

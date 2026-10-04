@@ -2330,6 +2330,14 @@ async def sync_connection(
             conn = await session.get(BankConnection, connection_id)
             if conn:
                 conn.status = "error"
+                # Revoked credentials do not heal on their own: flag the
+                # connection so scheduled syncs stop retrying it (each retry
+                # spends the aggregator's request budget) until a reconnect
+                # replaces the credentials. Manual syncs still run.
+                conn.credentials = {
+                    **(conn.credentials or {}),
+                    "action_required_at": datetime.now(timezone.utc).isoformat(),
+                }
         raise
     except ProviderRateLimited:
         # The bank/aggregator is throttling data requests (PSD2 caps unattended
