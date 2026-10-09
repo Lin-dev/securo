@@ -472,7 +472,9 @@ def test_router_system_prompt_has_lookup_and_analysis_examples():
     assert '"How much NVDA do I have and where?" -> {"intent":"holding_lookup"' in text
     assert 'do you see any patterns emerge?" -> {"intent":"holdings"' in text and '"analysis":true' in text
     assert '"What stands out in my spending this year?" -> {"intent":"spending_breakdown","period_a":"ytd"' in text
-    assert '"How much did I pay Uber in June?" -> {"intent":"freeform"' in text
+    assert '"How much did I pay Lyft last month?" -> {"intent":"merchant_spend"' in text
+    assert '"What\'s in my Fidelity account?" -> {"intent":"account_balance"' in text
+    assert "Uber" not in text  # the benchmark's merchant question must not be a few-shot (tests/test_agents_bench_leak.py)
 
 
 async def test_holdings_pack_positions_concentration_and_split(session: AsyncSession, test_user, test_workspace, test_agent):
@@ -770,3 +772,14 @@ async def test_merchant_spend_with_no_match_says_so_without_the_model(session: A
     prep = await guided.HANDLERS["merchant_spend"](ctx, RouteDecision(intent="merchant_spend", confidence=0.9, query="Lyft"))
     assert prep.narrate is False and prep.fallback_sentence.startswith("No posted charges matched 'Lyft' between")
 
+
+async def test_route_parses_account_and_merchant_intents(session, test_user, test_workspace, test_agent):
+    provider = _ScriptedProvider([
+        _text_turn(_route_json(intent="account_balance", query="Robinhood", analysis=False, confidence=0.93)),
+        _text_turn(_route_json(intent="merchant_spend", query="Uber", period_a="month:2026-06", analysis=False, confidence=0.9)),
+    ])
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, provider)
+    d1 = await route(ctx, user_message="what's in robinhood?")
+    assert (d1.intent, d1.query) == ("account_balance", "Robinhood")
+    d2 = await route(ctx, user_message="uber in june?")
+    assert (d2.intent, d2.query, d2.period_a) == ("merchant_spend", "Uber", "month:2026-06")
