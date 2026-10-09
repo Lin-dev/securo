@@ -477,3 +477,64 @@ async def test_fire_projection_uses_explicit_inputs_and_reports_invalid_ones(
         session=session, ctx=ctx, annual_spend=40_000, invested_assets=1, annual_contribution=1, withdrawal_rate=0,
     )
     assert "withdrawal_rate" in bad["error"]
+
+
+# --- list_accounts ---------------------------------------------------------------
+
+async def test_list_accounts_quotes_signed_current_balance_and_keeps_provider_figure_apart(
+    session: AsyncSession, ctx: CallContext, test_user, test_workspace
+):
+    from app.models.bank_connection import BankConnection
+
+    uid, wid = test_user.id, test_workspace.id
+    conn = BankConnection(
+        id=uuid.uuid4(), user_id=uid, workspace_id=wid, provider="plaid", external_id="ext-plaid-1",
+        institution_name="Card Bank", credentials={"token": "fake"}, status="active",
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(conn)
+    await session.flush()
+    card = await _account(session, uid, wid, "Gold Card", "credit_card", connection_id=conn.id, masked_number="2009",
+                          credit_limit=Decimal("5000"))
+    card.balance = Decimal("1200.50")  # providers report card debt as a positive number
+    checking = await _account(session, uid, wid, "Checking", "checking", display_name="Everyday")
+    session.add(_txn(uid, wid, checking, 800, "credit"))
+    session.add(_txn(uid, wid, checking, 50, "debit"))
+    await session.commit()
+
+    result = await REGISTRY["list_accounts"].handler(session=session, ctx=ctx)
+    by_name = {i["name"]: i for i in result["items"]}
+
+    card_item = by_name["Gold Card"]
+    assert card_item["current_balance"] == -1200.5  # owed money is negative, as the app shows it
+    assert card_item["provider_balance"] == 1200.5
+    assert card_item["masked_number"] == "2009" and card_item["credit_limit"] == 5000.0
+    assert card_item["available_credit"] == 3799.5
+
+    checking_item = by_name["Checking"]
+    assert checking_item["current_balance"] == 750.0 and checking_item["display_name"] == "Everyday"
+    assert "provider_balance" not in checking_item and "credit_limit" not in checking_item
+    assert "balance" not in checking_item and "balance_primary" not in checking_item
+
+
+async def test_context_primer_shows_card_debt_as_negative(
+    session: AsyncSession, test_user, test_workspace
+):
+    from app.agents.services.context_service import build_context_primer
+    from app.models.bank_connection import BankConnection
+
+    uid, wid = test_user.id, test_workspace.id
+    conn = BankConnection(
+        id=uuid.uuid4(), user_id=uid, workspace_id=wid, provider="plaid", external_id="ext-plaid-2",
+        institution_name="Card Bank", credentials={"token": "fake"}, status="active",
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(conn)
+    await session.flush()
+    card = await _account(session, uid, wid, "Primer Card", "credit_card", connection_id=conn.id)
+    card.balance = Decimal("300")
+    await session.commit()
+
+    primer = await build_context_primer(session, test_user, workspace_id=wid)
+    line = next(ln for ln in primer.splitlines() if "Primer Card" in ln)
+    assert "-300" in line.replace(",", "") or "−300" in line.replace(",", "")

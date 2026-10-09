@@ -84,7 +84,8 @@ async def build_context_primer(
             name = row.get("name") or "?"
             kind = row.get("type") or "account"
             currency = row.get("currency") or primary_currency
-            balance = row.get("balance")
+            # signed as the app shows it (card debt negative), not the provider's raw figure
+            balance = row.get("current_balance")
             balance_str = _fmt_amount(balance, currency) if balance is not None else ""
             account_id = row.get("id")
             piece = f"- {name} ({kind}"
