@@ -14,7 +14,10 @@ from mcp_server.tools._helpers import num, parse_date, parse_uuid, resolve_works
     name="list_accounts",
     description=(
         "List the user's accounts (checking, savings, credit cards, wallets, etc.) "
-        "with current balances. Closed accounts are excluded by default."
+        "with current balances. current_balance is signed the way the app shows it: "
+        "money owed on a credit card is negative. provider_balance (connected accounts "
+        "only) is the provider's raw figure, which reports card debt as a positive "
+        "number; quote current_balance. Closed accounts are excluded by default."
     ),
     parameters={
         "type": "object",
@@ -36,16 +39,23 @@ async def list_accounts(
     # rows is already a list of dicts (per service contract), but normalize keys.
     items: list[dict[str, Any]] = []
     for r in rows:
-        items.append({
+        item: dict[str, Any] = {
             "id": str(r.get("id")) if r.get("id") else None,
             "name": r.get("name"),
+            "display_name": r.get("display_name"),
             "type": r.get("type"),
             "currency": r.get("currency"),
-            "balance": num(r.get("balance")),
-            "balance_primary": num(r.get("balance_primary")),
+            "current_balance": num(r.get("current_balance")),
+            "masked_number": r.get("masked_number"),
             "is_closed": bool(r.get("is_closed", False)),
             "institution": r.get("institution_name"),
-        })
+        }
+        if r.get("type") == "credit_card":
+            item["credit_limit"] = num(r.get("credit_limit"))
+            item["available_credit"] = num(r.get("available_credit"))
+        if r.get("connection_id") is not None:
+            item["provider_balance"] = num(r.get("balance"))
+        items.append(item)
     return {"items": items, "total": len(items)}
 
 
