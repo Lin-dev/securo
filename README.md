@@ -273,6 +273,38 @@ Multi-step jobs run as code, not as a chain of model calls. A workflow loads its
 
 Every ordinary message is first classified by a short, schema-constrained router call (intent + period slots from a closed grammar; dates are resolved in code, in your timezone). Six intents are answered without the tool loop: period comparison, spending breakdown, money map, net worth trend, FIRE progress and holdings. Code fetches the figures, renders the table and the chart, and the model only writes a short narration that is checked number by number against those figures (a narration that invents a number is regenerated once, then replaced by a templated sentence). Categorization requests go to the workflow above; anything the router is unsure about, follow-ups, specific merchants and every request to change data fall through to the tool loop. Set `extra.mode` to `"freeform"` on an agent to opt it out, or `AGENTS_GUIDED_MODE=false` globally. Two more question shapes are handled in code: lookups ("do I own Apple?", "how much NVDA do I have and where?") match positions by ticker, name or common alias across every investment account and answer deterministically, and analysis questions ("any patterns in my holdings?", "what stands out in my spending this year?") get a longer, interpretive narration at reasoning `medium` over enriched figures (account shares, top positions, concentration, retirement/taxable/crypto split), still checked number by number against the figures.
 
+### Advisor
+
+With `AGENTS_ADVISOR_VOICE` on (the default) the Finance analyst answers as a blunt personal financial advisor whose only goal is growing your net worth toward early retirement. It leads with a verdict, has no hedging or disclaimers, and gives no buy/sell calls on named securities and no tax or legal conclusions.
+
+More question shapes are answered in code:
+
+- account balances: every account at an institution, card debt owed, cash in checking and savings
+- spending at one merchant: a word-start match, so "Uber" never matches "Neuberger"; refunds and pending rows are kept apart
+- a single period's income, spending, net and money invested
+- spending insights: the typical month, category jumps, recurring charges, the biggest controllable category
+- an invest plan: surplus, savings-rate band, years to FI at +500/+1,000/+2,000 a month, the spending cut that reaches the next band
+- portfolio insights: asset-class mix, account shares, single-stock and crypto share
+
+Advice answers end with one **Next move** line, which is written by code, never by the model. It comes from fixed rules, in priority order:
+
+1. card interest on a balance still owed
+2. cash under 3 months of spending
+3. a category spike
+4. cash over a 6-month buffer
+5. idle cash inside retirement accounts
+6. savings-rate bands at 20/35/50/65%
+7. crypto over 5%
+8. one stock over 10%
+9. single stocks over 20%
+10. the biggest non-essential category
+
+The line names the action and its amount, and is dropped if any of its numbers is not one of its own figures. When the question's own rule does not fire, the line gives a verdict on that subject and then the biggest lever overall.
+
+Yearly figures (spend, contributions, FI number) are annualized over the days of complete data when your accounts were connected less than a year ago, and the answer says so. Set `AGENTS_ADVISOR_VOICE=false` (and re-run the seed script) for the plain analyst.
+
+`backend/scripts/agent_bench.py` measures any of this against fixed questions with truth computed in code (see its docstring).
+
 ## Tech Stack
 
 | Layer | Stack |
