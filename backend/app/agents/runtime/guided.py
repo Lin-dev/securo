@@ -60,6 +60,8 @@ INTENTS: tuple[str, ...] = (
     "fire_progress",
     "holdings",
     "holding_lookup",
+    "account_balance",
+    "merchant_spend",
     "categorize_review",
     "freeform",
 )
@@ -279,8 +281,10 @@ Intents:
 - fire_progress: financial-independence / FIRE progress, FI number, years to FI, when can I retire.
 - holdings: the investment accounts and positions as a whole ("what do I hold", "how much is invested", "any patterns in my portfolio").
 - holding_lookup: whether/how much of ONE specific stock, fund, crypto or ticker the user owns ("do I own Apple?", "how much NVDA do I have and where?").
+- account_balance: the balance of a specific account, bank or institution, card, or account type ("what's in my Fidelity account", "balance on my Chase card", "how much money is in my savings"). query = the account, institution or type words. Use it for a bank or broker name even if it also sells stock (Robinhood, Fidelity, Schwab), unless the user asks about a stock or ticker.
+- merchant_spend: how much was spent at, or paid to, ONE store, payee or merchant ("how much did I pay Lyft", "what do I spend at Costco"). query = the merchant. Not for a spending category — use spending_breakdown with category for those ("groceries", "dining").
 - categorize_review: the user wants help categorizing uncategorized transactions or creating categorization rules.
-- freeform: anything else — a specific merchant, payee, account or transaction; budgets, goals, recurring bills; follow-ups that depend on an earlier answer ("and the month before?", "why?"); any request to add, change or delete data; anything ambiguous.
+- freeform: anything else — a specific transaction; budgets, goals, recurring bills; follow-ups that depend on an earlier answer ("and the month before?", "why?"); any request to add, change or delete data; anything ambiguous.
 
 Slots:
 - period_a, period_b: a period expression from this closed grammar, or null:
@@ -288,7 +292,7 @@ Slots:
   Do not compute dates yourself; pick the expression. For compare_periods, period_a is the later/asked-about period and period_b the one it is compared with.
 - days / months: rolling-window length for money_map (days 7-730 or months 1-24) and net_worth_trend (months 1-60), or null.
 - category: a category name the user mentioned, or null.
-- query: the specific entity the question is about (a company or fund name, a ticker, a merchant, an account), or null. Required for holding_lookup.
+- query: the specific entity the question is about (a company or fund name, a ticker, a merchant, an account, bank or account type), or null. Required for holding_lookup, account_balance and merchant_spend.
 - analysis: true when the user wants interpretation rather than just the figures — patterns, what stands out, risks, concentration, advice, "what do you notice", "should I…". Otherwise false.
 - confidence: 0-1. Use 0.9+ only when the question plainly matches one intent and needs no slot you could not fill. Below 0.7 means freeform will be used.
 
@@ -306,7 +310,13 @@ Examples:
 "Do I own Apple stocks?" -> {"intent":"holding_lookup","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"Apple","analysis":false,"confidence":0.95}
 "How much NVDA do I have and where?" -> {"intent":"holding_lookup","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"NVDA","analysis":false,"confidence":0.94}
 "Help me categorize the uncategorized stuff" -> {"intent":"categorize_review","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.9}
-"How much did I pay Uber in June?" -> {"intent":"freeform","period_a":null,"period_b":null,"days":null,"months":null,"category":"","query":"Uber","analysis":false,"confidence":0.3}
+"How much did I pay Lyft last month?" -> {"intent":"merchant_spend","period_a":"last_month","period_b":null,"days":null,"months":null,"category":null,"query":"Lyft","analysis":false,"confidence":0.93}
+"What do I spend at Costco?" -> {"intent":"merchant_spend","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"Costco","analysis":false,"confidence":0.9}
+"What did I spend on groceries last month?" -> {"intent":"spending_breakdown","period_a":"last_month","period_b":null,"days":null,"months":null,"category":"groceries","query":null,"analysis":false,"confidence":0.9}
+"What's in my Fidelity account?" -> {"intent":"account_balance","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"Fidelity","analysis":false,"confidence":0.93}
+"What's the balance on my Chase card?" -> {"intent":"account_balance","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"Chase card","analysis":false,"confidence":0.92}
+"How much money is in my savings?" -> {"intent":"account_balance","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"savings","analysis":false,"confidence":0.9}
+"Do I own HOOD stock?" -> {"intent":"holding_lookup","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"HOOD","analysis":false,"confidence":0.94}
 "And the month before that?" -> {"intent":"freeform","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.2}
 """
 
