@@ -53,6 +53,40 @@ def is_account_backed(asset: Asset, counted_account_ids: Collection[str]) -> boo
     return linked is not None and linked in counted_account_ids
 
 
+def _positive(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def total_cost_basis(asset: Asset) -> Optional[float]:
+    """What the units held cost in total, or None when the source gave nothing usable.
+
+    `purchase_price` means different things per source: ledger-backed and manual
+    assets store the total paid, Pluggy reports a total (`amountOriginal`), while
+    Plaid stores cost / quantity and SimpleFIN its per-share `purchase_price`.
+    Plaid and SimpleFIN also report a total `cost_basis` in the metadata, but
+    SimpleFIN sends "0.00" when it does not know, so zero means unknown — read
+    literally, the whole position value would show up as gain.
+    """
+    if asset.average_price is not None or asset.connection_id is None:
+        return float(asset.purchase_price) if asset.purchase_price is not None else None
+    source = (asset.source or "").lower()
+    if source == "pluggy":
+        return _positive(asset.purchase_price)
+    if source in ("plaid", "simplefin"):
+        metadata = asset.external_metadata if isinstance(asset.external_metadata, dict) else {}
+        reported = _positive(metadata.get("cost_basis"))
+        if reported is not None:
+            return round(reported, 2)
+        price, units = _positive(asset.purchase_price), _positive(asset.units)
+        if price is not None and units is not None:
+            return round(price * units, 2)
+    return None
+
+
 ValueRecord = tuple[date, Decimal, Optional[Decimal]]  # (date, amount, price_per_share)
 TxRecord = tuple[date, str, Decimal, Optional[Decimal]]  # (date, kind, quantity, price_per_share)
 
