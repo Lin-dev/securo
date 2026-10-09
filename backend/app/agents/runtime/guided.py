@@ -532,6 +532,32 @@ _L: dict[str, dict[str, str]] = {
         "month": "Month",
         "cap_merchant": "Posted charges whose description, payee or notes have a word starting with '{token}'; transfers and card payments excluded; pending rows not counted.",
         "next_move": "Next move",
+        "ps_sentence": "In {label}: income {income}, expenses {expense}, net {net}, invested {invested}; savings rate {rate}.",
+        "coverage_note": "Yearly and monthly figures are annualized from {days} days of complete data (since {start}).",
+        "coverage_caution": "That is under 180 days: treat them as estimates.",
+        "si_spent": "Spending in {label}", "si_typical": "Typical month", "si_diff": "Difference",
+        "si_no_history": "Not enough complete months inside the data yet ({n}) to call a category jump; that needs 3.",
+        "si_no_spikes": "No category jumped unusually in {label}.",
+        "si_spikes": "Categories that jumped in {label}", "si_usual": "Usual", "si_excess": "Over usual",
+        "si_recurring": "Recurring charges (3 of the last 4 months)", "si_monthly": "Per month", "merchant": "Merchant",
+        "si_cut": "Biggest controllable category", "si_half": "Half of it",
+        "si_sentence": "You spent {spent} in {label} against a typical month of {typical}; your biggest controllable category is {category} at {amount} a month.",
+        "ip_title": "Where you stand", "ip_income": "Income per year", "ip_expenses": "Spending per year",
+        "ip_direct": "Payroll contributions per year", "ip_rate": "Savings rate (incl. contributions)",
+        "ip_surplus": "Left over per month after spending and investing", "ip_seasonal": "Left over per month, last 90 days",
+        "ip_cash": "Cash (checking, savings, brokerage cash)", "ip_months": "Months of spending it covers",
+        "ip_cards": "Credit card balances owed", "ip_invested": "Invested assets", "ip_contrib": "Invested per month",
+        "ip_fi": "FI number", "ip_years": "Years to FI at your current pace",
+        "ip_period": "Invested in {label}",
+        "ip_ladder": "If you invest more each month", "ip_extra": "Extra per month", "ip_years_short": "Years to FI",
+        "ip_needs_cut": "Needs a spending cut of", "ip_band": "Cut spending to reach a {band}% savings rate",
+        "ip_band_fi": "FI number after that cut", "ip_band_years": "Years to FI after that cut",
+        "ip_lump": "Invest the idle cash today", "more_than_60": "more than 60",
+        "ip_sentence": "At your current pace you reach financial independence in {years} years (FI number {fi}); your savings rate is {rate} and {surplus} a month is left after spending and investing.",
+        "pi_mix": "Asset mix", "pi_class": "Class", "pi_accounts": "By account", "pi_top": "Largest positions",
+        "pi_known_gain": "Gain on positions with a known cost ({n})",
+        "pi_sentence": "Your investments total {total}: {broad} in broad index funds, {stocks} in single stocks and {crypto} in crypto; the largest account is {account} ({account_share}).",
+        "adv_basis": "Advisor figures ({days} days of complete data)",
     },
     "pt-BR": {
         "figure": "Indicador", "current": "Atual", "previous": "Anterior", "change": "Variação", "change_pct": "Variação %",
@@ -839,6 +865,8 @@ async def _prepare_money_map(ctx: GuidedContext, decision: RouteDecision) -> Pre
         currency=currency,
     )
     fallback = _t(lang, "fb_money_map", label=label, income=_money(pack["totals"]["income"], currency), expenses=_money(pack["totals"]["expenses"], currency), net=_signed_money(pack["totals"]["net"], currency))
+    if getattr(ctx.settings, "advisor_voice", True):
+        table += await _advisor_rows(ctx, pack, currency)
     return Prepared(pack, table, chart, fallback, [("get_money_map", args)])
 
 
@@ -930,6 +958,8 @@ async def _prepare_fire_progress(ctx: GuidedContext, decision: RouteDecision) ->
     chart = _chart("area", "Projected portfolio (real terms)", [{"x": f"Y{p['year']}", "y": p["end"]} for p in trajectory], currency=currency)
     years_text = _t(lang, "years", n=f"{pack['years_to_fi']:.1f}") if pack["years_to_fi"] is not None else _t(lang, "not_reached")
     fallback = _t(lang, "fb_fire", fi=_money(pack["fi_number"], currency), progress=(f"{pack['progress_pct']:.1f}" if pack["progress_pct"] is not None else "n/a"), years=years_text)
+    if getattr(ctx.settings, "advisor_voice", True):
+        table += await _advisor_rows(ctx, pack, currency)
     return Prepared(pack, table, chart, fallback, [("fire_projection", {})])
 
 
@@ -1375,6 +1405,260 @@ async def _prepare_merchant_spend(ctx: GuidedContext, decision: RouteDecision) -
                     narrate=decision.analysis)
 
 
+
+# --- advisor answers ---------------------------------------------------------------
+
+_ANALYSIS_KINDS = frozenset({"spending_insights", "portfolio_insights"})
+
+
+async def _advisor_facts(ctx: GuidedContext) -> dict[str, Any]:
+    from app.agents.services import advisor_figures
+
+    async def tool(name: str, **args: Any) -> dict[str, Any]:
+        try:
+            return await call_local_tool(ctx.session, ctx, name, **args)
+        except GuidedFallthrough:
+            return {}  # e.g. fire_projection with no spending yet: the rules that need it are skipped
+
+    return await advisor_figures.advisor_facts(ctx.session, tool, workspace_id=await _workspace_id(ctx), primary=ctx.currency, today=ctx.today)
+
+
+def _attach_advice(ctx: GuidedContext, pack: dict[str, Any], facts: dict[str, Any]) -> None:
+    """The code-written next move (and the caps an answer may quote), behind the advisor switch."""
+    if not getattr(ctx.settings, "advisor_voice", True):
+        return
+    from app.agents.runtime import advice
+
+    currency = str(pack.get("currency") or ctx.currency)
+    move = advice.next_move(facts, ctx.user_message, lambda v: _money(v, currency))
+    if move:
+        pack["next_move"] = move
+    pack["caps"] = {f"{k}_pct": round(v * 100, 1) for k, v in advice.CAPS.items()}
+
+
+async def _advisor_rows(ctx: GuidedContext, pack: dict[str, Any], currency: str) -> str:
+    """FIRE and money-map answers: the savings-band gap and the +1,000 rung over the days of
+    complete data (one savings-rate definition with invest_plan), plus the next move."""
+    facts = await _advisor_facts(ctx)
+    lang = ctx.language
+    plus = next((r for r in facts["ladder"] if r["extra"] == 1000.0), None)
+    adv: dict[str, Any] = {"savings_rate_pct": _pct_points(facts["savings_rate"]), "surplus_month": facts["surplus_month"],
+                           "days": facts["coverage"]["days"], "years_with_1000_more": plus["years"] if plus else None}
+    rows = [[_t(lang, "ip_rate"), _fmt_pct_value(adv["savings_rate_pct"])], [_t(lang, "ip_surplus"), _signed_money(facts["surplus_month"], currency)]]
+    if facts["band_cut"] is not None and facts["band_next"] is not None:
+        band = round(facts["band_next"] * 100)
+        adv.update({"next_band_pct": float(band), "cut_per_month": facts["band_cut"], "years_after_cut": facts["years_after_cut"]})
+        rows.append([_t(lang, "ip_band", band=band), _money(facts["band_cut"], currency)])
+        rows.append([_t(lang, "ip_band_years"), _years_text(lang, facts["years_after_cut"])])
+    if plus:
+        rows.append([f"{_t(lang, 'ip_years_short')} +{_money(1000.0, currency)}/mo", _years_text(lang, plus["years"])])
+    pack["advisor"] = adv
+    _attach_advice(ctx, pack, facts)
+    return f"\n\n**{_t(lang, 'adv_basis', days=facts['coverage']['days'])}**\n\n" + _md_table([_t(lang, "figure"), _t(lang, "value")], rows)
+
+
+def _coverage_caption(lang: str, facts: dict[str, Any]) -> str:
+    cov = facts.get("coverage") or {}
+    if not cov.get("annualized"):
+        return ""
+    text = _t(lang, "coverage_note", days=cov.get("days"), start=cov.get("from_date"))
+    if (cov.get("days") or 0) < 180:
+        text += " " + _t(lang, "coverage_caution")
+    return "\n\n_" + text + "_"
+
+
+def _years_text(lang: str, years: Optional[float]) -> str:
+    return f"{years:.1f}" if years is not None else _t(lang, "more_than_60")
+
+
+async def _prepare_period_summary(ctx: GuidedContext, decision: RouteDecision) -> Prepared:
+    fd, td, label = resolve_period(decision.period_a or "this_month", ctx.today)
+    args = {"from_date": fd.isoformat(), "to_date": td.isoformat()}
+    w = await call_local_tool(ctx.session, ctx, "get_transactions_summary", **args)
+    currency = w.get("currency") or ctx.currency
+    pack = {
+        "kind": "period_summary", "currency": currency,
+        "period": {"label": label, "from": w.get("from_date") or args["from_date"], "to": w.get("to_date") or args["to_date"]},
+        "income": _r(w.get("income")), "expense": _r(w.get("expense")), "net": _r(w.get("net")),
+        "invested": _r(w.get("invested")), "savings_rate_pct": _pct_points(w.get("savings_rate")),
+    }
+    lang = ctx.language
+    rows = [[_t(lang, "income"), _money(pack["income"], currency)], [_t(lang, "expenses"), _money(pack["expense"], currency)],
+            [_t(lang, "net"), _money(pack["net"], currency)], [_t(lang, "invested"), _money(pack["invested"], currency)],
+            [_t(lang, "savings_rate"), _fmt_pct_value(pack["savings_rate_pct"])]]
+    table = _md_table([_t(lang, "figure"), label], rows) + "\n\n_" + _t(lang, "cap_compare") + "_"
+    sentence = _t(lang, "ps_sentence", label=label, income=_money(pack["income"], currency), expense=_money(pack["expense"], currency),
+                  net=_money(pack["net"], currency), invested=_money(pack["invested"], currency), rate=_fmt_pct_value(pack["savings_rate_pct"]))
+    return Prepared(pack, table, None, sentence, [("get_transactions_summary", args)], narrate=decision.analysis)
+
+
+def _single_month(expr: Optional[str], today: date) -> Optional[date]:
+    if not expr:
+        return None
+    fd, td, _ = resolve_period(expr, today)
+    return fd if (fd.year, fd.month) == (td.year, td.month) and fd.day == 1 else None
+
+
+async def _prepare_spending_insights(ctx: GuidedContext, decision: RouteDecision) -> Prepared:
+    from app.agents.services import advisor_figures
+
+    facts = await _advisor_facts(ctx)
+    lang, currency = ctx.language, ctx.currency
+    month = _single_month(decision.period_a, ctx.today) or date.fromisoformat(facts["spike_month"])
+    month_end = advisor_figures._month_end(month)
+    window = await call_local_tool(ctx.session, ctx, "get_transactions_summary", from_date=month.isoformat(), to_date=min(month_end, ctx.today).isoformat())
+    month_cats = {date.fromisoformat(k): v for k, v in facts["month_cats"].items()}
+    cats = month_cats.get(month)
+    if cats is None:
+        cats = await digest_service.expense_by_category(ctx.session, await _workspace_id(ctx), month, min(month_end, ctx.today))
+    spikes = advisor_figures.category_spikes(month_cats, month)
+    label = _month_label(month)
+    spent, typical = _r(window.get("expense")), facts["monthly_spend"]
+    top = sorted(cats.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    pack: dict[str, Any] = {
+        "kind": "spending_insights", "currency": currency,
+        "month": {"label": label, "from": month.isoformat(), "to": min(month_end, ctx.today).isoformat()},
+        "month_expense": spent, "typical_month": typical,
+        "vs_typical": _r((spent or 0.0) - (typical or 0.0)) if typical is not None else None,
+        "vs_typical_pct": _delta_pct(spent, typical),
+        "categories": [{"category": c, "amount": _r(v)} for c, v in top],
+        "coverage": {"days": facts["coverage"]["days"], "from": facts["coverage"]["from_date"]},
+        "complete_months": len(month_cats),
+        "recurring": [{"label": r["merchant"], "monthly": r["monthly"]} for r in facts["recurring"][:8]],
+        "recurring_monthly_total": _r(sum(r["monthly"] for r in facts["recurring"])),
+        "top_controllable": facts["top_controllable"],
+    }
+    if spikes is not None:
+        pack["spikes"] = spikes
+    rows = [[_t(lang, "si_spent", label=label), _money(spent, currency)],
+            [_t(lang, "si_typical"), _money(typical, currency)],
+            [_t(lang, "si_diff"), _signed_money(pack["vs_typical"], currency)]]
+    table = _md_table([_t(lang, "figure"), _t(lang, "value")], rows)
+    table += "\n\n" + _md_table([_t(lang, "category"), _t(lang, "amount")], [[c, _money(_r(v), currency)] for c, v in top])
+    if spikes is None:
+        table += "\n\n_" + _t(lang, "si_no_history", n=len(month_cats)) + "_"
+    elif spikes:
+        table += f"\n\n**{_t(lang, 'si_spikes', label=label)}**\n\n" + _md_table(
+            [_t(lang, "category"), label, _t(lang, "si_usual"), _t(lang, "si_excess")],
+            [[sp["category"], _money(sp["amount"], currency), _money(sp["baseline"], currency), _money(sp["excess"], currency)] for sp in spikes])
+    else:
+        table += "\n\n_" + _t(lang, "si_no_spikes", label=label) + "_"
+    if pack["recurring"]:
+        table += f"\n\n**{_t(lang, 'si_recurring')}**\n\n" + _md_table(
+            [_t(lang, "merchant"), _t(lang, "si_monthly")], [[r["label"], _money(r["monthly"], currency)] for r in pack["recurring"]])
+    tc = facts["top_controllable"]
+    if tc:
+        table += "\n\n" + _md_table([_t(lang, "si_cut"), _t(lang, "si_monthly"), _t(lang, "si_half")],
+                                    [[tc["category"], _money(tc["amount"], currency), _money(tc["half"], currency)]])
+    table += _coverage_caption(lang, facts)
+    chart = _chart("bar", f"{_t(lang, 'expenses')} — {label}", [{"x": it["category"], "y": it["amount"]} for it in pack["categories"]], currency=currency)
+    sentence = _t(lang, "si_sentence", spent=_money(spent, currency), label=label, typical=_money(typical, currency),
+                  category=(tc or {}).get("category", "—"), amount=_money((tc or {}).get("amount"), currency))
+    _attach_advice(ctx, pack, facts)
+    return Prepared(pack, table, chart, sentence, [("get_transactions_summary", {"from_date": month.isoformat(), "to_date": min(month_end, ctx.today).isoformat()})])
+
+
+async def _prepare_invest_plan(ctx: GuidedContext, decision: RouteDecision) -> Prepared:
+    facts = await _advisor_facts(ctx)
+    lang, currency = ctx.language, ctx.currency
+    f = facts
+    pack: dict[str, Any] = {
+        "kind": "invest_plan", "currency": currency,
+        "coverage": {"days": f["coverage"]["days"], "from": f["coverage"]["from_date"]},
+        "income_annual": f["income_annual"], "expenses_annual": f["expenses_annual"], "direct_annual": f["direct_annual"],
+        "savings_rate_pct": _pct_points(f["savings_rate"]), "surplus_month": f["surplus_month"], "surplus_seasonal": f["surplus_seasonal"],
+        "liquid_cash": f["liquid_cash"], "months_covered": f["months_covered"], "card_owed": f["card_owed"],
+        "invested_assets": f["invested_assets"], "monthly_contribution": f["monthly_contribution"], "fi_number": f["fi_number"],
+        "years_to_fi": f["years_now"],
+        "ladder": [{"extra": r["extra"], "years_to_fi": r["years"], "needs_cut": r["needs_cut"]} for r in f["ladder"]],
+    }
+    rows = [
+        [_t(lang, "ip_income"), _money(f["income_annual"], currency)],
+        [_t(lang, "ip_expenses"), _money(f["expenses_annual"], currency)],
+        [_t(lang, "ip_direct"), _money(f["direct_annual"], currency)],
+        [_t(lang, "ip_rate"), _fmt_pct_value(pack["savings_rate_pct"])],
+        [_t(lang, "ip_surplus"), _signed_money(f["surplus_month"], currency)],
+        [_t(lang, "ip_seasonal"), _signed_money(f["surplus_seasonal"], currency)],
+        [_t(lang, "ip_cash"), _money(f["liquid_cash"], currency)],
+        [_t(lang, "ip_months"), f"{f['months_covered']:.1f}" if f["months_covered"] is not None else "n/a"],
+        [_t(lang, "ip_cards"), _money(f["card_owed"], currency)],
+        [_t(lang, "ip_invested"), _money(f["invested_assets"], currency)],
+        [_t(lang, "ip_contrib"), _money(f["monthly_contribution"], currency)],
+        [f"**{_t(lang, 'ip_fi')}**", f"**{_money(f['fi_number'], currency)}**"],
+        [f"**{_t(lang, 'ip_years')}**", f"**{_years_text(lang, f['years_now'])}**"],
+    ]
+    if decision.period_a:
+        fd, td, plabel = resolve_period(decision.period_a, ctx.today)
+        w = await call_local_tool(ctx.session, ctx, "get_transactions_summary", from_date=fd.isoformat(), to_date=td.isoformat())
+        pack["period"] = {"label": plabel, "from": fd.isoformat(), "to": td.isoformat(), "invested": _r(w.get("invested"))}
+        rows.append([_t(lang, "ip_period", label=plabel), _money(pack["period"]["invested"], currency)])
+    table = f"**{_t(lang, 'ip_title')}**\n\n" + _md_table([_t(lang, "figure"), _t(lang, "value")], rows)
+    ladder_rows = [[f"+{_money(r['extra'], currency)}", _years_text(lang, r["years"]),
+                    _money(r["needs_cut"], currency) if r["needs_cut"] else "—"] for r in f["ladder"]]
+    if f["band_cut"] is not None and f["band_next"] is not None:
+        band = round(f["band_next"] * 100)
+        pack["band"] = {"next_band_pct": float(band), "cut_per_month": f["band_cut"], "fi_after_cut": f["fi_after_cut"], "years_after_cut": f["years_after_cut"]}
+        ladder_rows.append([_t(lang, "ip_band", band=band) + f": {_money(f['band_cut'], currency)}", _years_text(lang, f["years_after_cut"]), "—"])
+    if f["lump"]:
+        pack["lump"] = {"amount": f["lump"]["amount"], "years_to_fi": f["lump"]["years"]}
+        ladder_rows.append([_t(lang, "ip_lump") + f": {_money(f['lump']['amount'], currency)}", _years_text(lang, f["lump"]["years"]), "—"])
+    table += f"\n\n**{_t(lang, 'ip_ladder')}**\n\n" + _md_table([_t(lang, "ip_extra"), _t(lang, "ip_years_short"), _t(lang, "ip_needs_cut")], ladder_rows)
+    if "band" in pack:
+        table += "\n\n" + _md_table([_t(lang, "figure"), _t(lang, "value")], [[_t(lang, "ip_band_fi"), _money(f["fi_after_cut"], currency)]])
+    table += _coverage_caption(lang, facts)
+    points = [{"x": "now", "y": f["years_now"]}] + [{"x": f"+{int(r['extra'])}", "y": r["years"]} for r in f["ladder"]]
+    chart = _chart("bar", _t(lang, "ip_years_short"), [pt for pt in points if pt["y"] is not None])
+    sentence = _t(lang, "ip_sentence", years=_years_text(lang, f["years_now"]), fi=_money(f["fi_number"], currency),
+                  rate=_fmt_pct_value(pack["savings_rate_pct"]), surplus=_signed_money(f["surplus_month"], currency))
+    _attach_advice(ctx, pack, facts)
+    return Prepared(pack, table, chart, sentence, [("fire_projection", {}), ("get_money_map", {"days": f["coverage"]["days"]})])
+
+
+async def _prepare_portfolio_insights(ctx: GuidedContext, decision: RouteDecision) -> Prepared:
+    from app.agents.services.advisor_figures import ASSET_CLASS_LABELS
+
+    facts = await _advisor_facts(ctx)
+    base = await _holdings_pack(ctx)
+    lang, currency = ctx.language, base["currency"]
+    invested = facts["invested_assets"] or 0.0
+    mix = sorted(facts["classes"].items(), key=lambda kv: kv[1], reverse=True)
+    top = facts["positions"][:10]
+    pack: dict[str, Any] = {
+        "kind": "portfolio_insights", "currency": currency, "invested_assets": invested,
+        "mix": [{"label": ASSET_CLASS_LABELS.get(k, k), "value": v, "share_pct": _share(v, invested)} for k, v in mix],
+        "accounts": [{"name": a["name"], "balance": a["balance_primary"], "share_pct": a["share_pct"]} for a in
+                     sorted(base["accounts"], key=lambda a: a["balance_primary"] or 0.0, reverse=True) if a["balance_primary"]],
+        "largest_account": base["concentration"]["largest_account"],
+        "top_positions": [{"label": _position_label(p), "account": p["account"], "value": p["value"], "share_pct": _share(p["value"], invested),
+                           "class": ASSET_CLASS_LABELS.get(p["class"], p["class"])} for p in top],
+        "stock_share_pct": _share(facts["stock_total"], invested), "crypto_share_pct": _share(facts["crypto_value"], invested),
+        "largest_stock": ({**facts["largest_stock"], "share_pct": _share(facts["largest_stock"]["value"], invested)} if facts["largest_stock"] else None),
+        "retirement_cash": facts["retirement_cash"],
+    }
+    if facts["known_gain_positions"]:
+        pack["known_gain"] = {"amount": facts["known_gain"], "positions": facts["known_gain_positions"]}
+    mix_rows = [[ASSET_CLASS_LABELS.get(k, k), _money(v, currency), _fmt_pct_value(_share(v, invested))] for k, v in mix]
+    account_rows = [[str(a["name"]), _money(a["balance_primary"], currency), _fmt_pct_value(a["share_pct"])]
+                    for a in sorted(base["accounts"], key=lambda a: a["balance_primary"] or 0.0, reverse=True) if a["balance_primary"]]
+    top_rows = [[_position_label(p), ASSET_CLASS_LABELS.get(p["class"], p["class"]), p["account"] or "—", _money(p["value"], currency),
+                 _fmt_pct_value(_share(p["value"], invested))] for p in top]
+    table = f"**{_t(lang, 'pi_mix')}**\n\n" + _md_table([_t(lang, "pi_class"), _t(lang, "value"), _t(lang, "share")], mix_rows)
+    table += f"\n\n**{_t(lang, 'pi_accounts')}**\n\n" + _md_table([_t(lang, "account"), _t(lang, "balance"), _t(lang, "share")], account_rows)
+    table += f"\n\n**{_t(lang, 'pi_top')}**\n\n" + _md_table(
+        [_t(lang, "position"), _t(lang, "pi_class"), _t(lang, "account"), _t(lang, "value"), _t(lang, "share")], top_rows)
+    if "known_gain" in pack:
+        table += "\n\n" + _md_table([_t(lang, "figure"), _t(lang, "value")],
+                                    [[_t(lang, "pi_known_gain", n=pack["known_gain"]["positions"]), _signed_money(pack["known_gain"]["amount"], currency)]])
+    chart = _chart("pie", _t(lang, "pi_mix"), [{"name": m["label"], "value": m["value"]} for m in pack["mix"] if m["value"]], currency=currency)
+    shares = {k: _share(v, invested) for k, v in facts["classes"].items()}
+    largest = pack["largest_account"] or {}
+    sentence = _t(lang, "pi_sentence", total=_money(invested, currency), broad=_fmt_pct_value(shares.get("broad")),
+                  stocks=_fmt_pct_value(pack["stock_share_pct"]), crypto=_fmt_pct_value(pack["crypto_share_pct"]),
+                  account=largest.get("name") or "—", account_share=_fmt_pct_value(largest.get("share_pct")))
+    _attach_advice(ctx, pack, facts)
+    return Prepared(pack, table, chart, sentence, [("get_holdings", {})])
+
+
 HANDLERS: dict[str, Callable[[GuidedContext, RouteDecision], Awaitable[Prepared]]] = {
     "compare_periods": _prepare_compare_periods,
     "spending_breakdown": _prepare_spending_breakdown,
@@ -1385,6 +1669,10 @@ HANDLERS: dict[str, Callable[[GuidedContext, RouteDecision], Awaitable[Prepared]
     "holding_lookup": _prepare_holding_lookup,
     "account_balance": _prepare_account_balance,
     "merchant_spend": _prepare_merchant_spend,
+    "period_summary": _prepare_period_summary,
+    "spending_insights": _prepare_spending_insights,
+    "invest_plan": _prepare_invest_plan,
+    "portfolio_insights": _prepare_portfolio_insights,
 }
 
 
@@ -1645,6 +1933,8 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
     `GuidedFallthrough` so the executor can run the ordinary tool loop instead.
     """
     handler = HANDLERS.get(decision.intent)
+    if decision.intent == "holdings" and decision.analysis:
+        handler = HANDLERS.get("portfolio_insights", handler)
     if handler is None:
         raise GuidedFallthrough(f"no guided handler for {decision.intent}")
     ctx.user_message = user_message
@@ -1695,6 +1985,7 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
         else:
             move_line = f"**{_t(ctx.language, 'next_move')}:** {move['text']}"
 
+    analysis = decision.analysis or prep.pack.get("kind") in _ANALYSIS_KINDS
     started = time.monotonic()
     if not prep.narrate:
         # the deterministic sentence is the answer: lead with it, the table backs it up
@@ -1705,7 +1996,7 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
     else:
         yield ExecutorEvent(type="text_delta", text=head)
         try:
-            narration, usage_in, usage_out, used_fallback = await _narrate(ctx, prep, user_message=user_message, analysis=decision.analysis)
+            narration, usage_in, usage_out, used_fallback = await _narrate(ctx, prep, user_message=user_message, analysis=analysis)
         except Exception:  # noqa: BLE001
             logger.exception("guided narration crashed; using the fallback sentence")
             narration, usage_in, usage_out, used_fallback = prep.fallback_sentence, 0, 0, True

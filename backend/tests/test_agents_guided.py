@@ -552,7 +552,10 @@ async def test_analysis_mode_uses_medium_reasoning_and_keeps_grounding(session: 
     ctx2 = await _ctx(session, test_user, test_workspace, test_agent, bad, today=date.today())
     events2 = [ev async for ev in answer(ctx2, decision, user_message="patterns?")]
     assert len(bad.calls) == 2 and all(c["reasoning"] == "medium" for c in bad.calls)
-    assert events2[-1].text.strip().startswith("Your investment accounts total 2,000.00 BRL across 3 accounts; the largest is Brokerage (75.0%)")
+    # holdings + interpretation is answered by portfolio_insights (asset mix, caps, next move)
+    text2 = (events2[-1].text or "").strip()
+    assert text2.startswith("Your investments total 2,000.00 BRL: 55.0% in broad index funds, 45.0% in single stocks and 0.0% in crypto; the largest account is Brokerage (75.0%).")
+    assert text2.endswith("**Next move:** AAPL alone is 45.0% of your investments, 700.00 BRL over the 10% cap. Stop adding to it.")
 
 
 def test_md_table_escapes_pipes_and_newlines():
