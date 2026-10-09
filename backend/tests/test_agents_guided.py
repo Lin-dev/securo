@@ -228,6 +228,28 @@ def test_grounding_reports_each_offender_once_and_skips_small_ints():
 # --- handlers (end to end through answer) -----------------------------------------
 
 
+async def test_compare_periods_never_runs_two_queries_on_one_session(session: AsyncSession, test_user, test_workspace, test_agent, monkeypatch):
+    import asyncio
+
+    active, overlaps = 0, 0
+    real = guided.call_local_tool
+
+    async def tracking(sess, ctx, name, **args):
+        nonlocal active, overlaps
+        active += 1
+        overlaps += active > 1
+        await asyncio.sleep(0)  # give a concurrent caller the chance to interleave
+        try:
+            return await real(sess, ctx, name, **args)
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(guided, "call_local_tool", tracking)
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]))
+    prep = await guided.HANDLERS["compare_periods"](ctx, RouteDecision(intent="compare_periods", confidence=0.9, period_a="this_month", period_b="last_month"))
+    assert prep.pack["kind"] == "compare_periods" and overlaps == 0
+
+
 async def test_compare_periods_answer_persists_rows_and_grounded_narration(session: AsyncSession, test_user, test_workspace, test_agent):
     await _seed_summary_rows(session, test_user.id, test_workspace.id)  # income 1000, expense 30, invested 225, dated today
     today = date.today()
