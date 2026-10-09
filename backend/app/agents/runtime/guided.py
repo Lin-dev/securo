@@ -25,7 +25,6 @@ Import this module lazily from the executor (inside `run()`), as it imports
 """
 from __future__ import annotations
 
-import asyncio
 import calendar
 import json
 import logging
@@ -664,10 +663,9 @@ async def _prepare_compare_periods(ctx: GuidedContext, decision: RouteDecision) 
     b_from, b_to, b_label = resolve_period(b_expr, ctx.today)
     args_a = {"from_date": a_from.isoformat(), "to_date": a_to.isoformat()}
     args_b = {"from_date": b_from.isoformat(), "to_date": b_to.isoformat()}
-    wa, wb = await asyncio.gather(
-        call_local_tool(ctx.session, ctx, "get_transactions_summary", **args_a),
-        call_local_tool(ctx.session, ctx, "get_transactions_summary", **args_b),
-    )
+    # one AsyncSession cannot run two queries at once: await the windows in turn
+    wa = await call_local_tool(ctx.session, ctx, "get_transactions_summary", **args_a)
+    wb = await call_local_tool(ctx.session, ctx, "get_transactions_summary", **args_b)
     currency = wa.get("currency") or ctx.currency
 
     def side(label: str, w: dict[str, Any]) -> dict[str, Any]:
