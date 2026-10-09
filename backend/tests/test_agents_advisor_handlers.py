@@ -140,3 +140,20 @@ async def test_fire_progress_gets_the_advisor_rows_and_switch_turns_them_off(ses
     plain = await guided.HANDLERS["fire_progress"](ctx, RouteDecision(intent="fire_progress", confidence=0.9))
     assert "Advisor figures" not in plain.table_md and "next_move" not in plain.pack and "advisor" not in plain.pack
 
+
+async def test_route_parses_the_advisor_intents(session, test_user, test_workspace, test_agent):
+    from tests.test_agents_guided import _route_json, _text_turn
+
+    intents = ["period_summary", "spending_insights", "invest_plan", "portfolio_insights"]
+    provider = _ScriptedProvider([_text_turn(_route_json(intent=i, period_a="ytd" if i == "period_summary" else None, analysis=i != "period_summary", confidence=0.9)) for i in intents])
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, provider)
+    for intent in intents:
+        decision = await guided.route(ctx, user_message="advisor question")
+        assert decision.intent == intent and decision.confidence == 0.9
+
+
+def test_router_prompt_describes_the_advisor_intents():
+    text = guided.router_system(today=date(2026, 10, 9), tz="UTC", language="en", prior_user_message=None)
+    for intent in ("period_summary", "spending_insights", "invest_plan", "portfolio_insights"):
+        assert f"- {intent}:" in text and f'{{"intent":"{intent}"' in text
+    assert "Not the current portfolio value — that is holdings." in text

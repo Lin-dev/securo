@@ -62,6 +62,10 @@ INTENTS: tuple[str, ...] = (
     "holding_lookup",
     "account_balance",
     "merchant_spend",
+    "period_summary",
+    "spending_insights",
+    "invest_plan",
+    "portfolio_insights",
     "categorize_review",
     "freeform",
 )
@@ -283,6 +287,10 @@ Intents:
 - holding_lookup: whether/how much of ONE specific stock, fund, crypto or ticker the user owns ("do I own Apple?", "how much NVDA do I have and where?").
 - account_balance: the balance of a specific account, bank or institution, card, or account type ("what's in my Fidelity account", "balance on my Chase card", "how much money is in my savings"). query = the account, institution or type words. Use it for a bank or broker name even if it also sells stock (Robinhood, Fidelity, Schwab), unless the user asks about a stock or ticker.
 - merchant_spend: how much was spent at, or paid to, ONE store, payee or merchant ("how much did I pay Lyft", "what do I spend at Costco"). query = the merchant. Not for a spending category — use spending_breakdown with category for those ("groceries", "dining").
+- period_summary: income, expenses, net, savings rate, or money moved into investments during ONE period ("what was my net in March", "how much have I put into investments this year"). Not the current portfolio value — that is holdings.
+- spending_insights: patterns in the user's spending — waste, overspending, subscriptions or recurring charges, unusual jumps, where to cut ("what subscriptions am I paying for", "where am I overspending").
+- invest_plan: how much to save or invest each month, the emergency fund, card debt, whether the user is on track for early retirement or saving enough ("how much should I be putting away each month", "is my emergency fund big enough").
+- portfolio_insights: how the investments are allocated — diversification, concentration, single stocks versus funds, crypto share, risk ("is my portfolio diversified", "how am I investing").
 - categorize_review: the user wants help categorizing uncategorized transactions or creating categorization rules.
 - freeform: anything else — a specific transaction; budgets, goals, recurring bills; follow-ups that depend on an earlier answer ("and the month before?", "why?"); any request to add, change or delete data; anything ambiguous.
 
@@ -317,6 +325,13 @@ Examples:
 "What's the balance on my Chase card?" -> {"intent":"account_balance","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"Chase card","analysis":false,"confidence":0.92}
 "How much money is in my savings?" -> {"intent":"account_balance","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"savings","analysis":false,"confidence":0.9}
 "Do I own HOOD stock?" -> {"intent":"holding_lookup","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":"HOOD","analysis":false,"confidence":0.94}
+"What was my net in {m2_name}?" -> {"intent":"period_summary","period_a":"month:{m2}","period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.93}
+"How much have I put into investments this year?" -> {"intent":"period_summary","period_a":"ytd","period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.9}
+"What subscriptions am I paying for?" -> {"intent":"spending_insights","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":true,"confidence":0.9}
+"Where am I overspending?" -> {"intent":"spending_insights","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":true,"confidence":0.9}
+"How much should I be putting away each month?" -> {"intent":"invest_plan","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":true,"confidence":0.92}
+"Is my emergency fund big enough?" -> {"intent":"invest_plan","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":true,"confidence":0.9}
+"Is my portfolio diversified?" -> {"intent":"portfolio_insights","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":true,"confidence":0.92}
 "And the month before that?" -> {"intent":"freeform","period_a":null,"period_b":null,"days":null,"months":null,"category":null,"query":null,"analysis":false,"confidence":0.2}
 """
 
