@@ -521,9 +521,10 @@ async def test_holding_lookup_no_match_answers_without_the_model(session: AsyncS
     assert provider.calls == []
     text = events[-1].text.strip()
     assert text.startswith("No position matching 'Tesla' in any account that exposes holdings (Brokerage, Roth IRA | Econify); 1 account(s) do not expose positions (Old 401(k)).")
-    assert events[-1].type == "text_delta" and events[-2].text.startswith("| Accounts that expose positions |")
+    # without narration the sentence leads and the table backs it up, in one delta
+    assert events[-1].type == "text_delta" and "\n\n| Accounts that expose positions |" in text
     rows = await _rows(session, ctx.conversation_id)
-    assert rows[-1].content.endswith(text) and rows[2].tool_result["data"]["kind"] == "holding_lookup"
+    assert rows[-1].content.strip() == text and rows[2].tool_result["data"]["kind"] == "holding_lookup"
     usage = (await session.execute(select(LlmUsage).where(LlmUsage.conversation_id == ctx.conversation_id))).scalars().all()
     assert usage == []
 
@@ -620,3 +621,152 @@ def test_position_label_hides_share_counts_in_synced_names():
 
 def test_redact_offending_sentences_returns_empty_when_nothing_usable_is_left():
     assert guided._redact_offending_sentences("Only 27.4 % here.", ["27.4 %"]) == ""
+
+
+# --- account_balance and merchant_spend ---------------------------------------------
+
+
+async def _connection(session, uid, wid, institution):
+    from app.models.bank_connection import BankConnection
+
+    conn = BankConnection(
+        id=__import__("uuid").uuid4(), user_id=uid, workspace_id=wid, provider="simplefin",
+        external_id=f"ext-{institution}", institution_name=institution, credentials={"token": "fake"},
+        status="active", created_at=datetime.now(timezone.utc),
+    )
+    session.add(conn)
+    await session.flush()
+    return conn
+
+
+async def _seed_accounts(session, test_user, test_workspace):
+    """Robinhood individual 40,100.00 + Robinhood Crypto 5,110.33; Apple Card owes 2,999.17;
+    Amex Gold owes 120.00; checking +1,000, overdrawn checking -50, savings +500."""
+    uid, wid = test_user.id, test_workspace.id
+    rh = await _connection(session, uid, wid, "Robinhood")
+    a1 = await _account(session, uid, wid, "Robinhood individual", "investment", connection_id=rh.id, masked_number="6343")
+    a1.balance = Decimal("40100.00")
+    a2 = await _account(session, uid, wid, "Crypto", "investment", connection_id=rh.id, masked_number="0990")
+    a2.balance = Decimal("5110.33")
+    apple = await _connection(session, uid, wid, "Apple Card")
+    card = await _account(session, uid, wid, "nathaniel", "credit_card", connection_id=apple.id)
+    card.balance = Decimal("2999.17")  # providers report card debt as a positive number
+    amex = await _connection(session, uid, wid, "American Express")
+    gold = await _account(session, uid, wid, "Gold Card", "credit_card", connection_id=amex.id, masked_number="2009")
+    gold.balance = Decimal("120.00")
+    checking = await _account(session, uid, wid, "Everyday checking", "checking")
+    overdrawn = await _account(session, uid, wid, "Joint checking", "checking")
+    savings = await _account(session, uid, wid, "Rainy day", "savings")
+    session.add_all([
+        _txn(uid, wid, checking, 1000, "credit"),
+        _txn(uid, wid, overdrawn, 50, "debit"),
+        _txn(uid, wid, savings, 500, "credit"),
+    ])
+    await session.commit()
+
+
+async def test_account_balance_answers_every_robinhood_account_without_the_model(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_accounts(session, test_user, test_workspace)
+    provider = _ScriptedProvider([_text_turn("should not be used")])
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, provider, today=date.today())
+    decision = RouteDecision(intent="account_balance", confidence=0.93, query="Robinhood")
+    events = [ev async for ev in answer(ctx, decision, user_message="how much is in my Robinhood account?")]
+    assert provider.calls == []
+    text = events[-1].text
+    assert text.startswith("Robinhood: 45,210.33 BRL across 2 account(s) — Robinhood individual (····6343) 40,100.00 BRL; Crypto (····0990) 5,110.33 BRL.")
+    rows = await _rows(session, ctx.conversation_id)
+    assert rows[1].tool_calls[0]["name"] == "securo__list_accounts"
+    assert rows[2].tool_result["data"]["total"] == 45210.33 and rows[2].tool_result["data"]["account_count"] == 2
+    assert all(tc["name"].removeprefix("securo__") in REGISTRY for tc in rows[1].tool_calls)  # replayable by the loop
+
+
+async def test_account_balance_card_owed_and_cash_without_overdrawn_accounts(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_accounts(session, test_user, test_workspace)
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
+
+    apple = await guided.HANDLERS["account_balance"](ctx, RouteDecision(intent="account_balance", confidence=0.9, query="Apple Card"))
+    assert [a["name"] for a in apple.pack["accounts"]] == ["nathaniel"] and apple.pack["card_owed_total"] == 2999.17
+    assert apple.fallback_sentence == "You owe 2,999.17 BRL on 1 credit card(s): nathaniel 2,999.17 BRL."
+
+    cards = await guided.HANDLERS["account_balance"](ctx, RouteDecision(intent="account_balance", confidence=0.9, query="credit cards"))
+    assert cards.pack["card_owed_total"] == 3119.17 and cards.pack["account_count"] == 2
+
+    cash = await guided.HANDLERS["account_balance"](ctx, RouteDecision(intent="account_balance", confidence=0.9, query="cash"))
+    assert cash.pack["cash_total"] == 1500.0 and cash.pack["account_count"] == 3
+    assert "Joint checking is overdrawn by 50.00 BRL." in cash.fallback_sentence
+    assert cash.pack["months_covered"] > 0 and "months of your spending" in cash.fallback_sentence
+
+
+async def test_account_balance_falls_back_to_a_position_and_holding_lookup_to_an_account(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_portfolio(session, test_user, test_workspace)
+    await _seed_accounts(session, test_user, test_workspace)
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
+    as_position = await guided.HANDLERS["account_balance"](ctx, RouteDecision(intent="account_balance", confidence=0.9, query="AAPL"))
+    assert as_position.pack["kind"] == "holding_lookup" and as_position.pack["matches"]
+    as_account = await guided.HANDLERS["holding_lookup"](ctx, RouteDecision(intent="holding_lookup", confidence=0.9, query="Robinhood"))
+    assert as_account.pack["kind"] == "account_balance" and as_account.pack["total"] == 45210.33
+    nothing = await guided.HANDLERS["account_balance"](ctx, RouteDecision(intent="account_balance", confidence=0.9, query="Wells Fargo"))
+    assert nothing.pack["accounts"] == [] and nothing.narrate is False and nothing.fallback_sentence.startswith("No account matches 'Wells Fargo'.")
+
+
+async def _seed_merchants(session, test_user, test_workspace):
+    uid, wid = test_user.id, test_workspace.id
+    card = await _account(session, uid, wid, "Card", "credit_card")
+    online = await _category(session, uid, wid, "Amazon & online", transfer=False)
+    today = date.today()
+    session.add_all([
+        _txn(uid, wid, card, 20, "debit", description="UBER *EATS 1455 MARKET ST", when=today),
+        _txn(uid, wid, card, 15, "debit", description="Uber Trip help.uber.com CA", when=today),
+        _txn(uid, wid, card, 5, "credit", description="UBEREATS REFUND", when=today),
+        _txn(uid, wid, card, 100, "credit", description="Neuberger Real Estate Fund Class R6", when=today),
+        _txn(uid, wid, card, 12, "debit", description="AMC THEATRES 0123", when=today),
+        _txn(uid, wid, card, 99, "debit", description="CAMCORDER STORE", when=today),
+        _txn(uid, wid, card, 3, "debit", description="AMCX STREAMING", when=today),
+        _txn(uid, wid, card, 40, "debit", online, description="AMZN Mktp US*2K3JD", when=today),
+        _txn(uid, wid, card, 10, "debit", description="Amazon.com order", when=today),
+    ])
+    pending = _txn(uid, wid, card, 7, "debit", description="UBER *TRIP PENDING", when=today)
+    pending.status = "pending"
+    session.add(pending)
+    await session.commit()
+
+
+async def test_merchant_spend_matches_word_starts_and_keeps_refunds_and_pending_apart(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_merchants(session, test_user, test_workspace)
+    provider = _ScriptedProvider([_text_turn("should not be used")])
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, provider, today=date.today())
+    decision = RouteDecision(intent="merchant_spend", confidence=0.93, query="Uber")
+    events = [ev async for ev in answer(ctx, decision, user_message="how much did I pay uber?")]
+    assert provider.calls == []
+    rows = await _rows(session, ctx.conversation_id)
+    pack = rows[2].tool_result["data"]
+    assert (pack["charges_total"], pack["charge_count"], pack["refunds_total"], pack["refund_count"], pack["pending_count"]) == (35.0, 2, 5.0, 1, 1)
+    assert pack["net_total"] == 30.0  # Neuberger's credit is not an Uber refund
+    assert rows[1].tool_calls[0]["name"] == "securo__list_transactions"
+    text = events[-1].text or ""
+    assert "You paid Uber 35.00 BRL in" in text and "5.00 BRL came back in 1 refund(s), so the net is 30.00 BRL." in text
+    assert "1 pending charge(s) are not counted yet." in text
+
+
+async def test_merchant_spend_short_tokens_need_a_trailing_boundary(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_merchants(session, test_user, test_workspace)
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
+    prep = await guided.HANDLERS["merchant_spend"](ctx, RouteDecision(intent="merchant_spend", confidence=0.9, query="AMC"))
+    assert prep.pack["charges_total"] == 12.0 and prep.pack["charge_count"] == 1
+
+
+async def test_merchant_spend_category_only_on_an_exact_name(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_merchants(session, test_user, test_workspace)
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
+    merchant = await guided.HANDLERS["merchant_spend"](ctx, RouteDecision(intent="merchant_spend", confidence=0.9, query="Amazon"))
+    assert merchant.pack["kind"] == "merchant_spend" and merchant.pack["charges_total"] == 50.0  # amazon | amzn
+    category = await guided.HANDLERS["merchant_spend"](ctx, RouteDecision(intent="merchant_spend", confidence=0.9, query="Amazon & online"))
+    assert category.pack["kind"] == "spending_breakdown" and category.pack["focus"] == {"category": "Amazon & online", "amount": 40.0, "share_pct": category.pack["focus"]["share_pct"]}
+
+
+async def test_merchant_spend_with_no_match_says_so_without_the_model(session: AsyncSession, test_user, test_workspace, test_agent):
+    await _seed_merchants(session, test_user, test_workspace)
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
+    prep = await guided.HANDLERS["merchant_spend"](ctx, RouteDecision(intent="merchant_spend", confidence=0.9, query="Lyft"))
+    assert prep.narrate is False and prep.fallback_sentence.startswith("No posted charges matched 'Lyft' between")
+
