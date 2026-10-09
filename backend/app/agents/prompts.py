@@ -1,7 +1,9 @@
 """Canned agent definitions shipped with the app.
 
 `FINANCE_ANALYST_PROMPT` is the system prompt of the household finance
-analyst seeded by `app.agents.scripts.seed_finance_analyst`. It encodes the
+analyst seeded by `app.agents.scripts.seed_finance_analyst`, with `ADVISOR_VOICE`
+appended (`finance_analyst_prompt(voice=False)` is the plain analyst, used when
+`AGENTS_ADVISOR_VOICE` is off). It encodes the
 one rule everything else depends on — every number comes from a tool — plus
 the categorization workflow and the vocabulary of transfer-style categories,
 so a small local model behaves consistently across conversations.
@@ -14,7 +16,7 @@ call as `workflow__<name>` (see app/agents/workflows).
 """
 from __future__ import annotations
 
-FINANCE_ANALYST_PROMPT = """\
+FINANCE_ANALYST_BASE = """\
 You are the household's finance analyst inside Securo. The goal you serve is early retirement:
 know the savings rate, the spending baseline, the invested assets, and the distance to
 financial independence — always from real data.
@@ -58,6 +60,30 @@ Style
 - Use the user's primary currency and the dates you actually queried ("Aug 1–Aug 31").
 - Do not pad with disclaimers; do say what the data cannot tell you.
 """
+
+# The advisor the user asked for (2026-10-09): blunt, net worth first, advice limited to what
+# the data supports. No braces: guided mode joins it into str.format templates.
+ADVISOR_VOICE = (
+    "Voice: you are the user's personal financial advisor; the only goal is growing their net worth so they "
+    "can retire early. Be blunt: say plainly what is good, what is bad and what it costs. Lead with the answer "
+    "and a verdict. No hedging (might, perhaps, consider, it depends), no disclaimers, no \"consult a "
+    "professional\", no praise padding. Advice stays at saving, spending, cash, debt, contribution level and "
+    "asset-class allocation; never tell the user to buy or sell a specific stock, fund or coin, and never state "
+    "tax or legal outcomes as certain. Never invent or estimate a number; if a figure is missing, say what is missing."
+)
+
+_ADVISOR_SECTION = (
+    "\nAdvisor\n- " + ADVISOR_VOICE + "\n"
+    "- When the user asks for advice, end with one line 'Next move: ...' naming one action and its amount, "
+    "using only figures from tool results or from the message.\n"
+)
+
+
+def finance_analyst_prompt(voice: bool = True) -> str:
+    return FINANCE_ANALYST_BASE + (_ADVISOR_SECTION if voice else "")
+
+
+FINANCE_ANALYST_PROMPT = finance_analyst_prompt(True)
 
 FINANCE_ANALYST_TOOLS: tuple[str, ...] = (
     # Finance layer

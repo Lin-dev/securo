@@ -131,6 +131,10 @@ class AgentSettings(BaseSettings):
     # a message starting with "/" never routes (e.g. "/ask ...").
     guided_mode: bool = True
     guided_min_confidence: float = 0.7
+    # The blunt advisor voice and the code-written "Next move" line on advice answers.
+    # Off = the plain analyst wording and no next move (re-run the seed script to
+    # refresh the stored loop prompt too).
+    advisor_voice: bool = True
 
     # Workflows — code-driven procedures around the model (app/agents/workflows).
     # `workflow_auto_apply`: when a run is asked to apply and this is on (or the

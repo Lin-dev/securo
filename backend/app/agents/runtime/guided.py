@@ -531,6 +531,7 @@ _L: dict[str, dict[str, str]] = {
         "charges": "Charges", "refunds": "Refunds", "net_paid": "Net paid", "spelling": "Description", "count": "Count",
         "month": "Month",
         "cap_merchant": "Posted charges whose description, payee or notes have a word starting with '{token}'; transfers and card payments excluded; pending rows not counted.",
+        "next_move": "Next move",
     },
     "pt-BR": {
         "figure": "Indicador", "current": "Atual", "previous": "Anterior", "change": "Variação", "change_pct": "Variação %",
@@ -563,6 +564,7 @@ _L: dict[str, dict[str, str]] = {
         "cash_rate": "Taxa de poupança em caixa", "contrib_rate": "Taxa de poupança com contribuições",
         "lane_income": "Receitas", "lane_direct_contributions": "Contribuições diretas", "lane_transfers_in": "Transferências recebidas",
         "lane_expenses": "Despesas", "lane_investments": "Investimentos", "lane_transfers_out": "Transferências enviadas",
+        "next_move": "Próximo passo",
     },
     "es": {
         "figure": "Indicador", "current": "Actual", "previous": "Anterior", "change": "Variación", "change_pct": "Variación %",
@@ -595,6 +597,7 @@ _L: dict[str, dict[str, str]] = {
         "cash_rate": "Tasa de ahorro en efectivo", "contrib_rate": "Tasa de ahorro con aportes",
         "lane_income": "Ingresos", "lane_direct_contributions": "Aportes directos", "lane_transfers_in": "Transferencias recibidas",
         "lane_expenses": "Gastos", "lane_investments": "Inversiones", "lane_transfers_out": "Transferencias enviadas",
+        "next_move": "Próximo paso",
     },
 }
 
@@ -1414,6 +1417,30 @@ ANALYSIS_SYSTEM = (
     "\n\nFigures:\n{figures}"
 )
 
+_NEXT_MOVE_NOTE = " Securo appends a 'Next move' line after your text; do not write one or recommend a different action."
+
+
+def _advisor_variant(template: str, old: str, new: str) -> str:
+    from app.agents.prompts import ADVISOR_VOICE
+
+    assert old in template, "narration template changed; update the advisor variant"
+    return template.replace(old, new).replace("\n\nFigures:\n{figures}", " " + ADVISOR_VOICE + _NEXT_MOVE_NOTE + "\n\nFigures:\n{figures}")
+
+
+NARRATION_SYSTEM_ADVISOR = _advisor_variant(
+    NARRATION_SYSTEM,
+    "Write natural prose for the user, the way an analyst would sum up a table: compare, point out the biggest change, and stop.",
+    "Write natural prose for the user: answer, give the verdict for net worth, and stop.",
+)
+ANALYSIS_SYSTEM_ADVISOR = _advisor_variant(ANALYSIS_SYSTEM, "what deserves a second look next", "what to do about it")
+
+
+def _narration_template(ctx: GuidedContext, analysis: bool) -> str:
+    if getattr(ctx.settings, "advisor_voice", True):
+        return ANALYSIS_SYSTEM_ADVISOR if analysis else NARRATION_SYSTEM_ADVISOR
+    return ANALYSIS_SYSTEM if analysis else NARRATION_SYSTEM
+
+
 _COUNT_KEYS = frozenset({
     "count", "months", "days", "category_count", "holdings_count", "year", "unconverted_count",
     "years_to_fi", "trajectory_truncated", "positions_total_count", "accounts_with_positions", "zero_balance_count", "units",
@@ -1468,6 +1495,9 @@ def _render_pack_lines(pack: dict[str, Any]) -> str:
     quote it and has nothing machine-looking to parrot back."""
     currency = str(pack.get("currency") or "")
     lines: list[str] = []
+    move = pack.get("next_move") if isinstance(pack.get("next_move"), dict) else None
+    if move is not None:
+        pack = {k: v for k, v in pack.items() if k != "next_move"}
 
     def emit(head: str, scope: str, text: str) -> None:
         head = head[:1].upper() + head[1:]
@@ -1516,6 +1546,8 @@ def _render_pack_lines(pack: dict[str, Any]) -> str:
         emit(head, scope, text)
 
     walk(pack, "", "", "", "", False)
+    if move is not None and move.get("text"):
+        lines.append(f"- Next move Securo appends (do not repeat it): {move['text']}")
     return "\n".join(lines)
 
 
@@ -1529,7 +1561,7 @@ async def _narrate(ctx: GuidedContext, prep: Prepared, *, user_message: str, ana
     longer, interpretive prompt at reasoning medium; grounding applies either way."""
     from app.agents.runtime.grounding import ungrounded
 
-    template = ANALYSIS_SYSTEM if analysis else NARRATION_SYSTEM
+    template = _narration_template(ctx, analysis)
     system = template.format(agent_name=ctx.agent.name, language=ctx.language, figures=_render_pack_lines(prep.pack))
     usage_in = usage_out = 0
     offenders: list[str] = []
@@ -1651,10 +1683,22 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
     if fence:
         head += "\n\n" + fence
 
+    move = prep.pack.get("next_move") if getattr(ctx.settings, "advisor_voice", True) else None
+    move_line = ""
+    if isinstance(move, dict) and move.get("text"):
+        from app.agents.runtime import advice
+        from app.agents.runtime.grounding import ungrounded
+
+        offenders = ungrounded(str(move["text"]), advice.grounding_pack(move))
+        if offenders:
+            logger.info("guided.next_move.dropped intent=%s rule=%s offenders=%s", decision.intent, move.get("rule"), offenders)
+        else:
+            move_line = f"**{_t(ctx.language, 'next_move')}:** {move['text']}"
+
     started = time.monotonic()
     if not prep.narrate:
         # the deterministic sentence is the answer: lead with it, the table backs it up
-        content = prep.fallback_sentence + ("\n\n" + head if head.strip() else "")
+        content = prep.fallback_sentence + ("\n\n" + head if head.strip() else "") + ("\n\n" + move_line if move_line else "")
         usage_in = usage_out = 0
         used_fallback = False
         yield ExecutorEvent(type="text_delta", text=content)
@@ -1665,6 +1709,13 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
         except Exception:  # noqa: BLE001
             logger.exception("guided narration crashed; using the fallback sentence")
             narration, usage_in, usage_out, used_fallback = prep.fallback_sentence, 0, 0, True
+        if getattr(ctx.settings, "advisor_voice", True):
+            from app.agents.runtime import advice
+
+            # Securo writes the next move; a model-written one never reaches the user
+            narration = advice.strip_model_next_move(narration) or prep.fallback_sentence
+        if move_line:
+            narration += "\n\n" + move_line
         content = head + "\n\n" + narration
         yield ExecutorEvent(type="text_delta", text="\n\n" + narration)
     latency_ms = int((time.monotonic() - started) * 1000)
