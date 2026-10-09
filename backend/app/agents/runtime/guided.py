@@ -101,6 +101,7 @@ class GuidedContext:
     tz: str = "UTC"
     language: str = "en"
     currency: str = "USD"
+    user_message: str = ""          # set by answer(); handlers that need the wording read it
 
 
 @dataclass
@@ -503,6 +504,23 @@ _L: dict[str, dict[str, str]] = {
         "cash_rate": "Cash savings rate", "contrib_rate": "Contribution-aware savings rate",
         "lane_income": "Income", "lane_direct_contributions": "Direct contributions", "lane_transfers_in": "Transfers in",
         "lane_expenses": "Expenses", "lane_investments": "Investments", "lane_transfers_out": "Transfers out",
+        "institution": "Institution", "type": "Type", "owed": "Owed",
+        "type_checking": "Checking", "type_savings": "Savings", "type_credit_card": "Credit card", "type_investment": "Investment",
+        "type_wallet": "Wallet", "type_other": "Other",
+        "ab_generic": "{query}: {total} across {n} account(s) — {items}.",
+        "ab_cards": "You owe {owed} on {n} credit card(s): {items}.",
+        "ab_cash": "You have {cash} in checking and savings across {n} account(s){months}.",
+        "ab_months": " — {months} months of your spending at {monthly} a month",
+        "ab_overdrawn": " {name} is overdrawn by {amount}.",
+        "ab_none": "No account matches '{query}'. Closest names: {candidates}.",
+        "cap_accounts": "Current balances as the Accounts page shows them; money owed on a card is negative.",
+        "ms_paid": "You paid {merchant} {charges} in {label} across {n} charge(s)",
+        "ms_refunds": "; {refunds} came back in {k} refund(s), so the net is {net}",
+        "ms_pending": " {p} pending charge(s) are not counted yet.",
+        "ms_none": "No posted charges matched '{merchant}' between {start} and {end}.",
+        "charges": "Charges", "refunds": "Refunds", "net_paid": "Net paid", "spelling": "Description", "count": "Count",
+        "month": "Month",
+        "cap_merchant": "Posted charges whose description, payee or notes have a word starting with '{token}'; transfers and card payments excluded; pending rows not counted.",
     },
     "pt-BR": {
         "figure": "Indicador", "current": "Atual", "previous": "Anterior", "change": "Variação", "change_pct": "Variação %",
@@ -1125,7 +1143,7 @@ def _match_positions(query: str, positions: list[dict[str, Any]]) -> list[dict[s
     return matched
 
 
-async def _prepare_holding_lookup(ctx: GuidedContext, decision: RouteDecision) -> Prepared:
+async def _prepare_holding_lookup(ctx: GuidedContext, decision: RouteDecision, *, _from_account_balance: bool = False) -> Prepared:
     if not decision.query:
         return await _prepare_holdings(ctx, decision)
     base = await _holdings_pack(ctx)
@@ -1175,9 +1193,174 @@ async def _prepare_holding_lookup(ctx: GuidedContext, decision: RouteDecision) -
         table = f"**{sentence}**\n\n" + _positions_table(ctx, matches, currency, with_units=True)
         table += "\n\n_" + _t(lang, "cap_lookup") + "_"
         return Prepared(pack, table, None, sentence, [("get_holdings", {})])
+    if not _from_account_balance:
+        from app.agents.services import advisor_figures
+        from app.services import account_service
+
+        accounts = await account_service.get_accounts(ctx.session, await _workspace_id(ctx))
+        if advisor_figures.match_accounts(decision.query, accounts)["matches"]:
+            # "how much is in Robinhood?" routed as a holding: answer with the accounts
+            return await _prepare_account_balance(ctx, decision, _from_holding_lookup=True)
     sentence = _t(lang, "lk_none", query=decision.query, with_names=", ".join(with_names) or "—", k=len(without_names), without_names=", ".join(without_names) or "—")
     table = _md_table([_t(lang, "accounts_with_positions"), _t(lang, "holdings")], [[name, str(next((a["holdings_count"] for a in base["accounts"] if a["name"] == name), 0))] for name in with_names])
     return Prepared(pack, table, None, sentence, [("get_holdings", {})], narrate=False)
+
+
+_TYPE_KEYS = {"checking": "type_checking", "savings": "type_savings", "credit_card": "type_credit_card",
+              "investment": "type_investment", "wallet": "type_wallet"}
+
+
+def _masked(number: Optional[str]) -> str:
+    return f" (····{number})" if number else ""
+
+
+async def _monthly_spend(ctx: GuidedContext, ws_id: uuid.UUID) -> Optional[float]:
+    """Monthly spending over the days of complete data, as fire_projection annualizes it."""
+    from mcp_server.tools.finance import _summary_window, coverage_window
+
+    cov = await coverage_window(ctx.session, ws_id, ctx.today)
+    window = await _summary_window(ctx.session, ws_id, ctx.user_id, cov["from_date"], ctx.today)
+    monthly = float(window["expense"] or 0.0) * cov["scale"] / 12
+    return round(monthly, 2) if monthly > 0 else None
+
+
+async def _prepare_account_balance(ctx: GuidedContext, decision: RouteDecision, *, _from_holding_lookup: bool = False) -> Prepared:
+    from app.agents.services import advisor_figures
+    from app.services import account_service
+
+    if not decision.query:
+        raise GuidedFallthrough("account_balance needs a query")
+    ws_id = await _workspace_id(ctx)
+    accounts = await account_service.get_accounts(ctx.session, ws_id)
+    found = advisor_figures.match_accounts(decision.query, accounts)
+    lang, currency = ctx.language, ctx.currency
+    if not found["matches"]:
+        if not _from_holding_lookup:
+            # "Do I own HOOD?" routed as an account: a position answer beats "no account"
+            lookup = await _prepare_holding_lookup(ctx, decision, _from_account_balance=True)
+            if lookup.pack.get("matches"):
+                return lookup
+        candidates = found["candidates"]
+        sentence = _t(lang, "ab_none", query=decision.query, candidates=", ".join(candidates) or "—")
+        pack = {"kind": "account_balance", "currency": currency, "query": decision.query, "accounts": [], "candidates": candidates}
+        return Prepared(pack, "", None, sentence, [("list_accounts", {})], narrate=False)
+
+    items = []
+    for a in found["matches"]:
+        item: dict[str, Any] = {
+            "name": advisor_figures.account_label(a), "institution": a.get("institution_name"), "type": a.get("type"),
+            "balance": _r(a.get("current_balance")), "masked_number": a.get("masked_number"),
+        }
+        if a.get("type") == "credit_card" and a.get("credit_limit") is not None:
+            item["credit_limit"] = _r(a.get("credit_limit"))
+        items.append(item)
+    items.sort(key=lambda i: abs(i["balance"] or 0.0), reverse=True)
+    total = _r(sum(i["balance"] or 0.0 for i in items))
+    pack: dict[str, Any] = {"kind": "account_balance", "currency": currency, "query": decision.query,
+                            "accounts": items, "total": total, "account_count": len(items)}
+    types = {i["type"] for i in items}
+    if len(types) > 1:
+        pack["by_type"] = [{"label": _t(lang, _TYPE_KEYS.get(t, "type_other")), "total": _r(sum(i["balance"] or 0.0 for i in items if i["type"] == t))}
+                           for t in sorted(types)]
+    cards = [i for i in items if i["type"] == "credit_card"]
+    if cards:
+        pack["card_owed_total"] = _r(sum(max(-(i["balance"] or 0.0), 0.0) for i in cards))
+        if all(i.get("credit_limit") for i in cards):
+            pack["card_utilization_pct"] = round(pack["card_owed_total"] / sum(i["credit_limit"] for i in cards) * 100, 1)
+    all_cash = types <= {"checking", "savings"}
+    overdrawn = [i for i in items if i["type"] in ("checking", "savings") and (i["balance"] or 0.0) < 0]
+    if all_cash:
+        cash_total = round(sum(float(i["balance"]) for i in items if (i["balance"] or 0.0) > 0), 2)
+        pack["cash_total"] = cash_total
+        monthly = await _monthly_spend(ctx, ws_id)
+        if monthly:
+            pack["monthly_spend"] = monthly
+            pack["months_covered"] = round(cash_total / monthly, 1)
+
+    rows = [[i["name"] + _masked(i["masked_number"]), i["institution"] or "—", _t(lang, _TYPE_KEYS.get(i["type"], "type_other")),
+             _money(i["balance"], currency)] for i in items]
+    if len(items) > 1:
+        rows.append([f"**{_t(lang, 'total')}**", "", "", f"**{_money(total, currency)}**"])
+    table = _md_table([_t(lang, "account"), _t(lang, "institution"), _t(lang, "type"), _t(lang, "balance")], rows)
+    table += "\n\n_" + _t(lang, "cap_accounts") + "_"
+
+    if cards and len(cards) == len(items):
+        listed = "; ".join(f"{i['name']} {_money(max(-(i['balance'] or 0.0), 0.0), currency)}" for i in cards)
+        sentence = _t(lang, "ab_cards", owed=_money(pack["card_owed_total"], currency), n=len(cards), items=listed)
+    elif all_cash:
+        months = _t(lang, "ab_months", months=f"{pack['months_covered']:.1f}", monthly=_money(pack["monthly_spend"], currency)) if "months_covered" in pack else ""
+        sentence = _t(lang, "ab_cash", cash=_money(pack["cash_total"], currency), n=len(items), months=months)
+        for i in overdrawn:
+            sentence += _t(lang, "ab_overdrawn", name=i["name"], amount=_money(-(i["balance"] or 0.0), currency))
+    else:
+        listed = "; ".join(f"{i['name']}{_masked(i['masked_number'])} {_money(i['balance'], currency)}" for i in items)
+        sentence = _t(lang, "ab_generic", query=decision.query, total=_money(total, currency), n=len(items), items=listed)
+    return Prepared(pack, table, None, sentence, [("list_accounts", {})], narrate=decision.analysis)
+
+
+async def _prepare_merchant_spend(ctx: GuidedContext, decision: RouteDecision) -> Prepared:
+    from dataclasses import replace
+
+    from app.agents.services import advisor_figures
+
+    if not decision.query:
+        raise GuidedFallthrough("merchant_spend needs a query")
+    ws_id = await _workspace_id(ctx)
+    if decision.period_a:
+        fd, td, label = resolve_period(decision.period_a, ctx.today)
+    else:
+        y, m = _shift_month(ctx.today.year, ctx.today.month, -3)
+        fd, td = date(y, m, 1), ctx.today
+        label = f"{fd.isoformat()} to {td.isoformat()}"
+    category = await advisor_figures.category_named(ctx.session, ws_id, decision.query, ctx.user_message)
+    if category:
+        # "Amazon & online" is a category: answer with the category total for the same window
+        return await _prepare_spending_breakdown(
+            ctx, replace(decision, intent="spending_breakdown", category=category,
+                         period_a=decision.period_a or f"custom:{fd.isoformat()}..{td.isoformat()}"))
+    res = await advisor_figures.merchant_rows(ctx.session, ws_id, ctx.currency, decision.query, fd, td)
+    lang, currency, merchant = ctx.language, ctx.currency, decision.query.strip()
+    net = _r(res["charges"] - res["refunds"])
+    pack: dict[str, Any] = {
+        "kind": "merchant_spend", "currency": currency, "query": merchant,
+        "period": {"label": label, "from": fd.isoformat(), "to": td.isoformat()},
+        "charges_total": res["charges"], "charge_count": res["charge_count"],
+        "refunds_total": res["refunds"], "refund_count": res["refund_count"],
+        "net_total": net, "pending_count": res["pending_count"],
+    }
+    months = [(_month_label(date(int(k[:4]), int(k[5:7]), 1)), float(v)) for k, v in res["months"].items()]
+    if len(months) > 1:
+        pack["months"] = [{"label": label_, "amount": amount} for label_, amount in months]
+    if res["variants"]:
+        pack["variants"] = [{"label": v["description"], "count": v["count"], "total": v["total"]} for v in res["variants"]]
+    token = " ".join(t.upper() for t in re.split(r"\s+", merchant) if t)
+    caption = "_" + _t(lang, "cap_merchant", token=token) + "_"
+    if not res["charge_count"] and not res["refund_count"]:
+        sentence = _t(lang, "ms_none", merchant=merchant, start=fd.isoformat(), end=td.isoformat())
+        if res["pending_count"]:
+            sentence += _t(lang, "ms_pending", p=res["pending_count"])
+        return Prepared(pack, caption, None, sentence, [("list_transactions", {"search": merchant, "from_date": fd.isoformat(), "to_date": td.isoformat()})], narrate=False)
+    sentence = _t(lang, "ms_paid", merchant=merchant, charges=_money(res["charges"], currency), label=label, n=res["charge_count"])
+    if res["refund_count"]:
+        sentence += _t(lang, "ms_refunds", refunds=_money(res["refunds"], currency), k=res["refund_count"], net=_money(net, currency))
+    sentence += "."
+    if res["pending_count"]:
+        sentence += _t(lang, "ms_pending", p=res["pending_count"])
+    rows = [[_t(lang, "charges"), _money(res["charges"], currency), str(res["charge_count"])]]
+    if res["refund_count"]:
+        rows.append([_t(lang, "refunds"), _money(res["refunds"], currency), str(res["refund_count"])])
+        rows.append([f"**{_t(lang, 'net_paid')}**", f"**{_money(net, currency)}**", ""])
+    table = _md_table([_t(lang, "figure"), _t(lang, "amount"), _t(lang, "count")], rows)
+    if "months" in pack:
+        table += "\n\n" + _md_table([_t(lang, "month"), _t(lang, "amount")], [[label_, _money(amount, currency)] for label_, amount in months])
+    if pack.get("variants"):
+        table += "\n\n" + _md_table([_t(lang, "spelling"), _t(lang, "count"), _t(lang, "amount")],
+                                      [[v["label"], str(v["count"]), _money(v["total"], currency)] for v in pack["variants"]])
+    table += "\n\n" + caption
+    return Prepared(pack, table, None, sentence,
+                    [("list_transactions", {"search": merchant, "from_date": fd.isoformat(), "to_date": td.isoformat()})],
+                    narrate=decision.analysis)
+
 
 HANDLERS: dict[str, Callable[[GuidedContext, RouteDecision], Awaitable[Prepared]]] = {
     "compare_periods": _prepare_compare_periods,
@@ -1187,6 +1370,8 @@ HANDLERS: dict[str, Callable[[GuidedContext, RouteDecision], Awaitable[Prepared]
     "fire_progress": _prepare_fire_progress,
     "holdings": _prepare_holdings,
     "holding_lookup": _prepare_holding_lookup,
+    "account_balance": _prepare_account_balance,
+    "merchant_spend": _prepare_merchant_spend,
 }
 
 
@@ -1222,6 +1407,7 @@ ANALYSIS_SYSTEM = (
 _COUNT_KEYS = frozenset({
     "count", "months", "days", "category_count", "holdings_count", "year", "unconverted_count",
     "years_to_fi", "trajectory_truncated", "positions_total_count", "accounts_with_positions", "zero_balance_count", "units",
+    "account_count", "charge_count", "refund_count", "pending_count", "transfer_matches", "months_covered",
 })
 _MAX_LIST_LINES = 12
 
@@ -1247,6 +1433,9 @@ _LABEL_WORDS = {
     "top3_share_pct": "Top 3 positions share", "top5_share_pct": "Top 5 positions share", "top10_share_pct": "Top 10 positions share",
     "top2_accounts_share_pct": "Top 2 accounts combined share", "retirement_pct": "Retirement share", "taxable_pct": "Taxable share", "crypto_pct": "Crypto share",
     "gain_loss": "Gain/loss", "units": "Units",
+    "charges_total": "Charges", "refunds_total": "Refunds", "net_total": "Net paid", "card_owed_total": "Card balances owed",
+    "card_utilization_pct": "Card utilization", "cash_total": "Cash in checking and savings",
+    "months_covered": "Months of spending covered", "monthly_spend": "Monthly spending", "credit_limit": "Credit limit",
 }
 # containers whose children are figures ABOUT the parent's name: "income" under "delta" -> "Income change"
 _SUFFIX_CONTAINERS = {"delta": "change", "delta_pct": "change %", "deltas": "change"}
@@ -1416,6 +1605,7 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
     handler = HANDLERS.get(decision.intent)
     if handler is None:
         raise GuidedFallthrough(f"no guided handler for {decision.intent}")
+    ctx.user_message = user_message
     try:
         prep = await handler(ctx, decision)
     except GuidedFallthrough:
@@ -1450,27 +1640,31 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
     fence = _chart_fence(prep.chart)
     if fence:
         head += "\n\n" + fence
-    yield ExecutorEvent(type="text_delta", text=head)
 
     started = time.monotonic()
-    try:
-        if prep.narrate:
+    if not prep.narrate:
+        # the deterministic sentence is the answer: lead with it, the table backs it up
+        content = prep.fallback_sentence + ("\n\n" + head if head.strip() else "")
+        usage_in = usage_out = 0
+        used_fallback = False
+        yield ExecutorEvent(type="text_delta", text=content)
+    else:
+        yield ExecutorEvent(type="text_delta", text=head)
+        try:
             narration, usage_in, usage_out, used_fallback = await _narrate(ctx, prep, user_message=user_message, analysis=decision.analysis)
-        else:
-            # the deterministic sentence is the whole answer (e.g. a lookup that found nothing)
-            narration, usage_in, usage_out, used_fallback = prep.fallback_sentence, 0, 0, False
-    except Exception:  # noqa: BLE001
-        logger.exception("guided narration crashed; using the fallback sentence")
-        narration, usage_in, usage_out, used_fallback = prep.fallback_sentence, 0, 0, True
+        except Exception:  # noqa: BLE001
+            logger.exception("guided narration crashed; using the fallback sentence")
+            narration, usage_in, usage_out, used_fallback = prep.fallback_sentence, 0, 0, True
+        content = head + "\n\n" + narration
+        yield ExecutorEvent(type="text_delta", text="\n\n" + narration)
     latency_ms = int((time.monotonic() - started) * 1000)
-    yield ExecutorEvent(type="text_delta", text="\n\n" + narration)
 
     try:
         final = await conversation_service.append_message(
             ctx.session,
             conversation_id=ctx.conversation_id,
             role="assistant",
-            content=head + "\n\n" + narration,
+            content=content,
             input_tokens=usage_in or None,
             output_tokens=usage_out or None,
         )
