@@ -538,3 +538,69 @@ async def test_context_primer_shows_card_debt_as_negative(
     primer = await build_context_primer(session, test_user, workspace_id=wid)
     line = next(ln for ln in primer.splitlines() if "Primer Card" in ln)
     assert "-300" in line.replace(",", "") or "−300" in line.replace(",", "")
+
+
+# --- coverage window ------------------------------------------------------------------
+
+async def test_fire_projection_annualizes_when_history_is_shorter_than_a_year(
+    session: AsyncSession, ctx: CallContext, test_user, test_workspace
+):
+    uid, wid = test_user.id, test_workspace.id
+    checking = await _account(session, uid, wid, "Checking", "checking")
+    today = date.today()
+    session.add_all([
+        _txn(uid, wid, checking, 900, "debit", when=today - timedelta(days=89)),
+        _txn(uid, wid, checking, 900, "debit", when=today),
+    ])
+    await session.commit()
+
+    result = await REGISTRY["fire_projection"].handler(session=session, ctx=ctx)
+
+    cov = result["derived"]["coverage"]
+    assert cov["days"] == 90 and cov["annualized"] is True and "estimates" in cov["caution"]
+    assert cov["from_date"] == (today - timedelta(days=89)).isoformat()
+    assert result["derived"]["annual_spend"]["value"] == round(1800 * 365 / 90, 2)
+    assert "annualized x365/90" in result["derived"]["annual_spend"]["source"]
+
+
+async def test_coverage_window_keeps_a_full_year_and_ignores_accounts_without_recent_spending(
+    session: AsyncSession, test_user, test_workspace
+):
+    from mcp_server.tools.finance import coverage_window
+
+    uid, wid = test_user.id, test_workspace.id
+    today = date.today()
+    old = await _account(session, uid, wid, "Old checking", "checking")
+    session.add_all([
+        _txn(uid, wid, old, 50, "debit", when=today - timedelta(days=400)),
+        _txn(uid, wid, old, 50, "debit", when=today - timedelta(days=10)),
+    ])
+    await session.commit()
+    full = await coverage_window(session, wid, today)
+    assert full["days"] == 365 and full["scale"] == 365 / 365 and full["annualized"] is False
+
+    # a savings account connected last week with only an interest credit does not move the start
+    savings = await _account(session, uid, wid, "New savings", "savings")
+    session.add(_txn(uid, wid, savings, 3, "credit", when=today - timedelta(days=7)))
+    await session.commit()
+    assert (await coverage_window(session, wid, today))["days"] == 365
+
+    # a card that starts spending 60 days ago does
+    card = await _account(session, uid, wid, "New card", "credit_card")
+    session.add(_txn(uid, wid, card, 20, "debit", when=today - timedelta(days=59)))
+    await session.commit()
+    recent = await coverage_window(session, wid, today)
+    assert recent["days"] == 60 and recent["annualized"] is True and recent["scale"] == 365 / 60
+
+
+async def test_coverage_window_keeps_the_trailing_year_below_thirty_days(
+    session: AsyncSession, test_user, test_workspace
+):
+    from mcp_server.tools.finance import coverage_window
+
+    uid, wid = test_user.id, test_workspace.id
+    checking = await _account(session, uid, wid, "Checking", "checking")
+    session.add(_txn(uid, wid, checking, 10, "debit", when=date.today() - timedelta(days=5)))
+    await session.commit()
+    cov = await coverage_window(session, wid, date.today())
+    assert cov["insufficient_history"] is True and cov["scale"] == 1.0 and cov["history_days"] == 6

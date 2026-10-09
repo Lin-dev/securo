@@ -880,6 +880,9 @@ async def _prepare_fire_progress(ctx: GuidedContext, decision: RouteDecision) ->
         "trajectory": trajectory,
         "trajectory_truncated": bool(res.get("trajectory_truncated")) or len(res.get("trajectory") or []) > 30,
     }
+    coverage = derived.get("coverage") or {}
+    if coverage.get("annualized") or coverage.get("caution"):
+        pack["coverage"] = {"from_date": coverage.get("from_date"), "to_date": coverage.get("to_date"), "days": coverage.get("days")}
     rows = [
         [_t(lang, "input") + ": annual spend", _money(pack["inputs"]["annual_spend"], currency), sources["annual_spend"]],
         [_t(lang, "input") + ": invested assets", _money(pack["inputs"]["invested_assets"], currency), sources["invested_assets"]],
@@ -893,6 +896,8 @@ async def _prepare_fire_progress(ctx: GuidedContext, decision: RouteDecision) ->
     ]
     table = _md_table([_t(lang, "figure"), _t(lang, "value"), _t(lang, "source")], rows)
     table += "\n\n_" + _t(lang, "cap_fire") + "_"
+    if coverage.get("caution"):
+        table += "\n\n_" + str(coverage["caution"]).capitalize() + "._"
     chart = _chart("area", "Projected portfolio (real terms)", [{"x": f"Y{p['year']}", "y": p["end"]} for p in trajectory], currency=currency)
     years_text = _t(lang, "years", n=f"{pack['years_to_fi']:.1f}") if pack["years_to_fi"] is not None else _t(lang, "not_reached")
     fallback = _t(lang, "fb_fire", fi=_money(pack["fi_number"], currency), progress=(f"{pack['progress_pct']:.1f}" if pack["progress_pct"] is not None else "n/a"), years=years_text)

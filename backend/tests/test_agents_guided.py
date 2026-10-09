@@ -6,7 +6,7 @@ real seeded rows so every pack figure can be checked against the tool that
 produced it, and a scripted provider for the router and the narration.
 """
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -375,6 +375,22 @@ async def test_fire_progress_handler(session: AsyncSession, test_user, test_work
     assert pack["years_to_fi"] is not None and pack["progress_pct"] is not None
     assert prep.chart is None or prep.chart["type"] == "area"
     assert "**FI number**" in prep.table_md and "750.00 BRL" in prep.table_md
+
+
+async def test_fire_progress_states_a_short_history_window(session: AsyncSession, test_user, test_workspace, test_agent):
+    checking = await _account(session, test_user.id, test_workspace.id, "Checking", "checking")
+    today = date.today()
+    session.add_all([
+        _txn(test_user.id, test_workspace.id, checking, 600, "debit", when=today - timedelta(days=59)),
+        _txn(test_user.id, test_workspace.id, checking, 600, "debit", when=today),
+    ])
+    await session.commit()
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=today)
+    prep = await guided.HANDLERS["fire_progress"](ctx, RouteDecision(intent="fire_progress", confidence=0.9))
+    assert prep.pack["inputs"]["annual_spend"] == round(1200 * 365 / 60, 2)
+    assert prep.pack["coverage"]["days"] == 60
+    assert "annualized x365/60" in prep.pack["sources"]["annual_spend"]
+    assert "60 days of complete data; treat the yearly figures as estimates" in prep.table_md
 
 
 async def test_holdings_handler(session: AsyncSession, test_user, test_workspace, test_agent):

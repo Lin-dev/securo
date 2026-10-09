@@ -29,7 +29,7 @@ from app.services import (
     rule_service,
     transaction_service,
 )
-from app.services._query_filters import is_split_parent
+from app.services._query_filters import counts_as_pnl, is_split_parent
 from app.services.fire_service import FireInputs
 from app.services.report_service import _report_start_date
 from mcp_server.auth import CallContext
@@ -124,6 +124,57 @@ async def _summary_window(
         "excluded": _round(num(summary.get("excluded")) or 0.0),
         "savings_rate": round(net / income, 4) if income > 0 else None,
     }
+
+
+# Annualize only from this much complete history; below it a ratio of a few days is noise.
+MIN_COVERAGE_DAYS = 30
+
+
+async def coverage_window(session: AsyncSession, ws_id: uuid.UUID, today: date) -> dict[str, Any]:
+    """The span of complete data that yearly figures can be read from.
+
+    "The trailing 365 days" assumes a year of history. When the accounts were
+    connected recently, most of that year is empty and a sum over it reads like
+    a fraction of the real spending. The window therefore starts when the last of
+    the currently active spending accounts (open, with a posted P&L debit in the
+    last 90 days) has its first posted row, never earlier than today - 364, and
+    figures over it are annualized by `scale` (365 / days). With less than
+    MIN_COVERAGE_DAYS of history the plain trailing year is kept and flagged.
+    """
+    floor = today - timedelta(days=364)
+    active = (
+        select(Transaction.account_id)
+        .join(Account, Account.id == Transaction.account_id)
+        .where(
+            Transaction.workspace_id == ws_id,
+            Account.is_closed.is_(False),
+            Transaction.type == "debit",
+            Transaction.status == "posted",
+            Transaction.date >= today - timedelta(days=90),
+            Transaction.date <= today,
+            Transaction.source != "opening_balance",
+            counts_as_pnl(),
+        )
+        .distinct()
+    )
+    firsts = (
+        await session.execute(
+            select(func.min(Transaction.date))
+            .where(
+                Transaction.account_id.in_(active),
+                Transaction.status == "posted",
+                Transaction.source != "opening_balance",
+            )
+            .group_by(Transaction.account_id)
+        )
+    ).scalars().all()
+    start = max([floor, *(d for d in firsts if d is not None)])
+    days = (today - start).days + 1
+    if days < MIN_COVERAGE_DAYS:
+        return {"from_date": floor, "to_date": today, "days": 365, "scale": 1.0,
+                "history_days": days, "annualized": False, "insufficient_history": True}
+    return {"from_date": start, "to_date": today, "days": days, "scale": 365.0 / days,
+            "history_days": days, "annualized": days < 365, "insufficient_history": False}
 
 
 def _month_windows(fd: date, td: date) -> list[tuple[date, date]]:
@@ -732,7 +783,9 @@ async def get_holdings(
         "Financial-independence math: FI number (annual spend / withdrawal rate), gap, "
         "progress, years to FI and a year-by-year trajectory. Inputs you omit are "
         "derived from Securo data — annual_spend and annual_contribution from the "
-        "trailing 365 days (the expense and invested figures of get_transactions_summary), "
+        "expense and invested figures of get_transactions_summary over the trailing 365 "
+        "days, or over the days of complete data annualized when the accounts were "
+        "connected more recently (see derived.coverage), "
         "invested_assets from investment-account balances plus holdings not linked to an "
         "account — and echoed under `derived` so you can state where each number came "
         "from. real_return is after inflation; spending stays in today's money."
@@ -766,16 +819,33 @@ async def fire_projection(
 
     if annual_spend is None or annual_contribution is None:
         today = date.today()
-        window = await _summary_window(session, ws_id, ctx.user_id, today - timedelta(days=364), today)
+        cov = await coverage_window(session, ws_id, today)
+        window = await _summary_window(session, ws_id, ctx.user_id, cov["from_date"], today)
         span = f"{window['from_date']} to {window['to_date']}"
+        if cov["annualized"]:
+            basis = f"{cov['days']} days of complete data ({span}), annualized x365/{cov['days']}"
+        else:
+            basis = f"trailing 365 days ({span})"
+        derived["coverage"] = {
+            "from_date": window["from_date"], "to_date": window["to_date"], "days": cov["days"],
+            "annualized": cov["annualized"], "history_days": cov["history_days"],
+        }
+        if cov["insufficient_history"]:
+            derived["coverage"]["caution"] = (
+                f"only {cov['history_days']} days of complete data; yearly figures are not reliable yet"
+            )
+        elif cov["days"] < 180:
+            derived["coverage"]["caution"] = (
+                f"{cov['days']} days of complete data; treat the yearly figures as estimates"
+            )
         if annual_spend is None:
-            annual_spend = window["expense"]
-            derived["annual_spend"] = {"value": annual_spend, "source": f"expense, trailing 365 days ({span})"}
+            annual_spend = _round(window["expense"] * cov["scale"])
+            derived["annual_spend"] = {"value": annual_spend, "source": f"expense, {basis}"}
         if annual_contribution is None:
-            annual_contribution = window["invested"]
+            annual_contribution = _round(window["invested"] * cov["scale"])
             derived["annual_contribution"] = {
                 "value": annual_contribution,
-                "source": f"invested, trailing 365 days ({span})",
+                "source": f"invested, {basis}",
             }
 
     if invested_assets is None:
