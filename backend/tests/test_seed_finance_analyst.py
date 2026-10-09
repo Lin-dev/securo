@@ -75,3 +75,19 @@ async def test_seed_takes_over_default_from_another_agent(session, test_user, te
     assert agent.is_default is True
     assert test_agent.is_default is False
     assert len(await _agents(session, test_workspace.id)) == 2
+
+
+async def test_seed_composes_the_plain_analyst_when_the_advisor_voice_is_off(session, test_user, test_workspace, monkeypatch):
+    from app.agents.config import AgentSettings
+    from app.agents.prompts import ADVISOR_VOICE, finance_analyst_prompt
+    from app.agents.scripts import seed_finance_analyst
+
+    monkeypatch.setattr(seed_finance_analyst, "get_agent_settings", lambda: AgentSettings(advisor_voice=False))
+    agent = await seed(session, user=test_user, workspace_id=test_workspace.id, model="gpt-oss:20b")
+    assert agent.system_prompt == finance_analyst_prompt(voice=False) and ADVISOR_VOICE not in agent.system_prompt
+    assert agent.description == "Early-retirement finance analyst over your Securo data"
+
+    monkeypatch.setattr(seed_finance_analyst, "get_agent_settings", lambda: AgentSettings(advisor_voice=True))
+    agent = await seed(session, user=test_user, workspace_id=test_workspace.id, model="gpt-oss:20b")
+    assert agent.system_prompt == FINANCE_ANALYST_PROMPT
+    assert agent.description == "Blunt personal financial advisor focused on growing net worth for early retirement"

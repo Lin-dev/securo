@@ -23,7 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models.agent import Agent
 from app.agents.models.connection import LlmConnection
-from app.agents.prompts import FINANCE_ANALYST_PROMPT, FINANCE_ANALYST_TOOLS, FINANCE_ANALYST_WORKFLOWS
+from app.agents.config import get_agent_settings
+from app.agents.prompts import FINANCE_ANALYST_TOOLS, FINANCE_ANALYST_WORKFLOWS, finance_analyst_prompt
 from app.agents.schemas.agent import AgentCreate, AgentUpdate
 from app.agents.services import agent_service, connection_service
 from app.models.user import User
@@ -68,11 +69,15 @@ async def seed(
     name: str = DEFAULT_AGENT_NAME,
 ) -> Agent:
     conn = await _ollama_connection(session, user.id, base_url=base_url, model=model)
+    voice = get_agent_settings().advisor_voice
 
     fields = dict(
         name=name,
-        description="Early-retirement finance analyst over your Securo data",
-        system_prompt=FINANCE_ANALYST_PROMPT,
+        description=(
+            "Blunt personal financial advisor focused on growing net worth for early retirement"
+            if voice else "Early-retirement finance analyst over your Securo data"
+        ),
+        system_prompt=finance_analyst_prompt(voice),
         icon="chart-line",
         color="#0EA5E9",
         connection_id=conn.id,
