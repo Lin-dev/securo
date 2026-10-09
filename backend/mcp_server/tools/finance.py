@@ -586,7 +586,7 @@ async def list_rules(
 async def _asset_item(session: AsyncSession, asset: Asset) -> dict[str, Any]:
     latest = await asset_service._get_latest_value(session, asset.id)
     value = asset_service._compute_current_value(asset, latest)
-    cost = num(asset.purchase_price)
+    cost = asset_service.total_cost_basis(asset)
     return {
         "id": str(asset.id),
         "name": asset.name,
@@ -598,6 +598,7 @@ async def _asset_item(session: AsyncSession, asset: Asset) -> dict[str, Any]:
         "last_price": num(asset.last_price),
         "current_value": _round(value) if value is not None else None,
         "cost_basis": _round(cost) if cost is not None else None,
+        "cost_basis_known": cost is not None,
         "gain_loss": _round(value - cost) if value is not None and cost is not None else None,
         "realized_gain": num(asset.realized_gain),
         "linked_account_id": asset_service.linked_account_id(asset),
