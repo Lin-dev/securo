@@ -1054,6 +1054,11 @@ export interface ReportMeta {
   forecast_start_date?: string | null
   baseline_active?: boolean
   baseline_lookback_days?: number | null
+  // The concrete [window_from, window_to] (ISO dates) this report actually
+  // covers, so a chart click can drill into Transactions with the real
+  // window instead of re-deriving it from `months`/`days` (plan B5c/S5).
+  window_from?: string | null
+  window_to?: string | null
 }
 
 export interface ReportCompositionItem {

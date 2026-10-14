@@ -540,6 +540,10 @@ export const transactions = {
     include_opening_balance?: boolean
     exclude_transfers?: boolean
     user_pnl_only?: boolean
+    // Wealth Cockpit's own P1 P&L filter (plan B5c) -- deliberately a
+    // different param from `user_pnl_only` above, which already has its own
+    // dashboard-specific semantics.
+    wealth_pnl_only?: boolean
     exclude_ignored?: boolean
     tags?: string[]
     min_amount?: number
