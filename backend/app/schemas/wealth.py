@@ -353,6 +353,9 @@ class UpcomingCharge(BaseModel):
     recurring_id: Optional[uuid.UUID]
     # False for a card purchase: it reaches cash only through the card's bill.
     hits_cash: bool = True
+    # True when not scheduled by a rule or a provider: an estimated card bill, or a
+    # recurring charge or income detected from history that no rule tracks yet.
+    estimated: bool = False
 
 
 class Upcoming(BaseModel):
@@ -382,6 +385,9 @@ class CashForecast(BaseModel):
     low_point: Optional[CashForecastPoint]
     first_negative_date: Optional[date]
     first_below_buffer_date: Optional[date]
+    includes_estimates: bool = False  # detected recurring, estimated bills or typical spending are in it
+    # What the user can set up to replace estimates with scheduled amounts.
+    setup_hints: list[Literal["card_due_days", "recurring_income", "recurring_bills"]] = []
 
 
 class Subscription(BaseModel):

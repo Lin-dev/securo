@@ -14,6 +14,7 @@ function charge(overrides: Partial<WealthUpcomingCharge> = {}): WealthUpcomingCh
     category: 'Subscriptions',
     recurring_id: 'rec-1',
     hits_cash: false,
+    estimated: false,
     ...overrides,
   }
 }

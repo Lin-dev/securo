@@ -322,6 +322,8 @@ export interface WealthUpcomingCharge {
   recurring_id: string | null
   /** False for a card purchase: it reaches cash only through the card's bill. */
   hits_cash: boolean
+  /** True for an estimated card bill or a recurring item detected from history. */
+  estimated: boolean
 }
 
 export interface WealthUpcoming {
@@ -347,6 +349,8 @@ export interface WealthCashForecast {
   low_point: WealthCashForecastPoint | null
   first_negative_date: string | null
   first_below_buffer_date: string | null
+  includes_estimates: boolean
+  setup_hints: Array<'card_due_days' | 'recurring_income' | 'recurring_bills'>
 }
 
 export interface WealthSubscription {
