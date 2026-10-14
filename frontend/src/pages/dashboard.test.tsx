@@ -44,6 +44,11 @@ vi.mock('@/contexts/collection-filter-context', () => ({
   useCollectionFilter: () => ({ activeAccountIds: null, activeWalletIds: null }),
 }))
 
+// `dashboard.tsx` now reads the workspace timezone unconditionally (plan S3
+// bug fix); tests that don't care about it get the browser-fallback case.
+const timezone = vi.hoisted(() => ({ value: undefined as string | undefined }))
+vi.mock('@/hooks/use-timezone', () => ({ useEffectiveTimezone: () => timezone.value }))
+
 function account(overrides: Partial<Account>): Account {
   return {
     id: 'acc',
@@ -106,6 +111,7 @@ const summary: DashboardSummary = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  timezone.value = undefined
   api.dashboard.summary.mockResolvedValue(summary)
   api.dashboard.spendingByCategory.mockResolvedValue([])
   api.dashboard.balanceHistory.mockResolvedValue({ current: [], previous: [] })

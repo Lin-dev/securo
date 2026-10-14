@@ -58,7 +58,9 @@ import { resolveDateFnsLocale } from '@/lib/date-fns-locale'
 import type { Rule, Transaction } from '@/types'
 import { formatCurrency } from '@/lib/format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
+import { useEffectiveTimezone } from '@/hooks/use-timezone'
 import { resolveClickedDay } from '@/components/dashboard/day-drilldown'
+import { resolveBudgetPaceToday } from '@/components/dashboard/budget-pace'
 
 function formatDate(dateStr: string, locale = 'pt-BR') {
   return new Date(dateStr + 'T00:00:00').toLocaleDateString(locale)
@@ -97,6 +99,7 @@ export default function DashboardPage() {
   const { mask, privacyMode, MASK } = usePrivacyMode()
   const isMobile = useIsMobile()
   const { user } = useAuth()
+  const timeZone = useEffectiveTimezone()
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
   const displayName = user?.preferences?.display_name || ''
   const locale = useDisplayLocale()
@@ -435,8 +438,12 @@ export default function DashboardPage() {
   const projectedIncome = Number(summary?.projected_income_primary ?? summary?.projected_income ?? income)
   const projectedExpenses = Number(summary?.projected_expenses_primary ?? summary?.projected_expenses ?? expenses)
   const savingsRate = income > 0 ? ((income - expenses) / income) * 100 : 0
-  const isCurrentMonth = selectedMonth === currentMonth()
-  const daysElapsed = isCurrentMonth ? new Date().getDate() : monthLastDay(selectedMonth)
+  // Budget pace counts "today" in the workspace's own timezone, not the
+  // browser's — the two can disagree on the day, and right at a month
+  // boundary even on the month (plan S3 bug fix).
+  const paceToday = resolveBudgetPaceToday(timeZone)
+  const isCurrentMonth = selectedMonth === paceToday.month
+  const daysElapsed = isCurrentMonth ? paceToday.dayOfMonth : monthLastDay(selectedMonth)
   const daysInMonth = monthLastDay(selectedMonth)
   const projectedSpend = expenses > 0 && isCurrentMonth && daysElapsed > 0
     ? (expenses / daysElapsed) * daysInMonth
