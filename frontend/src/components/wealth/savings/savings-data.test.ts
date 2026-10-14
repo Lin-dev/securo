@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { latestMonthRate, latestRollingRate, toChartRows } from './savings-data'
+import { domainMax, domainMin, isClipped, latestMonthRate, latestRollingRate, toChartRows, visibleMonths } from './savings-data'
 import type { WealthSavingsMonth } from '@/types/wealth'
 
 function month(over: Partial<WealthSavingsMonth>): WealthSavingsMonth {
@@ -88,5 +88,62 @@ describe('latestMonthRate', () => {
 
   it('returns null for an empty list', () => {
     expect(latestMonthRate([], false)).toBeNull()
+  })
+})
+
+describe('visibleMonths', () => {
+  const withStrayRows = [
+    month({ month: '2026-04-01', in_coverage: false, partial: false, rate: -3.4, cash_rate: -3.4 }),
+    month({ month: '2026-05-01', in_coverage: false, partial: false, rate: -1.1, cash_rate: -1.1 }),
+    ...months,
+  ]
+
+  it('defaults to in-coverage months plus the partial month, dropping stray pre-coverage rows', () => {
+    const visible = visibleMonths(withStrayRows, false)
+    expect(visible.map((m) => m.month)).toEqual(['2026-08-01', '2026-09-01', '2026-10-01'])
+  })
+
+  it('keeps every month once "show earlier months" is on', () => {
+    const visible = visibleMonths(withStrayRows, true)
+    expect(visible).toHaveLength(5)
+  })
+
+  it('keeps a partial month even when it is not yet in coverage', () => {
+    const notYetCovered = [month({ month: '2026-10-01', in_coverage: false, partial: true })]
+    expect(visibleMonths(notYetCovered, false)).toEqual(notYetCovered)
+  })
+})
+
+describe('isClipped', () => {
+  it('is false within [-100%, 100%]', () => {
+    expect(isClipped(0.31)).toBe(false)
+    expect(isClipped(-1)).toBe(false)
+    expect(isClipped(1)).toBe(false)
+  })
+
+  it('is true beyond ±100%', () => {
+    expect(isClipped(-2.34)).toBe(true)
+    expect(isClipped(1.01)).toBe(true)
+  })
+
+  it('is false for null', () => {
+    expect(isClipped(null)).toBe(false)
+  })
+})
+
+describe('domainMin/domainMax', () => {
+  it('includes 0 and tracks a narrow, unremarkable data range', () => {
+    expect(domainMin(-0.05)).toBe(-0.05)
+    expect(domainMax(0.3)).toBeCloseTo(0.605)
+  })
+
+  it('clamps to [-100%, 100%] however far an outlier runs', () => {
+    expect(domainMin(-2.34)).toBe(-1)
+    expect(domainMax(5)).toBe(1)
+  })
+
+  it('still includes 0 when every visible value is positive or negative', () => {
+    expect(domainMin(0.1)).toBe(0)
+    expect(domainMax(-0.1)).toBeCloseTo(0.605)
   })
 })

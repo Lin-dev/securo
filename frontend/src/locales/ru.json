@@ -1661,6 +1661,7 @@
       "empty": "No savings data for this period."
     },
     "cashToggleLabel": "Cash only",
+    "showEarlierToggleLabel": "Show earlier months",
     "rateLabel": "Savings rate (incl. payroll contributions)",
     "cashRateLabel": "Cash savings rate (cash only)",
     "rollingLabel": "3-month rolling",
@@ -1669,7 +1670,8 @@
     "outsideCoverageBadge": "Outside coverage",
     "flags": {
       "partial": "This month is still in progress and shown as partial.",
-      "outsideCoverage": "Some months don't have enough data yet and are greyed out."
+      "outsideCoverage": "Some months don't have enough data yet and are greyed out.",
+      "clipped": "Bars beyond ±100% are clipped; see the table for exact values."
     },
     "table": {
       "month": "Month",

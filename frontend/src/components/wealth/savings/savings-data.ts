@@ -10,6 +10,16 @@ import type { WealthSavingsMonth } from '@/types/wealth'
 /** Reference bands the chart draws as faint horizontal lines (plan S2). */
 export const SAVINGS_RATE_BANDS = [0.2, 0.35, 0.5] as const
 
+/** The chart's default months: in-coverage months, plus the current
+ *  (possibly not-yet-in-coverage) partial month. On real data, a handful of
+ *  stray rows dated before `coverage_window` starts carry almost no income
+ *  and produce huge, meaningless rates that would otherwise dominate the
+ *  chart -- so they stay hidden until "Show earlier months" is on. */
+export function visibleMonths(months: WealthSavingsMonth[], showEarlier: boolean): WealthSavingsMonth[] {
+  if (showEarlier) return months
+  return months.filter((month) => month.in_coverage || month.partial)
+}
+
 export interface SavingsChartRow {
   month: string
   /** `rate` (P1, "incl. payroll contributions") or `cash_rate`, whichever the toggle selects. */
@@ -53,4 +63,30 @@ export function latestMonthRate(months: WealthSavingsMonth[], useCashRate: boole
   const sorted = [...months].sort((a, b) => b.month.localeCompare(a.month))
   const latest = sorted[0]
   return useCashRate ? latest.cash_rate : latest.rate
+}
+
+/** The y-axis's hard ceiling/floor: one wild month (a stray pre-coverage row,
+ *  or a one-off transfer) must not flatten every other bar into a sliver. */
+export const SAVINGS_RATE_CLIP_BOUND = 1
+
+/** True once a rate falls outside [-100%, 100%] -- the chart clips its bar at
+ *  the domain edge and marks it, rather than letting it stretch the axis. */
+export function isClipped(value: number | null): boolean {
+  return value != null && Math.abs(value) > SAVINGS_RATE_CLIP_BOUND
+}
+
+/** The y-axis domain's lower bound: always includes 0, and never drops below
+ *  -100% however far a wild month's `dataMin` runs -- the visible data's own
+ *  range when that is narrower than the ±100% ceiling (recharts calls this
+ *  with the real `dataMin` across the chart's rows; paired with
+ *  `allowDataOverflow` on `<YAxis>` so a clamped domain actually clips
+ *  instead of recharts silently re-expanding it to fit the outlier). */
+export function domainMin(dataMin: number): number {
+  return Math.max(-SAVINGS_RATE_CLIP_BOUND, Math.min(0, dataMin))
+}
+
+/** The y-axis domain's upper bound: at least enough headroom to clear the
+ *  50% band, never above 100%. */
+export function domainMax(dataMax: number): number {
+  return Math.min(SAVINGS_RATE_CLIP_BOUND, Math.max(0.55, dataMax) * 1.1)
 }

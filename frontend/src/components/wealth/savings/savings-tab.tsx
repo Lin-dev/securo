@@ -9,6 +9,7 @@ import {
   ComposedChart,
   Legend,
   Line,
+  ReferenceDot,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -30,7 +31,18 @@ import { formatMoney, formatMonth, formatPct } from '@/lib/chart-format'
 import { monthWindow } from '@/lib/chart-period'
 import { transactionsUrl } from '@/lib/drilldown'
 
-import { SAVINGS_RATE_BANDS, latestMonthRate, latestRollingRate, toChartRows, type SavingsChartRow } from './savings-data'
+import {
+  SAVINGS_RATE_BANDS,
+  SAVINGS_RATE_CLIP_BOUND,
+  domainMax,
+  domainMin,
+  isClipped,
+  latestMonthRate,
+  latestRollingRate,
+  toChartRows,
+  visibleMonths,
+  type SavingsChartRow,
+} from './savings-data'
 
 const MONTHS = 12
 
@@ -50,6 +62,7 @@ export function SavingsTab() {
   const { mask } = usePrivacyMode()
   const navigate = useNavigate()
   const [useCashRate, setUseCashRate] = useState(false)
+  const [showEarlier, setShowEarlier] = useState(false)
 
   const query = useQuery({
     queryKey: ['wealth', 'savings-rate', MONTHS],
@@ -58,11 +71,19 @@ export function SavingsTab() {
 
   const series = query.data
   const currency = series?.currency ?? 'USD'
+  // The table always lists every month (the ground truth); the chart -- its
+  // bars, rolling line and takeaway title -- defaults to `visible` so a
+  // handful of stray pre-coverage rows can't dominate it (see `visibleMonths`).
   const months = useMemo(() => series?.months ?? [], [series])
+  const hasEarlierMonths = useMemo(
+    () => months.some((month) => !month.in_coverage && !month.partial),
+    [months],
+  )
+  const visible = useMemo(() => visibleMonths(months, showEarlier), [months, showEarlier])
 
-  const rows = useMemo(() => toChartRows(months, useCashRate), [months, useCashRate])
-  const rolling = useMemo(() => latestRollingRate(months), [months])
-  const fallbackRate = useMemo(() => latestMonthRate(months, useCashRate), [months, useCashRate])
+  const rows = useMemo(() => toChartRows(visible, useCashRate), [visible, useCashRate])
+  const rolling = useMemo(() => latestRollingRate(visible), [visible])
+  const fallbackRate = useMemo(() => latestMonthRate(visible, useCashRate), [visible, useCashRate])
 
   function goToMonth(month: string) {
     navigate(transactionsUrl(monthWindow(month)))
@@ -85,6 +106,8 @@ export function SavingsTab() {
 
   const showPartialNote = rows.some((row) => row.partial)
   const showCoverageNote = rows.some((row) => !row.inCoverage)
+  const clippedRows = rows.filter((row) => isClipped(row.value))
+  const showClippedNote = clippedRows.length > 0
 
   const table: ChartCardTable = {
     columns: [
@@ -132,6 +155,16 @@ export function SavingsTab() {
           <Switch checked={useCashRate} onCheckedChange={setUseCashRate} aria-labelledby="savings-cash-toggle-label" />
           <span id="savings-cash-toggle-label">{t('wealthSavings.cashToggleLabel')}</span>
         </div>
+        {hasEarlierMonths && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Switch
+              checked={showEarlier}
+              onCheckedChange={setShowEarlier}
+              aria-labelledby="savings-earlier-toggle-label"
+            />
+            <span id="savings-earlier-toggle-label">{t('wealthSavings.showEarlierToggleLabel')}</span>
+          </div>
+        )}
         <span className="text-sm font-medium text-foreground">{rateLabel}</span>
       </div>
       <p className="text-xs text-muted-foreground">{t('wealthSavings.definitionNote')}</p>
@@ -152,7 +185,8 @@ export function SavingsTab() {
               axisLine={false}
               tickLine={false}
               width={48}
-              domain={[(min: number) => Math.min(0, min), (max: number) => Math.max(0.55, max) * 1.1]}
+              allowDataOverflow
+              domain={[domainMin, domainMax]}
             />
             <ReferenceLine y={0} stroke={theme.axis} />
             {SAVINGS_RATE_BANDS.map((band) => (
@@ -162,6 +196,23 @@ export function SavingsTab() {
                 stroke={theme.grid}
                 strokeDasharray="4 4"
                 label={{ value: formatPct(band, 0, locale), position: 'right', fill: theme.axis, fontSize: 10 }}
+              />
+            ))}
+            {clippedRows.map((row) => (
+              <ReferenceDot
+                key={row.month}
+                x={row.month}
+                y={row.value! > 0 ? SAVINGS_RATE_CLIP_BOUND : -SAVINGS_RATE_CLIP_BOUND}
+                r={0}
+                fill="none"
+                stroke="none"
+                ifOverflow="visible"
+                label={{
+                  value: mask(formatPct(row.value, 0, locale)),
+                  position: row.value! > 0 ? 'top' : 'bottom',
+                  fill: theme.axis,
+                  fontSize: 10,
+                }}
               />
             ))}
             <Tooltip
@@ -207,10 +258,11 @@ export function SavingsTab() {
         </ResponsiveContainer>
       </ChartCard>
 
-      {(showPartialNote || showCoverageNote) && (
+      {(showPartialNote || showCoverageNote || showClippedNote) && (
         <div className="space-y-1 text-xs text-muted-foreground">
           {showPartialNote && <p>{t('wealthSavings.flags.partial')}</p>}
           {showCoverageNote && <p>{t('wealthSavings.flags.outsideCoverage')}</p>}
+          {showClippedNote && <p>{t('wealthSavings.flags.clipped')}</p>}
         </div>
       )}
     </div>
