@@ -20,6 +20,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import type { Category, CategoryGroup, RecurringTransaction } from '@/types'
+import type { WealthRecurringSuggestion } from '@/types/wealth'
 import { Pencil, Trash2, Plus, RefreshCw, Info } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/page-header'
@@ -29,6 +30,8 @@ import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { formatCurrency } from '@/lib/format'
+import { wealth } from '@/lib/api'
+import { RecurringSuggestionsCard } from '@/components/wealth/cash/recurring-suggestions-card'
 
 const TH = 'text-xs font-medium text-muted-foreground py-3'
 
@@ -66,12 +69,14 @@ function RecurringTab() {
   const dateLocale = useDateLocale()
   const { mask } = usePrivacyMode()
   const { user } = useAuth()
-  const { canWrite } = useWorkspace()
+  const { canWrite, hasModule } = useWorkspace()
+  const wealthEnabled = hasModule('wealth')
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
   const queryClient = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<RecurringTransaction | null>(null)
   const [deletingRecurring, setDeletingRecurring] = useState<RecurringTransaction | null>(null)
+  const [creatingMerchant, setCreatingMerchant] = useState<string | null>(null)
 
   const { data: recurringList } = useQuery({
     queryKey: ['recurring'],
@@ -97,6 +102,16 @@ function RecurringTab() {
   const { data: accountsList } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => accountsApi.list(),
+  })
+
+  // "Detected but not tracked" (plan B5b/S8): recurring charges the Cash tab's
+  // detector found with no recurring rule yet. The endpoint is only called
+  // when the workspace has the wealth module -- without it, nothing changes
+  // here (`enabled: wealthEnabled`).
+  const { data: subscriptionsData } = useQuery({
+    queryKey: ['wealth', 'subscriptions'],
+    queryFn: wealth.subscriptions,
+    enabled: wealthEnabled,
   })
 
   const createMutation = useMutation({
@@ -146,6 +161,19 @@ function RecurringTab() {
     onError: () => toast.error(t('common.error')),
   })
 
+  const addSuggestionMutation = useMutation({
+    mutationFn: (suggestion: WealthRecurringSuggestion) =>
+      recurringApi.create(suggestion.create_payload as Partial<RecurringTransaction>),
+    onMutate: (suggestion: WealthRecurringSuggestion) => setCreatingMerchant(suggestion.merchant),
+    onSuccess: () => {
+      invalidateFinancialQueries(queryClient)
+      queryClient.invalidateQueries({ queryKey: ['recurring'] })
+      toast.success(t('recurring.created'))
+    },
+    onError: () => toast.error(t('common.error')),
+    onSettled: () => setCreatingMerchant(null),
+  })
+
   const frequencyLabel = (f: string) => {
     const map: Record<string, string> = {
       monthly: t('recurring.monthly'),
@@ -160,6 +188,18 @@ function RecurringTab() {
 
   return (
     <>
+      {wealthEnabled && subscriptionsData && subscriptionsData.suggestions.length > 0 && (
+        <div className="mb-5">
+          <RecurringSuggestionsCard
+            suggestions={subscriptionsData.suggestions}
+            currency={subscriptionsData.currency}
+            locale={locale}
+            onCreate={(suggestion) => addSuggestionMutation.mutate(suggestion)}
+            isCreating={(merchant) => creatingMerchant === merchant}
+          />
+        </div>
+      )}
+
       <SectionCard>
         <SectionHeader
           title={t('recurring.title')}
