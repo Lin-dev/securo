@@ -149,6 +149,7 @@ async def test_achieved_when_current_meets_or_exceeds_target(
         target_date=app_today() + timedelta(days=365),
     )
     read = await goal_service.get_goal(session, goal.id, test_workspace.id, test_user.id)
+    assert read is not None
     [summary] = await goal_service.get_goal_summary(session, test_workspace.id, test_user.id, limit=10)
 
     assert read.on_track == "achieved"
@@ -164,6 +165,7 @@ async def test_overdue_when_target_date_has_passed_without_achieving(
         target_date=app_today() - timedelta(days=10),
     )
     read = await goal_service.get_goal(session, goal.id, test_workspace.id, test_user.id)
+    assert read is not None
     [summary] = await goal_service.get_goal_summary(session, test_workspace.id, test_user.id, limit=10)
 
     assert read.on_track == "overdue"
@@ -188,8 +190,11 @@ async def test_ahead_on_track_and_behind_from_the_engines_own_projected_date(
     )
 
     ahead = await goal_service.get_goal(session, ahead_goal.id, test_workspace.id, test_user.id)
+    assert ahead is not None
     on_track = await goal_service.get_goal(session, on_track_goal.id, test_workspace.id, test_user.id)
+    assert on_track is not None
     behind = await goal_service.get_goal(session, behind_goal.id, test_workspace.id, test_user.id)
+    assert behind is not None
 
     assert ahead.on_track == "ahead"
     assert on_track.on_track == "on_track"
@@ -209,6 +214,7 @@ async def test_behind_when_unreachable_within_the_engines_horizon(
         target_date=app_today() + timedelta(days=3650),
     )
     read = await goal_service.get_goal(session, goal.id, test_workspace.id, test_user.id)
+    assert read is not None
 
     assert read.projected_date is None
     assert read.on_track == "behind"
@@ -219,6 +225,7 @@ async def test_no_target_date_keeps_on_track_none(
 ):
     goal = await _goal(session, test_user, test_workspace, target_amount=150_000.0, target_date=None)
     read = await goal_service.get_goal(session, goal.id, test_workspace.id, test_user.id)
+    assert read is not None
 
     assert read.on_track is None
     assert read.monthly_contribution is None
@@ -246,6 +253,7 @@ async def test_monthly_contribution_matches_required_monthly_contribution(
     expected = round(raw_expected, 2)
 
     read = await goal_service.get_goal(session, goal.id, test_workspace.id, test_user.id)
+    assert read is not None
     [summary] = await goal_service.get_goal_summary(session, test_workspace.id, test_user.id, limit=10)
 
     assert read.monthly_contribution == pytest.approx(expected)
@@ -264,7 +272,9 @@ async def test_monthly_contribution_is_zero_once_achieved_or_overdue(
         target_date=app_today() - timedelta(days=5),
     )
     achieved_read = await goal_service.get_goal(session, achieved.id, test_workspace.id, test_user.id)
+    assert achieved_read is not None
     overdue_read = await goal_service.get_goal(session, overdue.id, test_workspace.id, test_user.id)
+    assert overdue_read is not None
 
     assert achieved_read.monthly_contribution == 0.0
     assert overdue_read.monthly_contribution == 0.0
@@ -300,6 +310,7 @@ async def test_manual_goal_has_no_projected_date_and_keeps_the_straight_line_beh
         target_date=app_today() + timedelta(days=100), tracking_type="manual",
     )
     read = await goal_service.get_goal(session, goal.id, test_workspace.id, test_user.id)
+    assert read is not None
     [summary] = await goal_service.get_goal_summary(session, test_workspace.id, test_user.id, limit=10)
 
     assert read.projected_date is None
