@@ -1,12 +1,14 @@
 import { useEffect, useRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery } from '@tanstack/react-query'
 import { transactions as transactionsApi, dashboard, admin } from '@/lib/api'
-import { AlertTriangle, Clock, Info, Paperclip, X } from 'lucide-react'
+import { AlertTriangle, Clock, ExternalLink, Info, Paperclip, X } from 'lucide-react'
 import { CategoryIcon } from '@/components/category-icon'
 import { ProjectedTransactionBadge } from '@/components/projected-transaction-badge'
 import { sumDrillDownTotals } from '@/lib/drill-down-totals'
+import { transactionsUrl } from '@/lib/drilldown'
 import { hasOpenDialog, isInsideOverlayLayer } from '@/lib/overlay-layers'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useAuth } from '@/contexts/auth-context'
@@ -24,6 +26,10 @@ export type DrillDownFilter = {
   type?: 'credit' | 'debit'
   from?: string
   to?: string
+  // This filter is exactly a P1 income or expense figure (plan S5): the
+  // "View in Transactions" link carries `wealth_pnl_only=1` so the page
+  // shows the identical row set, not the dashboard's looser ledger total.
+  wealthPnlOnly?: boolean
 }
 
 type DisplayItem = {
@@ -79,6 +85,25 @@ export function TransactionDrillDown({
 
   // Derive month param from filter.from for projected transactions
   const monthParam = filter?.from ? filter.from.slice(0, 7) + '-01' : undefined
+
+  // "View in Transactions" (plan S5/P8): only once the filter carries a
+  // concrete window -- `transactionsUrl` always sets `from`/`to`, and
+  // without them Transactions falls back to the current calendar month,
+  // silently landing on the wrong one for a filter opened without a window
+  // (e.g. the uncategorized-transactions banner).
+  const viewInTransactionsUrl = filter?.from && filter?.to
+    ? transactionsUrl({
+        from: filter.from,
+        to: filter.to,
+        categoryId: filter.category_id,
+        accountId: filter.account_ids?.length ? filter.account_ids.join(',') : filter.account_id,
+        extra: {
+          type: filter.type,
+          uncategorized: filter.uncategorized ? '1' : undefined,
+          wealth_pnl_only: filter.wealthPnlOnly ? '1' : undefined,
+        },
+      })
+    : null
 
   const { data: projectedTxs } = useQuery({
     queryKey: ['dashboard', 'projected-transactions', monthParam],
@@ -208,17 +233,29 @@ export function TransactionDrillDown({
         }`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+        <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-border shrink-0">
           <h2 className="text-sm font-semibold text-foreground truncate pr-4">
             {filter?.title}
           </h2>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
-            title={t('common.close')}
-          >
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            {viewInTransactionsUrl && (
+              <Link
+                to={viewInTransactionsUrl}
+                aria-label={t('dashboard.viewInTransactions')}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-primary hover:bg-muted transition-colors"
+              >
+                <ExternalLink size={12} aria-hidden="true" />
+                <span className="hidden sm:inline">{t('dashboard.viewInTransactions')}</span>
+              </Link>
+            )}
+            <button
+              onClick={onClose}
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
+              title={t('common.close')}
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         {isAccrual && filter?.from && (

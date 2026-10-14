@@ -85,4 +85,34 @@ describe('TransactionDrillDown', () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
   })
+
+  it('has no "View in Transactions" link when the filter carries no window', async () => {
+    renderPanel({ dialogOpen: false })
+
+    expect(screen.queryByRole('link', { name: 'View in Transactions' })).toBeNull()
+  })
+
+  it('carries from, to, category and wealth_pnl_only on the "View in Transactions" link', async () => {
+    const windowedFilter = {
+      title: 'Rent — October',
+      category_id: 'cat-1',
+      type: 'debit' as const,
+      from: '2026-10-01',
+      to: '2026-10-31',
+      wealthPnlOnly: true,
+    }
+    renderWithProviders(
+      <TransactionDrillDown filter={windowedFilter} onClose={vi.fn()} />,
+    )
+
+    const link = await screen.findByRole('link', { name: 'View in Transactions' })
+    const href = link.getAttribute('href') ?? ''
+    const params = new URLSearchParams(href.split('?')[1])
+    expect(href.startsWith('/transactions?')).toBe(true)
+    expect(params.get('from')).toBe('2026-10-01')
+    expect(params.get('to')).toBe('2026-10-31')
+    expect(params.get('category_id')).toBe('cat-1')
+    expect(params.get('type')).toBe('debit')
+    expect(params.get('wealth_pnl_only')).toBe('1')
+  })
 })
