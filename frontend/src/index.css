@@ -26,11 +26,24 @@
   --input: #E8ECF1;
   --ring: #6366F1;
   --radius: 0.625rem;
-  --chart-1: #6366F1;
-  --chart-2: #8B5CF6;
-  --chart-3: #10B981;
-  --chart-4: #F59E0B;
-  --chart-5: #F43F5E;
+  /* Okabe-Ito colour-blind-safe palette for the shared chart kit
+     (components/charts/*, lib/chart-*). Series must stay distinguishable by
+     more than hue alone (dash pattern, label, sign glyph), since these 8
+     hues are chosen for deuteranopia/protanopia safety, not infinite
+     distinctness. Slot 8 stands in for Okabe-Ito's black with a neutral
+     grey, since pure black reads as a border/foreground colour here. */
+  --chart-1: #E69F00;
+  --chart-2: #56B4E9;
+  --chart-3: #009E73;
+  --chart-4: #F0E442;
+  --chart-5: #0072B2;
+  --chart-6: #D55E00;
+  --chart-7: #CC79A7;
+  --chart-8: #767676;
+  --chart-grid: var(--border);
+  --chart-axis: var(--muted-foreground);
+  --chart-positive: #059669;
+  --chart-negative: #F43F5E;
   --sidebar: #FFFFFF;
   --sidebar-foreground: #0F172A;
   --sidebar-primary: #6366F1;
@@ -62,6 +75,18 @@
   --border: #2A2D3A;
   --input: #2A2D3A;
   --ring: #818CF8;
+  /* Same Okabe-Ito hues, lifted in lightness/trimmed in saturation to read
+     clearly against the dark background instead of going muddy or neon. */
+  --chart-1: #F2C55F;
+  --chart-2: #74BDE7;
+  --chart-3: #5CEBC4;
+  --chart-4: #F3EC91;
+  --chart-5: #4CB5F0;
+  --chart-6: #F19A55;
+  --chart-7: #D289B1;
+  --chart-8: #9E9E9E;
+  --chart-positive: #34D399;
+  --chart-negative: #FB7185;
   --sidebar: #16171F;
   --sidebar-foreground: #F0F0F5;
   --sidebar-primary: #818CF8;
@@ -104,6 +129,9 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
