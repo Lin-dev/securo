@@ -62,6 +62,14 @@ _SEED_GAP_DAYS = 7
 # ---------------------------------------------------------------------------
 
 
+def _may_fetch(as_of: date) -> bool:
+    """Only today's conversions may ask the FX provider for a missing rate (as the
+    dashboard does). A past point reads stored rates and falls back from there, so
+    a chart of N month-ends never makes N provider calls for a currency the provider
+    cannot price (a holding coded in a crypto currency, for one)."""
+    return as_of >= app_today()
+
+
 def _month_end_points(today: date, months: int) -> list[date]:
     """Calendar month-end dates for the `months` completed months before today.
 
@@ -210,7 +218,7 @@ async def holdings_value_by_account(
             return 0.0
         if amount == 0.0 or asset.currency == account.currency:
             return amount
-        converted, _ = await convert(session, Decimal(str(amount)), asset.currency, account.currency, as_of)
+        converted, _ = await convert(session, Decimal(str(amount)), asset.currency, account.currency, as_of, allow_fetch=_may_fetch(as_of))
         return float(converted)
 
     values: dict[date, float] = {}
@@ -477,7 +485,7 @@ async def _asset_value_primary(session: AsyncSession, asset: Asset, values_map: 
     amount = _fill_forward_at(asset, values_map.get(str(asset.id), []), as_of)
     if not amount:
         return 0.0
-    converted, _ = await convert(session, Decimal(str(amount)), asset.currency, primary_currency, as_of)
+    converted, _ = await convert(session, Decimal(str(amount)), asset.currency, primary_currency, as_of, allow_fetch=_may_fetch(as_of))
     return float(converted)
 
 
@@ -560,7 +568,7 @@ async def _point_at(
         value_native = collapsed.get(plan.account.id, 0.0)
         value_primary = 0.0
         if value_native:
-            converted, _ = await convert(session, Decimal(str(value_native)), plan.account.currency, primary_currency, as_of)
+            converted, _ = await convert(session, Decimal(str(value_native)), plan.account.currency, primary_currency, as_of, allow_fetch=_may_fetch(as_of))
             value_primary = float(converted)
         account_values[plan.account.id] = value_primary
         buckets[plan.bucket_choice.bucket] += value_primary
