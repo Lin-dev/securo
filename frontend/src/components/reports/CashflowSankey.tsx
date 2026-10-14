@@ -526,8 +526,11 @@ export function CashflowSankey({ composition, currency, locale, window }: Cashfl
         </svg>
       )}
 
-      {/* Accessible table fallback — also a non-visual summary of the flows. */}
-      <table className="sr-only">
+      {/* Accessible table fallback — also a non-visual summary of the flows. The
+          wrapper carries sr-only: on a <table> itself it does not shrink, and the
+          table pushed the page wider than a phone screen. */}
+      <div className="sr-only">
+      <table>
         <caption>{t('reports.flowChartAria')}</caption>
         <thead>
           <tr>
@@ -550,6 +553,7 @@ export function CashflowSankey({ composition, currency, locale, window }: Cashfl
             })}
         </tbody>
       </table>
+      </div>
 
       <TransactionDrillDown filter={drillFilter} onClose={() => setDrillFilter(null)} />
     </div>
