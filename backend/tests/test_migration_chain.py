@@ -42,8 +42,13 @@ def downgrade() -> None:
 '''
 
 
-def _write(directory: Path, filename: str, revision: str, down: str | None) -> None:
-    down_literal = "None" if down is None else f'"{down}"'
+def _write(directory: Path, filename: str, revision: str, down: str | tuple[str, ...] | None) -> None:
+    if down is None:
+        down_literal = "None"
+    elif isinstance(down, tuple):
+        down_literal = "(" + ", ".join(f'"{d}"' for d in down) + ")"
+    else:
+        down_literal = f'"{down}"'
     directory.joinpath(filename).write_text(
         _TEMPLATE.format(description=filename, revision=revision, down=down_literal),
         encoding="utf-8",
@@ -123,3 +128,22 @@ def test_empty_directory_is_reported(tmp_path: Path):
     empty.mkdir()
 
     assert any("no migration files found" in p for p in check(empty))
+
+
+def test_merge_revision_joins_two_heads(versions: Path):
+    # A fork branch off 002 plus upstream's 003: two heads until a merge
+    # revision names both as parents.
+    _write(versions, "qc001_fork.py", "qc001", "002")
+    assert any("expected exactly one head, found 2" in p for p in check(versions))
+
+    _write(versions, "qc002_merge_heads.py", "qc002", ("003", "qc001"))
+
+    assert check(versions) == []
+
+
+def test_merge_revision_with_missing_parent_is_reported(versions: Path):
+    _write(versions, "qc002_merge_heads.py", "qc002", ("003", "qc999"))
+
+    problems = check(versions)
+
+    assert any("down_revision 'qc999' does not exist" in p for p in problems)

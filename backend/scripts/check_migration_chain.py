@@ -27,16 +27,20 @@ from pathlib import Path
 VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
 
 # `revision: str = "074"` and `down_revision: Union[str, None] = "073"`, plus
-# the plain unannotated forms, single or double quoted.
+# the plain unannotated forms, single or double quoted. A merge revision names
+# a tuple of parents: `down_revision = ("096", "qc001")`.
 _REVISION_RE = re.compile(r"^revision(?:\s*:\s*[^=]+)?\s*=\s*['\"]([^'\"]+)['\"]", re.M)
-_DOWN_RE = re.compile(r"^down_revision(?:\s*:\s*[^=]+)?\s*=\s*(?:['\"]([^'\"]+)['\"]|None)", re.M)
+_DOWN_RE = re.compile(
+    r"^down_revision(?:\s*:\s*[^=]+)?\s*=\s*(None|['\"][^'\"]+['\"]|\([^)]*\))", re.M
+)
+_QUOTED_RE = re.compile(r"['\"]([^'\"]+)['\"]")
 
 
 class Revision:
-    def __init__(self, path: Path, revision: str, down_revision: str | None):
+    def __init__(self, path: Path, revision: str, down_revisions: tuple[str, ...]):
         self.path = path
         self.revision = revision
-        self.down_revision = down_revision
+        self.down_revisions = down_revisions
 
     @property
     def name(self) -> str:
@@ -63,7 +67,8 @@ def load_revisions(versions_dir: Path) -> tuple[list[Revision], list[str]]:
             errors.append(f"{path.name}: no `down_revision = ...` assignment found")
             continue
 
-        revisions.append(Revision(path, revision_match.group(1), down_match.group(1)))
+        parents = tuple(_QUOTED_RE.findall(down_match.group(1)))
+        revisions.append(Revision(path, revision_match.group(1), parents))
 
     return revisions, errors
 
@@ -89,12 +94,11 @@ def check(versions_dir: Path) -> list[str]:
 
     # A typo in down_revision, or a migration deleted out from under its child.
     for rev in revisions:
-        if rev.down_revision is not None and rev.down_revision not in by_revision:
-            errors.append(
-                f"{rev.name}: down_revision {rev.down_revision!r} does not exist"
-            )
+        for parent in rev.down_revisions:
+            if parent not in by_revision:
+                errors.append(f"{rev.name}: down_revision {parent!r} does not exist")
 
-    bases = [rev for rev in revisions if rev.down_revision is None]
+    bases = [rev for rev in revisions if not rev.down_revisions]
     if len(bases) != 1:
         listed = ", ".join(sorted(rev.name for rev in bases)) or "none"
         errors.append(
@@ -103,8 +107,9 @@ def check(versions_dir: Path) -> list[str]:
         )
 
     # A head is a revision nothing chains off. More than one means the history
-    # forked, which is what `alembic upgrade head` refuses to resolve.
-    parents = {rev.down_revision for rev in revisions if rev.down_revision}
+    # forked, which is what `alembic upgrade head` refuses to resolve. A merge
+    # revision that names both sides as parents joins them back into one head.
+    parents = {parent for rev in revisions for parent in rev.down_revisions}
     heads = [rev for rev in revisions if rev.revision not in parents]
     if len(heads) != 1:
         listed = ", ".join(f"{rev.revision} ({rev.name})" for rev in sorted(heads, key=lambda r: r.name))
@@ -147,7 +152,7 @@ def main() -> int:
         return 1
 
     revisions, _ = load_revisions(versions_dir)
-    parents = {rev.down_revision for rev in revisions if rev.down_revision}
+    parents = {parent for rev in revisions for parent in rev.down_revisions}
     head = next(rev for rev in revisions if rev.revision not in parents)
     print(
         f"Alembic revision chain is a single line: {len(revisions)} migrations, "
