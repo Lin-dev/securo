@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.category import Category
 from app.models.payee import Payee
 from app.models.transaction import Transaction
+from app.models.user import User
 from app.services._query_filters import counts_as_pnl, is_split_parent
 from app.services.wealth.classify import ASSET_CLASS_LABELS, BROAD_TICKERS, classify_asset_class  # noqa: F401  (re-exported)
 from app.services.wealth.merchant import detect_recurring
@@ -236,39 +237,63 @@ async def advisor_facts(
     workspace_id: uuid.UUID,
     primary: str,
     today: date,
+    user_id: uuid.UUID,
+    user: Optional[User] = None,
 ) -> dict[str, Any]:
     """Every figure the advice rules read (advice.py facts contract) plus the tables' figures.
 
-    `tool(name, **args)` runs a Securo tool in-process, so FIRE figures are exactly
-    fire_projection's (spend and contributions annualized over the days of complete data)
-    and the savings rate is the Money Map's over the same window."""
+    `tool(name, **args)` runs a Securo tool in-process, so FI assumptions (invested_assets,
+    fi_number, years_now) are exactly fire_projection's. monthly_spend, annual_spend,
+    annual_contribution, savings_rate and direct_annual read `wealth.figures.typical_figures`
+    directly (plan P1): typical (one-offs excluded) annualized expenses, saving
+    (income - expenses + direct) and the P1 savings rate over the coverage window.
+    `user` resolves the caller's wealth settings (income categories, account buckets,
+    one-off overrides); with no user row the defaults apply.
+    """
     from sqlalchemy import select as _select
 
+    from app.schemas.wealth import WealthSettingsValues
     from app.services.wealth import policy as advice
     from app.agents.services import digest_service
     from app.models.account import Account
     from app.models.asset import Asset
     from app.services import account_service, fire_service
+    from app.services.wealth.figures import typical_figures
+    from app.services.wealth.settings import load_settings
     from mcp_server.tools.finance import coverage_window
 
     cov = await coverage_window(session, workspace_id, today)
     scale, days = float(cov["scale"]), int(cov["days"])
 
+    settings = load_settings(user) if user is not None else WealthSettingsValues()
+    typical = await typical_figures(session, workspace_id, user_id, settings=settings)
+
     fire = await tool("fire_projection")
     inputs = fire.get("inputs") or {}
-    annual_spend = float(inputs.get("annual_spend") or 0.0)
     invested_assets = float(inputs.get("invested_assets") or 0.0)
-    annual_contribution = float(inputs.get("annual_contribution") or 0.0)
     real_return = float(inputs.get("real_return") or 0.05)
     withdrawal = float(inputs.get("withdrawal_rate") or 0.04)
     fi_number = float(fire.get("fi_number") or 0.0)
     years_now = _capped_years(fire.get("years_to_fi"))
+
+    # P1: typical (one-offs excluded) annualized figures over the coverage window.
+    annual_spend = round(typical.expenses.typical, 2)
+    annual_contribution = round(typical.saving.typical, 2)  # income - expenses + direct
+    direct_annual = round(typical.direct.typical, 2)
     monthly_spend = round(annual_spend / 12, 2) if annual_spend else None
+    rate_denom = typical.income.typical + typical.direct.typical
+    rate = (
+        round((typical.income.typical - typical.expenses.typical + typical.direct.typical) / rate_denom, 4)
+        if rate_denom > 0 else None
+    )
+    cash_flow_typical_monthly = (
+        round(typical.median_month.cash_flow_after_investing, 2)
+        if typical.median_month.cash_flow_after_investing is not None else None
+    )
 
     mm = (await tool("get_money_map", days=max(7, min(days, 730)))).get("totals") or {}
     income, expenses = float(mm.get("income") or 0.0), float(mm.get("expenses") or 0.0)
     direct, net = float(mm.get("direct_contributions") or 0.0), float(mm.get("net") or 0.0)
-    rate = mm.get("contribution_aware_savings_rate")
     mm90 = (await tool("get_money_map", days=90)).get("totals") or {}
     surplus_month = round(net * scale / 12, 2)
     surplus_seasonal = round(float(mm90.get("net") or 0.0) / 3, 2)
@@ -404,11 +429,12 @@ async def advisor_facts(
     return {
         "coverage": {"from_date": cov["from_date"].isoformat(), "to_date": today.isoformat(), "days": days,
                      "annualized": bool(cov["annualized"]), "insufficient_history": bool(cov["insufficient_history"])},
-        "monthly_spend": monthly_spend, "annual_spend": round(annual_spend, 2),
-        "annual_contribution": round(annual_contribution, 2), "monthly_contribution": round(annual_contribution / 12, 2),
+        "monthly_spend": monthly_spend, "annual_spend": annual_spend,
+        "annual_contribution": annual_contribution, "monthly_contribution": round(annual_contribution / 12, 2),
         "invested_assets": round(invested_assets, 2), "fi_number": round(fi_number, 2), "years_now": years_now,
         "income_annual": round(income * scale, 2), "expenses_annual": round(expenses * scale, 2),
-        "direct_annual": round(direct * scale, 2), "savings_rate": rate,
+        "direct_annual": direct_annual, "savings_rate": rate,
+        "cash_flow_typical_monthly": cash_flow_typical_monthly,
         "surplus_month": surplus_month, "surplus_seasonal": surplus_seasonal,
         "band_next": band_next, "band_cut": band_cut, "fi_after_cut": fi_after_cut, "years_after_cut": years_after_cut,
         "ladder": ladder, "lump": lump,

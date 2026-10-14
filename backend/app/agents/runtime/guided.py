@@ -1435,7 +1435,10 @@ async def _advisor_facts(ctx: GuidedContext) -> dict[str, Any]:
         except GuidedFallthrough:
             return {}  # e.g. fire_projection with no spending yet: the rules that need it are skipped
 
-    return await advisor_figures.advisor_facts(ctx.session, tool, workspace_id=await _workspace_id(ctx), primary=ctx.currency, today=ctx.today)
+    return await advisor_figures.advisor_facts(
+        ctx.session, tool, workspace_id=await _workspace_id(ctx), primary=ctx.currency, today=ctx.today,
+        user_id=ctx.user_id, user=ctx.user,
+    )
 
 
 def _attach_advice(ctx: GuidedContext, pack: dict[str, Any], facts: dict[str, Any]) -> None:

@@ -88,6 +88,44 @@ async def test_invest_plan_agrees_with_fire_projection_and_grounds_its_next_move
     assert "If you invest more each month" in prep.table_md and prep.chart is not None
 
 
+async def test_advisor_facts_savings_rate_and_direct_annual_equal_the_p1_typical_figures(
+    session: AsyncSession, test_user, test_workspace, test_agent
+):
+    """`advisor_facts`'s savings_rate, direct_annual and annual_contribution must
+    equal `wealth.figures.typical_figures` (plan P1): the typical (one-offs
+    excluded) annualized figures over the coverage window, not the Money Map's
+    own rolling-window totals."""
+    from app.agents.runtime.guided import call_local_tool
+    from app.agents.services import advisor_figures
+    from app.schemas.wealth import WealthSettingsValues
+    from app.services.wealth.figures import typical_figures
+
+    await _seed_summary_rows(session, test_user.id, test_workspace.id)  # income 1000, expense 30, invested 225, direct 50
+    ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
+
+    async def tool(name, **args):
+        return await call_local_tool(ctx.session, ctx, name, **args)
+
+    facts = await advisor_figures.advisor_facts(
+        ctx.session, tool, workspace_id=test_workspace.id, primary=ctx.currency, today=ctx.today,
+        user_id=test_user.id, user=test_user,
+    )
+    typical = await typical_figures(session, test_workspace.id, test_user.id, settings=WealthSettingsValues())
+    denom = typical.income.typical + typical.direct.typical
+    expected_rate = (
+        round((typical.income.typical - typical.expenses.typical + typical.direct.typical) / denom, 4)
+        if denom > 0 else None
+    )
+    assert facts["savings_rate"] == expected_rate
+    assert facts["direct_annual"] == round(typical.direct.typical, 2)
+    assert facts["annual_contribution"] == round(typical.saving.typical, 2)
+    assert facts["annual_spend"] == round(typical.expenses.typical, 2)
+    assert facts["cash_flow_typical_monthly"] == (
+        round(typical.median_month.cash_flow_after_investing, 2)
+        if typical.median_month.cash_flow_after_investing is not None else None
+    )
+
+
 async def test_invest_plan_reports_invested_in_a_named_period(session: AsyncSession, test_user, test_workspace, test_agent):
     await _seed_summary_rows(session, test_user.id, test_workspace.id)
     ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())

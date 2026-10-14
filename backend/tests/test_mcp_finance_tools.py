@@ -459,14 +459,20 @@ async def test_get_holdings_account_filter_returns_only_that_account(
 async def test_fire_projection_derives_defaults_from_data(
     session: AsyncSession, ctx: CallContext, test_user, test_workspace
 ):
+    # P1 (plan decision P1): annual_contribution is now typical annualized *saving*
+    # (income - expenses + direct), not the literal invested-lane total, so this
+    # fixture needs an income leg to keep saving non-negative (fire_service rejects
+    # a negative contribution).
     uid, wid = test_user.id, test_workspace.id
     checking = await _account(session, uid, wid, "Checking", "checking")
     brokerage = await _account(session, uid, wid, "Brokerage", "investment")
     contribution = await _category(session, uid, wid, INVESTMENT_CONTRIBUTION_CATEGORY)
     activity = await _category(session, uid, wid, "Brokerage activity")
+    salary = await _category(session, uid, wid, "Salary", transfer=False)
     session.add_all([
+        _txn(uid, wid, checking, 10000, "credit", salary),      # income
         _txn(uid, wid, checking, 3000, "debit"),                # expense
-        _txn(uid, wid, checking, 75, "debit", contribution),    # invested
+        _txn(uid, wid, checking, 75, "debit", contribution),    # invested (not direct: a checking debit)
         _txn(uid, wid, brokerage, 5000, "credit", activity),    # balance, not P&L
     ])
     await session.commit()
@@ -478,19 +484,79 @@ async def test_fire_projection_derives_defaults_from_data(
 
     assert result["currency"] == "BRL"
     assert result["derived"]["annual_spend"]["value"] == 3000.0
-    assert result["derived"]["annual_contribution"]["value"] == 75.0
+    # 10000 income - 3000 expenses + 0 direct (the $75 is a checking debit, not an
+    # unpaired investment-account credit, so it is invested but not "direct").
+    assert result["derived"]["annual_contribution"]["value"] == 7000.0
     assert result["derived"]["invested_assets"]["value"] == 5100.0
     assert result["derived"]["invested_assets"]["unconverted"]["holdings_by_currency"] == {"USD": 400.0}
+    assert result["derived"]["one_offs_excluded"] == {"count": 0, "total": 0.0}
+    assert result["derived"]["definition"] == "P1"
     assert result["inputs"] == {
-        "annual_spend": 3000.0, "invested_assets": 5100.0, "annual_contribution": 75.0,
+        "annual_spend": 3000.0, "invested_assets": 5100.0, "annual_contribution": 7000.0,
         "real_return": 0.05, "withdrawal_rate": 0.04, "max_years": 60,
     }
     assert result["fi_number"] == 75_000.0
     assert result["gap"] == 75_000.0 - 5100.0
-    assert result["years_to_fi"] is not None and 40 < result["years_to_fi"] < 60
+    assert result["years_to_fi"] is not None and 5 < result["years_to_fi"] < 15
     assert result["trajectory"][0]["start"] == 5100.0
-    assert result["trajectory_truncated"] is True  # capped at 40 rows
+    assert result["trajectory_truncated"] is False  # the balance reaches target well under 40 rows
     assert "notes" in result
+
+
+async def test_fire_projection_derived_figures_equal_typical_figures_with_a_refund_one_off_and_direct(
+    session: AsyncSession, ctx: CallContext, test_user, test_workspace
+):
+    """derived.annual_spend and derived.annual_contribution must equal
+    `wealth.figures.typical_figures` (plan P1) for a scenario carrying all three
+    things P1 treats specially: a refund (netted per category), a one-off expense
+    (excluded from "typical") and a direct contribution (counted in saving, not
+    the literal invested-lane total)."""
+    from app.schemas.wealth import WealthSettingsValues
+    from app.services.wealth.figures import typical_figures
+    from app.services.wealth.spending import month_start
+
+    uid, wid = test_user.id, test_workspace.id
+    checking = await _account(session, uid, wid, "Checking", "checking")
+    brokerage = await _account(session, uid, wid, "Brokerage", "investment")
+    salary = await _category(session, uid, wid, "Salary", transfer=False)
+    rent = await _category(session, uid, wid, "Rent", transfer=False)
+    repair = await _category(session, uid, wid, "Home repair", transfer=False)
+    dining = await _category(session, uid, wid, "Dining", transfer=False)
+    contribution = await _category(session, uid, wid, INVESTMENT_CONTRIBUTION_CATEGORY)
+    today = date.today()
+    m1, m2, m3 = month_start(today, 1), month_start(today, 2), month_start(today, 3)
+    session.add_all([
+        # three full prior months: steady salary and rent, plus a one-off repair in m1
+        _txn(uid, wid, checking, 3000, "credit", salary, when=m1 + timedelta(days=4)),
+        _txn(uid, wid, checking, 800, "debit", rent, when=m1 + timedelta(days=9)),
+        _txn(uid, wid, checking, 5000, "debit", repair, when=m1 + timedelta(days=14)),  # the one-off
+        _txn(uid, wid, checking, 3000, "credit", salary, when=m2 + timedelta(days=4)),
+        _txn(uid, wid, checking, 800, "debit", rent, when=m2 + timedelta(days=9)),
+        # m3's salary lands exactly on the 1st so coverage starts there, keeping m3
+        # a *full* month too (a mid-month coverage start would make it partial and
+        # drop out of the one-off scan, as `_full_months` only counts whole months).
+        _txn(uid, wid, checking, 3000, "credit", salary, when=m3),
+        _txn(uid, wid, checking, 800, "debit", rent, when=m3 + timedelta(days=9)),
+        # the current (partial) month: a refund, plus a direct contribution
+        _txn(uid, wid, checking, 3000, "credit", salary, when=today),
+        _txn(uid, wid, checking, 800, "debit", rent, when=today),
+        _txn(uid, wid, checking, 200, "debit", dining, when=today),
+        _txn(uid, wid, checking, 50, "credit", dining, when=today),                 # the refund
+        _txn(uid, wid, brokerage, 100, "credit", contribution, when=today),         # unpaired -> direct
+    ])
+    await session.commit()
+
+    result = await REGISTRY["fire_projection"].handler(session=session, ctx=ctx)
+    typical = await typical_figures(session, wid, uid, settings=WealthSettingsValues())
+
+    assert result["derived"]["definition"] == "P1"
+    assert result["derived"]["annual_spend"]["value"] == round(typical.expenses.typical, 2)
+    assert result["derived"]["annual_contribution"]["value"] == round(typical.saving.typical, 2)
+    # the scenario exercises what it claims to: the one-off actually moved "typical"
+    # down from "all", the refund netted once, and the direct contribution counted.
+    assert result["derived"]["one_offs_excluded"]["count"] >= 1
+    assert typical.expenses.typical < typical.expenses.all
+    assert typical.direct.typical > 0
 
 
 async def test_fire_projection_uses_explicit_inputs_and_reports_invalid_ones(

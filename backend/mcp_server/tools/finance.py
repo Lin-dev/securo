@@ -30,10 +30,13 @@ from app.services import (
     rule_service,
     transaction_service,
 )
+from app.schemas.wealth import WealthSettingsValues
 from app.services._query_filters import is_split_parent
 from app.services.fire_service import FireInputs
 from app.services.report_service import _report_start_date
 from app.services.wealth.coverage import MIN_COVERAGE_DAYS, coverage_window  # noqa: F401  (re-exported)
+from app.services.wealth.figures import detect_one_offs, typical_figures
+from app.services.wealth.settings import load_settings
 from mcp_server.auth import CallContext
 from mcp_server.registry import tool
 from mcp_server.tools._helpers import (
@@ -76,6 +79,14 @@ _SUMMARY_NOTES = (
 async def _primary_currency(session: AsyncSession, ctx: CallContext) -> str:
     user = await session.get(User, ctx.user_id)
     return user.primary_currency if user is not None else "USD"
+
+
+async def _wealth_settings(session: AsyncSession, ctx: CallContext) -> WealthSettingsValues:
+    """The caller's wealth settings (plan P6), or the defaults when no user row
+    is found — every P1 figure in this module reads income categories, account
+    buckets and one-off overrides through this."""
+    user = await session.get(User, ctx.user_id)
+    return load_settings(user) if user is not None else WealthSettingsValues()
 
 
 def _round(v: float) -> float:
@@ -736,13 +747,14 @@ async def get_holdings(
     description=(
         "Financial-independence math: FI number (annual spend / withdrawal rate), gap, "
         "progress, years to FI and a year-by-year trajectory. Inputs you omit are "
-        "derived from Securo data — annual_spend and annual_contribution from the "
-        "expense and invested figures of get_transactions_summary over the trailing 365 "
-        "days, or over the days of complete data annualized when the accounts were "
-        "connected more recently (see derived.coverage), "
-        "invested_assets from investment-account balances plus holdings not linked to an "
-        "account — and echoed under `derived` so you can state where each number came "
-        "from. real_return is after inflation; spending stays in today's money."
+        "derived from Securo data — annual_spend from typical annualized expenses and "
+        "annual_contribution from typical annualized saving (income - expenses + direct "
+        "contributions), one-offs excluded, over the trailing 365 days or over the days "
+        "of complete data annualized when the accounts were connected more recently (see "
+        "derived.coverage), invested_assets from investment-account balances plus "
+        "holdings not linked to an account — and echoed under `derived` so you can state "
+        "where each number came from. real_return is after inflation; spending stays in "
+        "today's money."
     ),
     parameters={
         "type": "object",
@@ -773,16 +785,17 @@ async def fire_projection(
 
     if annual_spend is None or annual_contribution is None:
         today = app_today()
-        cov = await coverage_window(session, ws_id, today)
-        window = await _summary_window(session, ws_id, ctx.user_id, cov["from_date"], today)
-        span = f"{window['from_date']} to {window['to_date']}"
+        settings = await _wealth_settings(session, ctx)
+        typical = await typical_figures(session, ws_id, ctx.user_id, settings=settings)
+        cov = typical.coverage
+        span = f"{cov['from_date'].isoformat()} to {cov['to_date'].isoformat()}"
         if cov["annualized"]:
             basis = f"{cov['days']} days of complete data ({span}), annualized x365/{cov['days']}"
         else:
             basis = f"trailing 365 days ({span})"
         derived["coverage"] = {
-            "from_date": window["from_date"], "to_date": window["to_date"], "days": cov["days"],
-            "annualized": cov["annualized"], "history_days": cov["history_days"],
+            "from_date": cov["from_date"].isoformat(), "to_date": cov["to_date"].isoformat(),
+            "days": cov["days"], "annualized": cov["annualized"], "history_days": cov["history_days"],
         }
         if cov["insufficient_history"]:
             derived["coverage"]["caution"] = (
@@ -793,14 +806,32 @@ async def fire_projection(
                 f"{cov['days']} days of complete data; treat the yearly figures as estimates"
             )
         if annual_spend is None:
-            annual_spend = _round(window["expense"] * cov["scale"])
-            derived["annual_spend"] = {"value": annual_spend, "source": f"expense, {basis}"}
+            annual_spend = _round(typical.expenses.typical)
+            derived["annual_spend"] = {
+                "value": annual_spend, "source": f"typical annualized expenses (one-offs excluded), {basis}",
+            }
         if annual_contribution is None:
-            annual_contribution = _round(window["invested"] * cov["scale"])
+            annual_contribution = _round(typical.saving.typical)
             derived["annual_contribution"] = {
                 "value": annual_contribution,
-                "source": f"invested, {basis}",
+                "source": f"typical annualized saving, income - expenses + direct (one-offs excluded), {basis}",
             }
+        one_offs = await detect_one_offs(session, ws_id, ctx.user_id, today, settings=settings)
+        selected_one_offs = [row for row in one_offs if row.selected]
+        derived["one_offs_excluded"] = {
+            "count": len(selected_one_offs), "total": _round(sum(row.amount for row in selected_one_offs)),
+        }
+        derived["median_month"] = {
+            "cash_flow_after_investing": (
+                _round(typical.median_month.cash_flow_after_investing)
+                if typical.median_month.cash_flow_after_investing is not None else None
+            ),
+            "saving": (
+                _round(typical.median_month.saving) if typical.median_month.saving is not None else None
+            ),
+            "full_months": typical.median_month.full_months,
+        }
+        derived["definition"] = "P1"
 
     if invested_assets is None:
         positions = await _investment_positions(session, ws_id, primary)

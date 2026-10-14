@@ -387,11 +387,13 @@ async def test_net_worth_trend_handler(session: AsyncSession, test_user, test_wo
 
 
 async def test_fire_progress_handler(session: AsyncSession, test_user, test_workspace, test_agent):
-    await _seed_summary_rows(session, test_user.id, test_workspace.id)  # annual spend 30, contribution 225
+    # annual spend 30; annual contribution is now typical saving (P1): income 1000 -
+    # expenses 30 + direct 50 = 1020, not the 225 invested-lane total.
+    await _seed_summary_rows(session, test_user.id, test_workspace.id)
     ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=date.today())
     prep = await guided.HANDLERS["fire_progress"](ctx, RouteDecision(intent="fire_progress", confidence=0.9))
     pack = prep.pack
-    assert pack["kind"] == "fire_progress" and pack["inputs"]["annual_spend"] == 30.0 and pack["inputs"]["annual_contribution"] == 225.0
+    assert pack["kind"] == "fire_progress" and pack["inputs"]["annual_spend"] == 30.0 and pack["inputs"]["annual_contribution"] == 1020.0
     assert pack["fi_number"] == 750.0 and pack["inputs"]["withdrawal_rate_pct"] == 4.0 and pack["inputs"]["real_return_pct"] == 5.0
     assert "trailing 365 days" in pack["sources"]["annual_spend"]
     assert pack["years_to_fi"] is not None and pack["progress_pct"] is not None
@@ -400,11 +402,17 @@ async def test_fire_progress_handler(session: AsyncSession, test_user, test_work
 
 
 async def test_fire_progress_states_a_short_history_window(session: AsyncSession, test_user, test_workspace, test_agent):
+    # P1: annual_contribution is now typical saving (income - expenses + direct), so
+    # an expense-only fixture would make it negative and fire_service would reject
+    # it; add an income leg (dated on/after the earliest expense so the 60-day
+    # coverage window is unchanged) to keep saving positive.
     checking = await _account(session, test_user.id, test_workspace.id, "Checking", "checking")
+    salary = await _category(session, test_user.id, test_workspace.id, "Salary", transfer=False)
     today = date.today()
     session.add_all([
         _txn(test_user.id, test_workspace.id, checking, 600, "debit", when=today - timedelta(days=59)),
         _txn(test_user.id, test_workspace.id, checking, 600, "debit", when=today),
+        _txn(test_user.id, test_workspace.id, checking, 2000, "credit", salary, when=today),
     ])
     await session.commit()
     ctx = await _ctx(session, test_user, test_workspace, test_agent, _ScriptedProvider([]), today=today)
