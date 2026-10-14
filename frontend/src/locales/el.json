@@ -1706,6 +1706,57 @@
       "rolling3m": "3-month rolling"
     }
   },
+  "wealthCash": {
+    "forecast": {
+      "titleLoading": "Cash forecast",
+      "title": {
+        "ok": "Your cash stays above your buffer for the next {{days}} days",
+        "belowBuffer": "Cash dips below your buffer on {{date}}",
+        "negative": "Cash goes negative on {{date}}"
+      },
+      "footnote": "Inflows come from recurring income rules. Card purchases reach cash only through the card bill.",
+      "balanceLabel": "Cash balance",
+      "bufferLabel": "Buffer",
+      "lowPointLabel": "Low point: {{amount}}",
+      "table": {
+        "date": "Date",
+        "balance": "Balance",
+        "inflow": "In",
+        "outflow": "Out"
+      }
+    },
+    "timeline": {
+      "title": "Next 30 days",
+      "total": "Cash total: {{amount}}",
+      "onCard": "On card",
+      "viewRule": "View recurring rule",
+      "empty": "Nothing scheduled in the next 30 days.",
+      "kind": {
+        "recurring": "Recurring",
+        "cardBill": "Card bill",
+        "installment": "Installment",
+        "pending": "Pending"
+      }
+    },
+    "subscriptions": {
+      "title": "Subscriptions",
+      "merchant": "Merchant",
+      "monthly": "Monthly",
+      "annual": "Annual",
+      "lastCharge": "Last charge",
+      "monthlyTotal": "{{amount}}/mo total",
+      "annualTotal": "{{amount}}/yr total",
+      "empty": "No subscriptions detected yet.",
+      "viewRule": "View recurring rule"
+    },
+    "suggestions": {
+      "title": "Not tracked yet",
+      "subtitle": "Detected from your transactions, but no recurring rule exists yet.",
+      "detail_one": "{{amount}}/mo · seen {{count}} month",
+      "detail_other": "{{amount}}/mo · seen {{count}} months",
+      "addAction": "Add as recurring"
+    }
+  },
   "recurring": {
     "title": "Επαναλαμβανόμενες συναλλαγές",
     "add": "Προσθήκη επαναλαμβανόμενης",
