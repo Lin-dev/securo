@@ -39,6 +39,11 @@ class ReportMeta(BaseModel):
     forecast_start_date: str | None = None
     baseline_active: bool = False
     baseline_lookback_days: int | None = None
+    # The concrete [window_from, window_to] (ISO dates) this report actually
+    # covers, so a chart click can drill into Transactions with the real window
+    # instead of re-deriving it from `months`/`days` (plan B5c).
+    window_from: str | None = None
+    window_to: str | None = None
 
 
 class CategoryTrendItem(BaseModel):

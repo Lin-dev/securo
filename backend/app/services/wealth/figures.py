@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal, Mapping, Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -160,12 +160,43 @@ def _amount_col():
     return func.coalesce(Transaction.amount_primary, Transaction.amount)
 
 
-def _shared_filters(ctx: _Context, workspace_id: uuid.UUID, start: date, end: date) -> list:
+def pnl_row_filter(
+    workspace_id: uuid.UUID, account_buckets: Mapping[uuid.UUID, Bucket]
+) -> list[ColumnElement]:
+    """The P1 row-level filter (plan P1): posted, not an opening balance, not a
+    split parent, `counts_as_pnl()`, and excluding an uncategorized row sitting in
+    an account whose *effective* bucket (plan P3, under the user's overrides) is
+    an investment bucket. Row-level only — no date range, since every caller
+    already applies its own window (`_shared_filters` below adds one for the
+    figures above; the transactions list applies its own `from`/`to` filter).
+
+    The single source for "is this row in the P1 P&L set?": `_shared_filters`
+    (and so `_pnl_totals`, `_lane_candidates` and `_pnl_totals_by_category`) folds
+    this in below, and the transactions list's `wealth_pnl_only` filter
+    (`transaction_service.get_transactions`) calls it directly with a freshly
+    loaded `account_bucket_map`, so a drill-down's rows and the figure they drill
+    from can never drift apart.
+    """
+    investment_account_ids = [
+        account_id for account_id, bucket in account_buckets.items() if bucket in INVESTMENT_BUCKETS
+    ]
+    uncategorized_in_investment_account = and_(
+        Transaction.category_id.is_(None), Transaction.account_id.in_(investment_account_ids)
+    )
     return [
         Transaction.workspace_id == workspace_id,
         Transaction.status == "posted",
         Transaction.source != "opening_balance",
         ~is_split_parent(),
+        counts_as_pnl(),
+        ~uncategorized_in_investment_account,
+    ]
+
+
+def _shared_filters(ctx: _Context, workspace_id: uuid.UUID, start: date, end: date) -> list:
+    """`pnl_row_filter` plus this period's explicit window."""
+    return [
+        *pnl_row_filter(workspace_id, ctx.account_buckets),
         ctx.report_date >= start,
         ctx.report_date <= end,
     ]
@@ -191,45 +222,41 @@ class PeriodFigures:
     one_offs_excluded: bool
 
 
-async def _pnl_totals(
-    session: AsyncSession, workspace_id: uuid.UUID, ctx: _Context, start: date, end: date
+def aggregate_pnl_rows(
+    rows: Sequence[Any], income_category_ids: frozenset[uuid.UUID]
 ) -> tuple[float, float, float]:
-    """(income, expenses, unclassified_credits) — P&L rows only; `invested`/`direct`
-    are not P&L and come from `investment_lane_rows` instead.
+    """(income, expenses, unclassified_credits) from `(category_id, type, amount)`
+    rows already filtered by `pnl_row_filter` (so every uncategorized row here is
+    already known *not* to sit in an investment-bucketed account).
 
     Income: P&L credits in an income category. Expenses: P&L debits minus refunds
     (every other categorized P&L credit), netted per category and never pushed
     below zero. Uncategorized credits are neither income nor refunds
-    (`unclassified_credits`). The investment-bucket rule drops *uncategorized* rows
-    inside an investment-bucketed account entirely (trades, dividends, fees);
-    categorized rows there still count.
-    """
-    rows = (
-        await session.execute(
-            select(Transaction.category_id, Transaction.account_id, Transaction.type, _amount_col())
-            .where(*_shared_filters(ctx, workspace_id, start, end), counts_as_pnl())
-        )
-    ).all()
+    (`unclassified_credits`).
 
+    Shared by `_pnl_totals`'s own [start, end] window query and by the
+    transactions list's `wealth_pnl_only` summary (`transaction_service.
+    get_transactions`), which runs this over whatever extra filters — category,
+    account, dates — the caller also applied, so a drill-down's income/expense
+    total and the figure it drills from can never drift apart.
+    """
     income = 0.0
     unclassified_credits = 0.0
     debit_by_category: dict[Optional[uuid.UUID], float] = {}
     refund_by_category: dict[uuid.UUID, float] = {}
 
-    for category_id, account_id, txn_type, amount_raw in rows:
+    for category_id, txn_type, amount_raw in rows:
         amount = abs(float(amount_raw or 0))
         if amount <= 0:
             continue
         if category_id is None:
-            if ctx.account_buckets.get(account_id) in INVESTMENT_BUCKETS:
-                continue  # an uncategorized trade, dividend or fee — not P&L
             if txn_type == "credit":
                 unclassified_credits += amount
             else:
                 debit_by_category[None] = debit_by_category.get(None, 0.0) + amount
             continue
         if txn_type == "credit":
-            if category_id in ctx.income_category_ids:
+            if category_id in income_category_ids:
                 income += amount
             else:
                 refund_by_category[category_id] = refund_by_category.get(category_id, 0.0) + amount
@@ -249,6 +276,24 @@ async def _pnl_totals(
     )
     expenses = max(0.0, netted - leftover)
     return income, expenses, unclassified_credits
+
+
+async def _pnl_totals(
+    session: AsyncSession, workspace_id: uuid.UUID, ctx: _Context, start: date, end: date
+) -> tuple[float, float, float]:
+    """(income, expenses, unclassified_credits) — P&L rows only; `invested`/`direct`
+    are not P&L and come from `investment_lane_rows` instead. See
+    `aggregate_pnl_rows` for the income/refund-netting rules; `_shared_filters`
+    (so `pnl_row_filter`) already drops uncategorized rows inside an
+    investment-bucketed account before the rows reach it.
+    """
+    rows = (
+        await session.execute(
+            select(Transaction.category_id, Transaction.type, _amount_col())
+            .where(*_shared_filters(ctx, workspace_id, start, end))
+        )
+    ).all()
+    return aggregate_pnl_rows(rows, ctx.income_category_ids)
 
 
 async def _invested_and_direct(
@@ -494,12 +539,12 @@ async def _lane_candidates(
         await session.execute(
             select(
                 Transaction.id, ctx.report_date, Transaction.description,
-                Transaction.category_id, Transaction.account_id, Transaction.type, _amount_col(),
+                Transaction.category_id, Transaction.type, _amount_col(),
             )
-            .where(*_shared_filters(ctx, workspace_id, start, end), counts_as_pnl())
+            .where(*_shared_filters(ctx, workspace_id, start, end))
         )
     ).all()
-    for txn_id, txn_date, description, category_id, account_id, txn_type, amount_raw in pnl_rows:
+    for txn_id, txn_date, description, category_id, txn_type, amount_raw in pnl_rows:
         amount = abs(float(amount_raw or 0))
         if amount <= 0:
             continue
@@ -507,8 +552,8 @@ async def _lane_candidates(
             if category_id is not None and category_id in ctx.income_category_ids:
                 candidates["income"].append((txn_id, txn_date, description, amount, False))
         else:
-            if category_id is None and ctx.account_buckets.get(account_id) in INVESTMENT_BUCKETS:
-                continue  # an uncategorized trade/fee — not P&L, never a one-off
+            # An uncategorized trade/fee in an investment-bucketed account is
+            # already dropped by `pnl_row_filter` above — never a one-off.
             candidates["expenses"].append((txn_id, txn_date, description, amount, False))
 
     invested_rows = (
@@ -644,7 +689,7 @@ async def _pnl_totals_by_category(
     rows = (
         await session.execute(
             select(Transaction.category_id, Transaction.type, _amount_col())
-            .where(*_shared_filters(ctx, workspace_id, start, end), counts_as_pnl())
+            .where(*_shared_filters(ctx, workspace_id, start, end))
         )
     ).all()
     debit_by_category: dict[uuid.UUID, float] = {}

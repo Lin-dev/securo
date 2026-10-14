@@ -567,6 +567,8 @@ async def get_net_worth_report(
         series_keys=["accounts", "assets", "liabilities"],
         currency=primary_currency,
         interval=interval,
+        window_from=start.isoformat(),
+        window_to=axis_end.isoformat(),
     )
 
     # Reuse the selected end date's per-item composition for the response-level
@@ -962,6 +964,8 @@ async def get_income_expenses_report(
         series_keys=["income", "expenses", "projectedIncome", "projectedExpenses"],
         currency=primary_currency,
         interval=interval,
+        window_from=start.isoformat(),
+        window_to=axis_end.isoformat(),
     )
 
     # Build per-category composition for the full date range
@@ -1905,6 +1909,8 @@ async def get_cash_flow_report(
         forecast_start_date=_format_date_label(today, interval),
         baseline_active=baseline,
         baseline_lookback_days=baseline_lookback_days if baseline else None,
+        window_from=chart_start.isoformat(),
+        window_to=end.isoformat(),
     )
 
     composition: list[ReportCompositionItem] = []

@@ -33,11 +33,13 @@ from app.services.report_service import (
     _date_points,
     _format_date_label,
     _net_worth_at,
+    _PAST_HISTORY_MONTHS,
     _report_start_date,
     get_cash_flow_report,
     get_net_worth_report,
 )
 from app.models.recurring_transaction import RecurringTransaction
+from app.core.app_clock import app_today
 from app.core.workspace_context import current_workspace
 from app.main import app
 
@@ -408,6 +410,53 @@ async def test_net_worth_report_custom_range_pins_window(
                 for point in _date_points(start, end, interval)]
     assert [point.date for point in report.trend] == expected
     assert report.trend[-1].date == _format_date_label(end, interval)
+
+
+# ---------------------------------------------------------------------------
+# meta.window_from / meta.window_to (plan B5c): the concrete date window the
+# report actually used, so a chart click can drill into Transactions with the
+# real window instead of re-deriving it from `months`/`days`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_net_worth_report_meta_window_matches_explicit_range(
+    session: AsyncSession, test_user, test_workspace,
+):
+    start = date(2022, 3, 1)
+    end = date(2022, 6, 30)
+    report = await get_net_worth_report(
+        session, test_workspace.id, test_user.id,
+        months=6, start_date=start, end_date=end,
+    )
+    assert report.meta.window_from == start.isoformat()
+    assert report.meta.window_to == end.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_net_worth_report_meta_window_matches_months_window(
+    session: AsyncSession, test_user, test_workspace,
+):
+    today = app_today()
+    report = await get_net_worth_report(
+        session, test_workspace.id, test_user.id, months=3,
+    )
+    expected_start = _report_start_date(today, 3)
+    assert report.meta.window_from == expected_start.isoformat()
+    assert report.meta.window_to == today.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_cash_flow_report_meta_window_covers_past_history_and_forecast(
+    session: AsyncSession, test_user, test_workspace,
+):
+    today = app_today()
+    months = 2
+    report = await get_cash_flow_report(
+        session, test_workspace.id, test_user.id, months=months,
+    )
+    assert report.meta.window_from == _add_months(today, -_PAST_HISTORY_MONTHS).isoformat()
+    assert report.meta.window_to == _add_months(today, months).isoformat()
 
 
 # ---------------------------------------------------------------------------

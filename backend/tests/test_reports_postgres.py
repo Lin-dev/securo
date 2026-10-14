@@ -175,6 +175,35 @@ async def test_income_expenses_excludes_transfers(
     assert totals["expenses"] == pytest.approx(110.40)
 
 
+async def test_income_expenses_report_meta_window_matches_days_window(
+    session, test_user, test_workspace,
+):
+    """meta.window_from/window_to (plan B5c) equal the window the report
+    actually used — needed so a chart click can drill into Transactions with
+    the real window rather than re-deriving it from `days`."""
+    from app.core.app_clock import app_today
+
+    today = app_today()
+    report = await report_service.get_income_expenses_report(
+        session, test_workspace.id, test_user.id, days=30,
+    )
+    assert report.meta.window_from == (today - timedelta(days=29)).isoformat()
+    assert report.meta.window_to == today.isoformat()
+
+
+async def test_income_expenses_report_meta_window_matches_explicit_range(
+    session, test_user, test_workspace,
+):
+    start = date(2022, 1, 1)
+    end = date(2022, 3, 31)
+    report = await report_service.get_income_expenses_report(
+        session, test_workspace.id, test_user.id,
+        months=6, start_date=start, end_date=end,
+    )
+    assert report.meta.window_from == start.isoformat()
+    assert report.meta.window_to == end.isoformat()
+
+
 async def test_monthly_trend_numeric_fields(client, auth_headers, session, test_transactions):
     today = date.today()
     previous_month = today.replace(day=1) - timedelta(days=1)

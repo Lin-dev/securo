@@ -22,6 +22,7 @@ from app.schemas.transaction import (
     TransferCreate,
 )
 from app.schemas.transaction_split import TransactionSplitInput, TransactionSplitsInput
+from app.schemas.wealth import WealthSettingsValues
 from app.services import category_split_service, reconciliation_service, split_service
 from app.services.credit_card_service import apply_effective_date
 from app.services.rule_service import apply_rules_to_transaction
@@ -171,6 +172,8 @@ async def get_transactions(
     status: Optional[str] = None,
     include_summary: bool = False,
     user_pnl_only: bool = False,
+    wealth_pnl_only: bool = False,
+    wealth_settings: Optional[WealthSettingsValues] = None,
     exclude_ignored: bool = False,
     parent_transaction_id: Optional[uuid.UUID] = None,
     summary_scope: Optional[str] = None,
@@ -318,6 +321,19 @@ async def get_transactions(
         base_query = base_query.where(Transaction.transfer_pair_id.is_(None))
     if user_pnl_only:
         base_query = base_query.where(Account.is_closed == False, counts_as_user_pnl())
+    if wealth_pnl_only:
+        # The Wealth Cockpit's P1 drill-down filter (plan B5c): posted, not an
+        # opening balance, not a split parent, `counts_as_pnl()`, and excluding
+        # an uncategorized row inside an account whose effective bucket is an
+        # investment bucket under the user's overrides. A different rule from
+        # `user_pnl_only` above (that one also requires an open account and
+        # additionally drops settlement credits for the split-share model) —
+        # kept as its own flag so neither caller's existing behaviour moves.
+        from app.services.wealth.figures import account_bucket_map, pnl_row_filter
+
+        settings = wealth_settings or WealthSettingsValues()
+        buckets = await account_bucket_map(session, workspace_id, settings.accounts)
+        base_query = base_query.where(*pnl_row_filter(workspace_id, buckets))
     if exclude_ignored:
         # Only drops rows; the summary below keeps computing over the same
         # filtered set, so the totals a hidden list shows stay the totals of
@@ -473,30 +489,55 @@ async def get_transactions(
     # rows). Computed before pagination so it covers the whole result set.
     summary: Optional[dict] = None
     if include_summary:
-        # Income / expense / net use the shared `counts_as_pnl()` definition
-        # (issue #242) so the footer matches the dashboard & reports: paired
-        # transfers, `treat_as_transfer` categories (transfers, investments,
-        # custom) and ignored items are kept OUT of income/expense.
-        # Every figure is a `summary_scope_filter` predicate, the same ones the
-        # `summary_scope` row filter below uses, so a list restricted to one
-        # figure always sums to it.
-        pnl_subq = base_query.where(summary_scope_filter("net")).subquery()
-        amount_norm = func.coalesce(
-            pnl_subq.c.amount_primary, pnl_subq.c.amount
-        )
-        summary_rows = await session.execute(
-            select(
-                pnl_subq.c.type,
-                func.coalesce(func.sum(func.abs(amount_norm)), 0),
-            ).group_by(pnl_subq.c.type)
-        )
-        income = Decimal("0")
-        expense = Decimal("0")
-        for row_type, row_total in summary_rows:
-            if row_type == "credit":
-                income = Decimal(str(row_total or 0))
-            elif row_type == "debit":
-                expense = Decimal(str(row_total or 0))
+        if wealth_pnl_only:
+            # `wealth_pnl_only` already restricts `base_query` to exactly the
+            # P1 row set, so the figure this list is drilled from (`wealth.
+            # figures.period_figures`/`_pnl_totals`) and this summary must run
+            # the *same* income/refund-netting aggregation, not the generic
+            # credit=income/debit=expense split below — a refund credit in a
+            # non-income category must net against its category's debits
+            # instead of inflating "income". `aggregate_pnl_rows` runs it over
+            # base_query as-is, so any extra filter the caller also applied
+            # (category_id, account_id, dates) is respected.
+            from app.services.wealth.figures import aggregate_pnl_rows, effective_income_category_ids
+
+            settings = wealth_settings or WealthSettingsValues()
+            income_category_ids = await effective_income_category_ids(session, workspace_id, settings)
+            pnl_subq = base_query.subquery()
+            amount_norm = func.coalesce(pnl_subq.c.amount_primary, pnl_subq.c.amount)
+            pnl_rows = (
+                await session.execute(
+                    select(pnl_subq.c.category_id, pnl_subq.c.type, amount_norm)
+                )
+            ).all()
+            income_f, expense_f, _unclassified = aggregate_pnl_rows(pnl_rows, income_category_ids)
+            income = Decimal(str(income_f))
+            expense = Decimal(str(expense_f))
+        else:
+            # Income / expense / net use the shared `counts_as_pnl()` definition
+            # (issue #242) so the footer matches the dashboard & reports: paired
+            # transfers, `treat_as_transfer` categories (transfers, investments,
+            # custom) and ignored items are kept OUT of income/expense.
+            # Every figure is a `summary_scope_filter` predicate, the same ones the
+            # `summary_scope` row filter below uses, so a list restricted to one
+            # figure always sums to it.
+            pnl_subq = base_query.where(summary_scope_filter("net")).subquery()
+            amount_norm = func.coalesce(
+                pnl_subq.c.amount_primary, pnl_subq.c.amount
+            )
+            summary_rows = await session.execute(
+                select(
+                    pnl_subq.c.type,
+                    func.coalesce(func.sum(func.abs(amount_norm)), 0),
+                ).group_by(pnl_subq.c.type)
+            )
+            income = Decimal("0")
+            expense = Decimal("0")
+            for row_type, row_total in summary_rows:
+                if row_type == "credit":
+                    income = Decimal(str(row_total or 0))
+                elif row_type == "debit":
+                    expense = Decimal(str(row_total or 0))
 
         # Excluded: the absolute total of everything filtered out of P/L for
         # the same rows — the complement of `counts_as_pnl()`. Surfaces

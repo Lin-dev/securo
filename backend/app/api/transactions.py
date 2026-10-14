@@ -21,6 +21,7 @@ from app.schemas.transaction_calendar import TransactionCalendarResponse
 from app.services import category_split_service, transaction_service
 from app.services.admin_service import get_credit_card_accounting_mode
 from app.services.transaction_calendar_service import get_transaction_calendar
+from app.services.wealth.settings import load_settings
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -146,6 +147,7 @@ async def list_transactions(
     include_opening_balance: bool = Query(False),
     exclude_transfers: bool = Query(False),
     user_pnl_only: bool = Query(False, description="Return only rows that count toward dashboard/user income/expense totals"),
+    wealth_pnl_only: bool = Query(False, description="Return only the Wealth Cockpit's P1 P&L rows: posted, not an opening balance, not a split parent, counts_as_pnl(), excluding uncategorized rows in an investment-bucketed account"),
     exclude_ignored: bool = Query(False, description="Drop rows the user marked ignored, or whose category is ignored"),
     tags: Optional[List[str]] = Query(None),
     min_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount >= this value (primary currency)."),
@@ -157,6 +159,7 @@ async def list_transactions(
     session: AsyncSession = Depends(get_async_session),
 ):
     accounting_mode = await get_credit_card_accounting_mode(session)
+    wealth_settings = load_settings(ctx.user) if wealth_pnl_only else None
     transactions, total, summary = await transaction_service.get_transactions(
         session, ctx.workspace.id, ctx.user_id,
         account_ids=_merge_id_filters(account_id, account_ids),
@@ -165,6 +168,8 @@ async def list_transactions(
         include_opening_balance=include_opening_balance, search=q, uncategorized=uncategorized,
         txn_type=type, exclude_transfers=exclude_transfers,
         user_pnl_only=user_pnl_only,
+        wealth_pnl_only=wealth_pnl_only,
+        wealth_settings=wealth_settings,
         exclude_ignored=exclude_ignored,
         status=status,
         accounting_mode=accounting_mode,
@@ -221,6 +226,7 @@ async def export_transactions(
     type: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     exclude_ignored: bool = Query(False, description="Drop rows the user marked ignored, or whose category is ignored"),
+    wealth_pnl_only: bool = Query(False, description="Return only the Wealth Cockpit's P1 P&L rows: posted, not an opening balance, not a split parent, counts_as_pnl(), excluding uncategorized rows in an investment-bucketed account"),
     tags: Optional[List[str]] = Query(None),
     transaction_ids: Optional[List[uuid.UUID]] = Query(None, description="If set, exports exactly these rows (scoped to the workspace); other filters are ignored."),
     summary_scope: Optional[str] = Query(None, pattern=_SUMMARY_SCOPE_PATTERN, description=_SUMMARY_SCOPE_DESCRIPTION),
@@ -238,6 +244,7 @@ async def export_transactions(
             transaction_ids=transaction_ids,
         )
     else:
+        wealth_settings = load_settings(ctx.user) if wealth_pnl_only else None
         transactions, _, _ = await transaction_service.get_transactions(
             session, ctx.workspace.id, ctx.user_id,
             account_ids=_merge_id_filters(account_id, account_ids),
@@ -246,6 +253,8 @@ async def export_transactions(
             search=q, uncategorized=uncategorized, txn_type=type, status=status, skip_pagination=True,
             accounting_mode=accounting_mode,
             exclude_ignored=exclude_ignored,
+            wealth_pnl_only=wealth_pnl_only,
+            wealth_settings=wealth_settings,
             tags=tags,
             summary_scope=summary_scope,
         )
