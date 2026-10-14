@@ -35,7 +35,7 @@ from app.services._query_filters import is_split_parent
 from app.services.fire_service import FireInputs
 from app.services.report_service import _report_start_date
 from app.services.wealth.coverage import MIN_COVERAGE_DAYS, coverage_window  # noqa: F401  (re-exported)
-from app.services.wealth.figures import detect_one_offs, typical_figures
+from app.services.wealth.figures import detect_one_offs, period_figures, typical_figures
 from app.services.wealth.settings import load_settings
 from mcp_server.auth import CallContext
 from mcp_server.registry import tool
@@ -297,21 +297,20 @@ async def get_money_map(
         lane: {"items": _fold_lane(items), "total": _round(sum(c["value"] for c in items))}
         for lane, items in raw.items()
     }
-    income = lanes["income"]["total"]
-    contributions = lanes["direct_contributions"]["total"]
+    # The lanes stay exactly as the Sankey draws them. The totals below follow
+    # the single money definitions (plan P1) instead of re-summing the lanes,
+    # so they can disagree with a plain sum of the lanes above — see `note`.
     transfers_in = lanes["transfers_in"]["total"]
-    expenses = lanes["expenses"]["total"]
-    investments = lanes["investments"]["total"]
     transfers_out = lanes["transfers_out"]["total"]
-    # Same arithmetic as buildMoneyMap: contributions sit in both inflow and
-    # investments, so they cancel and never move the surplus.
-    net = _round(income + contributions + transfers_in - expenses - investments - transfers_out)
-    cash_rate = round((income - expenses) / income, 4) if income > 0 else None
-    contribution_aware = (
-        round((income - expenses + contributions) / (income + contributions), 4)
-        if income + contributions > 0
-        else None
-    )
+    settings = await _wealth_settings(session, ctx)
+    figures = await period_figures(session, ws_id, ctx.user_id, start, today, settings=settings)
+    income, expenses = figures.income, figures.expenses
+    direct, invested = figures.direct, figures.invested
+    # Same arithmetic as buildMoneyMap: direct contributions sit in both inflow
+    # and investments, so they cancel and never move net.
+    net = _round(income + direct + transfers_in - expenses - invested - transfers_out)
+    cash_rate = round(figures.cash_rate, 4) if figures.cash_rate is not None else None
+    contribution_aware = round(figures.savings_rate, 4) if figures.savings_rate is not None else None
 
     return {
         "window": {
@@ -322,23 +321,32 @@ async def get_money_map(
         "currency": rep.meta.currency,
         "lanes": lanes,
         "totals": {
-            "income": income,
-            "direct_contributions": contributions,
+            "income": _round(income),
+            "direct_contributions": _round(direct),
             "transfers_in": transfers_in,
-            "expenses": expenses,
-            "investments": investments,
+            "expenses": _round(expenses),
+            "investments": _round(invested),
             "transfers_out": transfers_out,
             "net": net,
             "cash_savings_rate": cash_rate,
             "contribution_aware_savings_rate": contribution_aware,
+            "cash_flow_after_investing": _round(figures.cash_flow_after_investing),
+            "unclassified_credits": _round(figures.unclassified_credits),
         },
+        "note": (
+            "The lanes are cash movements by category; the totals follow Securo's single "
+            "money definitions (refunds netted per category, uncategorized credits excluded "
+            "from income). The two can differ when refunds or uncategorized credits exist."
+        ),
         "notes": (
             "net = income + direct_contributions + transfers_in - expenses - investments - "
             "transfers_out (a negative net is the deficit). cash_savings_rate = (income - "
             "expenses) / income. contribution_aware_savings_rate = (income - expenses + "
             "direct_contributions) / (income + direct_contributions) and is the one to quote "
             "when payroll contributions exist. investments already includes the direct "
-            "contributions once."
+            "contributions once. cash_flow_after_investing = income - expenses - (investments "
+            "- direct_contributions); unclassified_credits are uncategorized credits, counted "
+            "as neither income nor a refund."
         ),
     }
 

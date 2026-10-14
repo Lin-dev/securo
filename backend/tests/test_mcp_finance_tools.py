@@ -241,6 +241,56 @@ async def test_get_money_map_regroups_report_composition(
     assert result["currency"] == "BRL"
 
 
+async def test_get_money_map_totals_equal_period_figures_for_the_same_window(
+    session: AsyncSession, ctx: CallContext, test_user, test_workspace
+):
+    """`totals` follows the single money definitions (plan P1) over the money map's
+    own [from_date, today] window, while the lanes stay the Sankey's cash-movements
+    view — so the two can disagree, which is exactly what `note` says."""
+    from app.schemas.wealth import WealthSettingsValues
+    from app.services.wealth.figures import period_figures
+
+    uid, wid = test_user.id, test_workspace.id
+    checking = await _account(session, uid, wid, "Checking", "checking")
+    brokerage = await _account(session, uid, wid, "Brokerage", "investment")
+    salary = await _category(session, uid, wid, "Salary", transfer=False)
+    dining = await _category(session, uid, wid, "Dining", transfer=False)
+    contribution = await _category(session, uid, wid, INVESTMENT_CONTRIBUTION_CATEGORY)
+    today = date.today()
+    session.add_all([
+        _txn(uid, wid, checking, 5000, "credit", salary, when=today),
+        _txn(uid, wid, checking, 300, "debit", dining, when=today - timedelta(days=2)),
+        _txn(uid, wid, checking, 60, "credit", dining, when=today - timedelta(days=1)),       # a refund
+        _txn(uid, wid, checking, 400, "debit", contribution, when=today - timedelta(days=3)),
+        _txn(uid, wid, brokerage, 250, "credit", contribution, when=today - timedelta(days=5)),  # unpaired -> direct
+    ])
+    await session.commit()
+
+    result = await REGISTRY["get_money_map"].handler(session=session, ctx=ctx, days=30)
+    window = result["window"]
+    figures = await period_figures(
+        session, wid, uid,
+        date.fromisoformat(window["from_date"]), date.fromisoformat(window["to_date"]),
+        settings=WealthSettingsValues(),
+    )
+    totals = result["totals"]
+    assert totals["income"] == round(figures.income, 2)
+    assert totals["expenses"] == round(figures.expenses, 2)
+    assert totals["direct_contributions"] == round(figures.direct, 2)
+    assert totals["investments"] == round(figures.invested, 2)
+    assert totals["cash_savings_rate"] == (round(figures.cash_rate, 4) if figures.cash_rate is not None else None)
+    assert totals["contribution_aware_savings_rate"] == (
+        round(figures.savings_rate, 4) if figures.savings_rate is not None else None
+    )
+    assert totals["cash_flow_after_investing"] == round(figures.cash_flow_after_investing, 2)
+    assert totals["unclassified_credits"] == round(figures.unclassified_credits, 2)
+    # the scenario exercises what it claims: a refund (netted once) and a direct
+    # contribution (counted once, inside "investments" too).
+    assert figures.direct == 250.0 and figures.invested == 400.0 + 250.0
+    assert figures.expenses == 300.0 - 60.0
+    assert "note" in result
+
+
 async def test_get_money_map_reports_actuals_without_recurring_projections(
     session: AsyncSession, ctx: CallContext, test_user, test_workspace
 ):

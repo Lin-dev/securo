@@ -19,8 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
 from app.models.transaction import Transaction
+from app.models.user import User
+from app.schemas.wealth import WealthSettingsValues
 from app.services import report_service, transaction_service
 from app.services._query_filters import counts_as_pnl, is_split_parent
+from app.services.wealth.figures import period_figures
+from app.services.wealth.settings import load_settings
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +82,18 @@ async def summary_window(
     user_id: uuid.UUID,
     from_date: date,
     to_date: date,
+    *,
+    settings: WealthSettingsValues,
 ) -> dict[str, Any]:
-    """Income / expense / net / invested / excluded for a window, exactly as the
-    Transactions summary line computes them (the summary is built over the whole
-    filtered set before pagination, so one row is enough)."""
+    """Income / expense / net / invested / excluded / savings_rate for a window.
+
+    `invested` and `excluded` stay exactly the Transactions summary line's ledger
+    figures (plan P1 keeps that line a ledger figure). `income`, `expense`, `net`
+    and `savings_rate` follow the single money definitions instead (refunds netted
+    per category, uncategorized credits excluded from income, direct contributions
+    counted in the rate): the digest is its own figure, not the Transactions page,
+    so switching it to P1 does not change what the Transactions summary line means.
+    """
     _, _, summary = await transaction_service.get_transactions(
         session,
         workspace_id,
@@ -93,17 +105,17 @@ async def summary_window(
         include_summary=True,
     )
     summary = summary or {}
-    income = _num(summary.get("income"))
-    expense = _num(summary.get("expense"))
+    figures = await period_figures(session, workspace_id, user_id, from_date, to_date, settings=settings)
+    income, expense = figures.income, figures.expenses
     return {
         "from_date": from_date.isoformat(),
         "to_date": to_date.isoformat(),
-        "income": income,
-        "expense": expense,
-        "net": _num(summary.get("net")),
+        "income": round(income, 2),
+        "expense": round(expense, 2),
+        "net": round(income - expense, 2),
         "invested": _num(summary.get("invested")),
         "excluded": _num(summary.get("excluded")),
-        "savings_rate": round((income - expense) / income, 4) if income > 0 else None,
+        "savings_rate": round(figures.savings_rate, 4) if figures.savings_rate is not None else None,
     }
 
 
@@ -168,8 +180,10 @@ async def build_figures_pack(
     currency: str = "USD",
 ) -> dict[str, Any]:
     cur_from, cur_to, prev_from, prev_to = period_bounds(kind, today)
-    current = await summary_window(session, workspace_id, user_id, cur_from, cur_to)
-    previous = await summary_window(session, workspace_id, user_id, prev_from, prev_to)
+    user = await session.get(User, user_id)
+    settings = load_settings(user) if user is not None else WealthSettingsValues()
+    current = await summary_window(session, workspace_id, user_id, cur_from, cur_to, settings=settings)
+    previous = await summary_window(session, workspace_id, user_id, prev_from, prev_to, settings=settings)
 
     cur_cats = await expense_by_category(session, workspace_id, cur_from, cur_to)
     prev_cats = await expense_by_category(session, workspace_id, prev_from, prev_to)
@@ -229,7 +243,7 @@ def render_figures_pack(pack: dict[str, Any]) -> str:
         f"| Expenses | {_money(cur['expense'], ccy)} | {_money(prev['expense'], ccy)} | {_money(d['expense'], ccy)} |",
         f"| Net | {_money(cur['net'], ccy)} | {_money(prev['net'], ccy)} | {_money(d['net'], ccy)} |",
         f"| Invested | {_money(cur['invested'], ccy)} | {_money(prev['invested'], ccy)} | {_money(d['invested'], ccy)} |",
-        f"| Savings rate (net / income) | {_pct(cur['savings_rate'])} | {_pct(prev['savings_rate'])} | "
+        f"| Savings rate (incl. payroll contributions) | {_pct(cur['savings_rate'])} | {_pct(prev['savings_rate'])} | "
         f"{_pct(d['savings_rate'])} |",
         "",
         "Largest category moves (expenses, current vs previous):",
