@@ -1531,6 +1531,50 @@
     },
     "stub": "This section is being built."
   },
+  "wealthRoad": {
+    "hero": {
+      "title": "Your road to $1M",
+      "ofTarget": "of {{target}}",
+      "percentToGoal": "{{percent}} of the way there",
+      "noGoal": "You don't have a net-worth goal yet.",
+      "createGoal": "Create my $1M goal",
+      "createGoalName": "Millionaire",
+      "projected": "Projected: {{label}}",
+      "notWithin30Years": "not within 30 years",
+      "coverage": "Based on {{days}} days of data",
+      "notAnnualized": "These figures aren't annualized yet — there's not enough history.",
+      "nominalNote": "This date is in nominal (today's) dollars, not adjusted for inflation."
+    },
+    "chart": {
+      "title": "On the base path you reach {{amount}} in {{label}}",
+      "titleUnreachable": "On the base path, {{amount}} isn't reached within 30 years",
+      "titleLoading": "Your net-worth projection",
+      "footnote": "Assumes {{low}} / {{base}} / {{high}} nominal annual returns (low/base/high), based on {{days}} days of data.",
+      "columnMonth": "Month",
+      "columnQuarter": "Quarter"
+    },
+    "levers": {
+      "title": "What would get you there sooner",
+      "empty": "No levers to show yet.",
+      "idleCash": "Invest your idle cash ({{amount}})",
+      "plusMonthly": "+{{amount}} a month",
+      "cutTop": "Cut {{category}} by {{amount}} a month",
+      "returnHigher": "Returns 1 point higher",
+      "returnLower": "Returns 1 point lower",
+      "shift": "{{months}} months → {{label}}",
+      "noShift": "No change → {{label}}",
+      "notReachable": "Not reachable within 30 years"
+    },
+    "thisMonth": {
+      "title": "This month's move",
+      "noMove": "No specific move this month.",
+      "moveMasked": "A move is ready — turn off privacy mode to see the amount.",
+      "cushion": "{{months}} months of cash cushion",
+      "cushionUnknown": "Cash cushion: not enough data yet",
+      "idleCash": "{{amount}} sitting idle",
+      "investingExceedsSaving": "On the typical month, more is going into investments than you save — cash is shrinking."
+    }
+  },
   "charts": {
     "showTable": "Show table",
     "hideTable": "Hide table",
