@@ -13,19 +13,11 @@ import { todayInTimezone, weekdayShortLabels } from '@/lib/date-utils'
 import { useEffectiveTimezone } from '@/hooks/use-timezone'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/format'
+import { formatMoney } from '@/lib/chart-format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
 
 function parseLocalDate(value: string) {
   return new Date(`${value}T00:00:00`)
-}
-
-function compactCurrency(value: number, currency = 'USD', locale = 'en-US') {
-  return new Intl.NumberFormat(locale, {
-    style: 'currency',
-    currency,
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value)
 }
 
 function signedAmount(item: TransactionCalendarItem) {
@@ -444,7 +436,7 @@ function ActivityBars({
   const barHeight = (value: number) => (value > 0 ? Math.max(value * scale, 1.5) : 0)
 
   const tooltipFor = (activity: (typeof data.days)[number]) => {
-    const amount = (value: number) => mask(compactCurrency(value, currency, locale))
+    const amount = (value: number) => mask(formatMoney(value, currency, { compact: true, locale }))
     const actualParts: string[] = []
     if (activity.actualIncome > 0) actualParts.push(`${t('transactions.summaryIncome')} +${amount(activity.actualIncome)}`)
     if (activity.actualExpense > 0) actualParts.push(`${t('transactions.summaryExpenses')} −${amount(activity.actualExpense)}`)
@@ -751,7 +743,7 @@ function DayCell({
                 : 'font-semibold text-muted-foreground',
             )}
           >
-            {mask(compactCurrency(day.ending_balance, currency, locale))}
+            {mask(formatMoney(day.ending_balance, currency, { compact: true, locale }))}
           </p>
         </div>
       ) : (
@@ -829,7 +821,7 @@ function DayPreviewRow({
           amount >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400',
         )}
       >
-        {mask(`${amount >= 0 ? '+' : '−'}${compactCurrency(Math.abs(item.amount), item.currency, locale)}`)}
+        {mask(`${amount >= 0 ? '+' : '−'}${formatMoney(Math.abs(item.amount), item.currency, { compact: true, locale })}`)}
       </span>
     </div>
   )
@@ -857,8 +849,8 @@ function DayCellActivity({
   const { t } = useTranslation()
   const activity = dayActivity(day)
   const projectedParts = [
-    activity.projectedIncome > 0 ? mask(`+${compactCurrency(activity.projectedIncome, currency, locale)}`) : null,
-    activity.projectedExpense > 0 ? mask(`−${compactCurrency(activity.projectedExpense, currency, locale)}`) : null,
+    activity.projectedIncome > 0 ? mask(`+${formatMoney(activity.projectedIncome, currency, { compact: true, locale })}`) : null,
+    activity.projectedExpense > 0 ? mask(`−${formatMoney(activity.projectedExpense, currency, { compact: true, locale })}`) : null,
   ].filter(Boolean)
 
   if (!activity.hasActual && !activity.hasProjected) {
@@ -883,12 +875,12 @@ function DayCellActivity({
         <p className={cn('flex flex-wrap items-center gap-x-1.5 text-sm font-semibold tabular-nums', align === 'right' && 'justify-end')}>
           {activity.actualIncome > 0 && (
             <span className="text-emerald-600 dark:text-emerald-400">
-              {mask(`+${compactCurrency(activity.actualIncome, currency, locale)}`)}
+              {mask(`+${formatMoney(activity.actualIncome, currency, { compact: true, locale })}`)}
             </span>
           )}
           {activity.actualExpense > 0 && (
             <span className="text-rose-600 dark:text-rose-400">
-              {mask(`−${compactCurrency(activity.actualExpense, currency, locale)}`)}
+              {mask(`−${formatMoney(activity.actualExpense, currency, { compact: true, locale })}`)}
             </span>
           )}
         </p>
