@@ -60,11 +60,11 @@ describe('i18n-merge-driver', () => {
         return result
       }
 
-      const wealthRoad = { wealthRoad: { title: 'Wealth Road', step1: 'Step one', step2: 'Step two' } }
-      const wealthNetworth = { wealthNetworth: { title: 'Net Worth', chart: 'Chart', summary: 'Summary' } }
+      const zzFixtureSliceA = { zzFixtureSliceA: { title: 'Wealth Road', step1: 'Step one', step2: 'Step two' } }
+      const zzFixtureSliceB = { zzFixtureSliceB: { title: 'Net Worth', chart: 'Chart', summary: 'Summary' } }
 
-      const ours = insertAfterGoals(base, 'wealthRoad', wealthRoad.wealthRoad)
-      const theirs = insertAfterGoals(base, 'wealthNetworth', wealthNetworth.wealthNetworth)
+      const ours = insertAfterGoals(base, 'zzFixtureSliceA', zzFixtureSliceA.zzFixtureSliceA)
+      const theirs = insertAfterGoals(base, 'zzFixtureSliceB', zzFixtureSliceB.zzFixtureSliceB)
 
       const paths = writeTempFiles(dir, { 'base.json': base, 'ours.json': ours, 'theirs.json': theirs })
       const result = runDriver(paths['base.json'], paths['ours.json'], paths['theirs.json'])
@@ -73,8 +73,8 @@ describe('i18n-merge-driver', () => {
       assert.equal(result.stderr, '')
 
       const merged = readOurs(paths['ours.json'])
-      assert.deepEqual(merged.wealthRoad, wealthRoad.wealthRoad)
-      assert.deepEqual(merged.wealthNetworth, wealthNetworth.wealthNetworth)
+      assert.deepEqual(merged.zzFixtureSliceA, zzFixtureSliceA.zzFixtureSliceA)
+      assert.deepEqual(merged.zzFixtureSliceB, zzFixtureSliceB.zzFixtureSliceB)
 
       // All original keys/values survive, in their original relative order.
       const mergedOriginalKeys = Object.keys(merged).filter((k) => k in base)
@@ -85,8 +85,8 @@ describe('i18n-merge-driver', () => {
       const order = Object.keys(merged)
       const goalsIdx = order.indexOf('goals')
       const recurringIdx = order.indexOf('recurring')
-      const roadIdx = order.indexOf('wealthRoad')
-      const networthIdx = order.indexOf('wealthNetworth')
+      const roadIdx = order.indexOf('zzFixtureSliceA')
+      const networthIdx = order.indexOf('zzFixtureSliceB')
       assert.ok(goalsIdx < roadIdx && roadIdx < recurringIdx)
       assert.ok(goalsIdx < networthIdx && networthIdx < recurringIdx)
 
