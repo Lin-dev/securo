@@ -241,6 +241,38 @@ async def test_get_money_map_regroups_report_composition(
     assert result["currency"] == "BRL"
 
 
+async def test_get_money_map_reports_actuals_without_recurring_projections(
+    session: AsyncSession, ctx: CallContext, test_user, test_workspace
+):
+    # A monthly bill that has not posted yet must not reach the lanes: the
+    # savings rate is computed from what actually happened.
+    import calendar as _calendar
+
+    from app.models.recurring_transaction import RecurringTransaction
+
+    uid, wid = test_user.id, test_workspace.id
+    checking = await _account(session, uid, wid, "Checking", "checking")
+    salary = await _category(session, uid, wid, "Salary", transfer=False)
+    rent = await _category(session, uid, wid, "Rent", transfer=False)
+    today = date.today()
+    month_end = today.replace(day=_calendar.monthrange(today.year, today.month)[1])
+    session.add_all([
+        _txn(uid, wid, checking, 5000, "credit", salary),
+        _txn(uid, wid, checking, 120, "debit", rent),
+        RecurringTransaction(
+            id=uuid.uuid4(), user_id=uid, workspace_id=wid, account_id=checking.id, category_id=rent.id,
+            description="Rent", amount=Decimal("1800"), currency="BRL", type="debit", frequency="monthly",
+            day_of_month=month_end.day, start_date=month_end, next_occurrence=month_end, is_active=True,
+        ),
+    ])
+    await session.commit()
+
+    result = await REGISTRY["get_money_map"].handler(session=session, ctx=ctx, days=30)
+
+    assert result["lanes"]["expenses"]["total"] == 120.0
+    assert result["totals"]["cash_savings_rate"] == round((5000 - 120) / 5000, 4)
+
+
 async def test_get_money_map_rejects_both_windows(session: AsyncSession, ctx: CallContext):
     result = await REGISTRY["get_money_map"].handler(session=session, ctx=ctx, days=30, months=2)
     assert "error" in result

@@ -16,6 +16,7 @@ from typing import Any, Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.app_clock import app_today
 from app.models.account import Account
 from app.models.asset import Asset
 from app.models.category import Category
@@ -317,8 +318,13 @@ async def get_money_map(
 
     ws_id = await resolve_workspace_id(session, ctx)
     currency = await _primary_currency(session, ctx)
+    # Explicit dates make the report actuals-only: with just `days` it would
+    # add the month's recurring projections, and the savings rate with them.
+    today = app_today()
+    start = _report_start_date(today, months_arg, None, days)
     rep = await report_service.get_income_expenses_report(
-        session, ws_id, ctx.user_id, months=months_arg, interval="monthly", currency=currency, days=days
+        session, ws_id, ctx.user_id, months=months_arg, interval="monthly", currency=currency, days=days,
+        start_date=start, end_date=today,
     )
 
     raw: dict[str, list[dict[str, Any]]] = {lane: [] for lane in MONEY_MAP_LANES}
@@ -346,8 +352,6 @@ async def get_money_map(
         else None
     )
 
-    today = date.today()
-    start = _report_start_date(today, months_arg, None, days)
     return {
         "window": {
             "from_date": start.isoformat(),
@@ -818,7 +822,7 @@ async def fire_projection(
     derived: dict[str, Any] = {}
 
     if annual_spend is None or annual_contribution is None:
-        today = date.today()
+        today = app_today()
         cov = await coverage_window(session, ws_id, today)
         window = await _summary_window(session, ws_id, ctx.user_id, cov["from_date"], today)
         span = f"{window['from_date']} to {window['to_date']}"
