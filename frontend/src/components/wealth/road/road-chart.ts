@@ -19,9 +19,18 @@ export function projectionPathToNetWorth(
  * The actual history line comes from a different endpoint
  * (`netWorthHistory(...).points[].total`), which is already net worth
  * (every bucket), unlike the projection paths above.
+ *
+ * Points earlier than `from` are dropped. Before the accounts existed (or
+ * before they were synced), history points are back-computed estimates
+ * that can read near $0 and make the line look broken when it jumps up at
+ * the real start date — so the caller passes `netWorthHistory.synced_from`
+ * (falling back to `summary.coverage.from_date` when that's null) and only
+ * the real, synced window gets charted. `from: null` charts every point.
  */
-export function historyToRangePoints(points: WealthNetWorthPoint[]): RangeLinePoint[] {
-  return points.map((point) => ({ date: point.date, value: point.total }))
+export function historyToRangePoints(points: WealthNetWorthPoint[], from: string | null): RangeLinePoint[] {
+  return points
+    .filter((point) => from == null || point.date >= from)
+    .map((point) => ({ date: point.date, value: point.total }))
 }
 
 export interface ProjectionTableRow {

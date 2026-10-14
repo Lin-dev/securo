@@ -102,17 +102,43 @@ describe('RoadTab levers', () => {
 })
 
 describe('RoadTab privacy mode', () => {
-  it('masks the hero amount, the lever amounts and the this-month move text', async () => {
+  it('masks the hero amount and the this-month move text', async () => {
     localStorage.setItem('privacyMode', 'true')
 
     renderWithProviders(<RoadTab />)
 
     expect(await screen.findAllByText(PRIVACY_MASK)).not.toHaveLength(0)
     expect(screen.queryByText(money(500000))).not.toBeInTheDocument()
-    expect(screen.queryByText(money(500))).not.toBeInTheDocument()
 
     expect(await screen.findByText(t('wealthRoad.thisMonth.moveMasked'))).toBeInTheDocument()
     expect(screen.queryByText(wealthLeversFixture.move!.text)).not.toBeInTheDocument()
+  })
+
+  it('masks the idle-cash and cut_top lever amounts, which come from the user\'s own data', async () => {
+    localStorage.setItem('privacyMode', 'true')
+
+    renderWithProviders(<RoadTab />)
+
+    await screen.findAllByText(PRIVACY_MASK)
+    expect(screen.queryByText(t('wealthRoad.levers.idleCash', { amount: money(26000) }))).not.toBeInTheDocument()
+  })
+
+  it('does NOT mask the fixed +$500/+$1,000/+$2,000 lever increments — they are not the user\'s data', async () => {
+    localStorage.setItem('privacyMode', 'true')
+
+    renderWithProviders(<RoadTab />)
+
+    expect(await screen.findByText(t('wealthRoad.levers.plusMonthly', { amount: money(500) }))).toBeInTheDocument()
+  })
+})
+
+describe('RoadTab projection chart', () => {
+  it('formats the target compactly ("$1M") in the takeaway title', async () => {
+    renderWithProviders(<RoadTab />)
+
+    expect(
+      await screen.findByText(t('wealthRoad.chart.title', { amount: '$1M', label: 'Q4 2033' })),
+    ).toBeInTheDocument()
   })
 })
 

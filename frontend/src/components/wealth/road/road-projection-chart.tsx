@@ -15,6 +15,9 @@ import { buildProjectionTableRows, historyToRangePoints, projectionPathToNetWort
 export interface RoadProjectionChartProps {
   projectionQuery: UseQueryResult<WealthProjection>
   historyQuery: UseQueryResult<WealthNetWorthHistory>
+  /** `summary.coverage.from_date` — the fallback cutoff for the actual-history
+   *  line when `netWorthHistory.synced_from` is null (see `road-chart.ts`). */
+  coverageFromDate?: string | null
 }
 
 /**
@@ -24,7 +27,7 @@ export interface RoadProjectionChartProps {
  * an actual line when it does (plan: one failing query doesn't blank the
  * others).
  */
-export function RoadProjectionChart({ projectionQuery, historyQuery }: RoadProjectionChartProps) {
+export function RoadProjectionChart({ projectionQuery, historyQuery, coverageFromDate }: RoadProjectionChartProps) {
   const { t } = useTranslation()
 
   if (projectionQuery.isError) {
@@ -43,15 +46,23 @@ export function RoadProjectionChart({ projectionQuery, historyQuery }: RoadProje
     )
   }
 
-  return <RoadProjectionChartBody projection={projectionQuery.data} history={historyQuery.data} />
+  return (
+    <RoadProjectionChartBody
+      projection={projectionQuery.data}
+      history={historyQuery.data}
+      coverageFromDate={coverageFromDate}
+    />
+  )
 }
 
 function RoadProjectionChartBody({
   projection,
   history,
+  coverageFromDate,
 }: {
   projection: WealthProjection
   history: WealthNetWorthHistory | undefined
+  coverageFromDate: string | null | undefined
 }) {
   const { t } = useTranslation()
   const locale = useDisplayLocale()
@@ -70,12 +81,21 @@ function RoadProjectionChartBody({
     () => projectionPathToNetWorth(scenarios.high.path, inputs.non_invested),
     [scenarios.high.path, inputs.non_invested],
   )
-  const actual = useMemo(() => (history ? historyToRangePoints(history.points) : undefined), [history])
+  // Charting starts at the real, synced history, not the back-computed
+  // estimate from before the accounts existed (R1 gate finding #1).
+  const historyFrom = history?.synced_from ?? coverageFromDate ?? null
+  const actual = useMemo(
+    () => (history ? historyToRangePoints(history.points, historyFrom) : undefined),
+    [history, historyFrom],
+  )
 
-  const money = (value: number) => formatMoney(value, currency, { locale })
+  // Compact ("$1M") in the takeaway title — the full "$1,000,000.00" reads
+  // as noise there (R1 gate finding #3); the table and footnote keep full
+  // precision.
+  const compactTarget = formatMoney(inputs.target_total, currency, { compact: true, locale })
   const title = scenarios.base.label
-    ? t('wealthRoad.chart.title', { amount: money(inputs.target_total), label: scenarios.base.label })
-    : t('wealthRoad.chart.titleUnreachable', { amount: money(inputs.target_total) })
+    ? t('wealthRoad.chart.title', { amount: compactTarget, label: scenarios.base.label })
+    : t('wealthRoad.chart.titleUnreachable', { amount: compactTarget })
 
   const footnote = t('wealthRoad.chart.footnote', {
     low: formatPct(scenarios.low.annual_return, 1, locale),

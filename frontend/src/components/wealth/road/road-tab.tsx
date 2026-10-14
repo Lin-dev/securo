@@ -82,7 +82,11 @@ export function RoadTab() {
   return (
     <div className="space-y-6">
       <RoadHero summaryQuery={summaryQuery} onCreateGoal={() => createGoal.mutate()} creatingGoal={createGoal.isPending} />
-      <RoadProjectionChart projectionQuery={projectionQuery} historyQuery={historyQuery} />
+      <RoadProjectionChart
+        projectionQuery={projectionQuery}
+        historyQuery={historyQuery}
+        coverageFromDate={summaryQuery.data?.coverage.from_date}
+      />
       <RoadLevers projectionQuery={projectionQuery} leversQuery={leversQuery} />
       <RoadThisMonth leversQuery={leversQuery} />
     </div>
