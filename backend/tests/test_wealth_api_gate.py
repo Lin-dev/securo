@@ -12,8 +12,8 @@ _PATHS = ["/settings", "/summary", "/net-worth-history", "/savings-rate", "/proj
 async def test_personal_workspace_reaches_every_wealth_route(client: AsyncClient, auth_headers):
     for path in _PATHS:
         response = await client.get(f"/api/wealth{path}", headers=auth_headers)
-        # 501 until the slice lands; never 404 (unmounted or gated off)
-        assert response.status_code in (200, 501), (path, response.status_code)
+        # every slice has landed (B1 settings, B3 the rest); never 404 (unmounted or gated off)
+        assert response.status_code == 200, (path, response.status_code, response.text)
 
 
 @pytest.mark.asyncio
