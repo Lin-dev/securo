@@ -42,7 +42,8 @@ from app.services.dashboard_service import (
     _get_forecast_transactions,
     _get_open_accounts,
 )
-from app.services.wealth.valuation import net_worth_breakdown_at
+from app.schemas.wealth import NetWorthPoint
+from app.services.wealth.valuation import net_worth_breakdown_at, net_worth_breakdowns_at
 
 CATEGORY_TREND_TOP_N = 11
 
@@ -189,6 +190,64 @@ async def _asset_value_at(
     return total
 
 
+def _report_point_from_breakdown(
+    cutoff: date,
+    point: NetWorthPoint,
+    account_rows: list[tuple[Account, float]],
+    asset_rows: list[tuple[Asset, float]],
+) -> ReportDataPoint:
+    """Reshape a wealth-valuation breakdown (plan P2) into the Reports page's
+    `ReportDataPoint` shape: accounts/assets/liabilities totals and a
+    per-item composition list, built from the same per-account/per-asset
+    primary-currency values the point's buckets were summed from.
+    """
+    composition: list[ReportCompositionItem] = []
+    accounts_total = 0.0
+    liabilities_total = 0.0
+    for account, value in account_rows:
+        if account.type == "credit_card" or value < 0:
+            liabilities_total += abs(value)
+            if abs(value) > 0:
+                composition.append(ReportCompositionItem(
+                    key=str(account.id),
+                    label=get_account_name(account),
+                    value=round(abs(value), 2),
+                    color=_ACCOUNT_TYPE_COLORS.get(account.type, "#6B7280"),
+                    group="liabilities",
+                ))
+        else:
+            accounts_total += value
+            if value > 0:
+                composition.append(ReportCompositionItem(
+                    key=str(account.id),
+                    label=get_account_name(account),
+                    value=round(value, 2),
+                    color=_ACCOUNT_TYPE_COLORS.get(account.type, "#6B7280"),
+                    group="accounts",
+                ))
+    assets_total = 0.0
+    for asset, value in asset_rows:
+        if value > 0:
+            assets_total += value
+            composition.append(ReportCompositionItem(
+                key=str(asset.id),
+                label=asset.name,
+                value=round(value, 2),
+                color=_ASSET_TYPE_COLORS.get(asset.type, "#6B7280"),
+                group="assets",
+            ))
+    return ReportDataPoint(
+        date=cutoff.isoformat(),
+        value=point.total,
+        breakdowns={
+            "accounts": round(accounts_total, 2),
+            "assets": round(assets_total, 2),
+            "liabilities": round(liabilities_total, 2),
+        },
+        composition=composition,
+    )
+
+
 async def _net_worth_at(
     session: AsyncSession, workspace_id: uuid.UUID, cutoff: date,
     primary_currency: str = "USD",
@@ -209,6 +268,12 @@ async def _net_worth_at(
     back-computed-everything path: the valuation module has no notion of a
     subset of accounts/wallets, which only the Collection filter needs.
 
+    A caller that needs more than one date (like `get_net_worth_report`'s own
+    unfiltered path) should call `net_worth_breakdowns_at` directly instead of
+    this function in a loop — each call here reloads every linked holding's
+    history, every account's transaction deltas and every unlinked asset from
+    scratch, which is fine for one point but not for a trend.
+
     ``accounts`` lets a caller that already fetched the (date-independent) open
     account list for this workspace/filter pass it in, instead of re-querying
     it for every snapshot in a multi-point trend. Only read on the filtered
@@ -218,51 +283,7 @@ async def _net_worth_at(
         point, account_rows, asset_rows = await net_worth_breakdown_at(
             session, workspace_id, cutoff, primary_currency,
         )
-        composition: list[ReportCompositionItem] = []
-        accounts_total = 0.0
-        liabilities_total = 0.0
-        for account, value in account_rows:
-            if account.type == "credit_card" or value < 0:
-                liabilities_total += abs(value)
-                if abs(value) > 0:
-                    composition.append(ReportCompositionItem(
-                        key=str(account.id),
-                        label=get_account_name(account),
-                        value=round(abs(value), 2),
-                        color=_ACCOUNT_TYPE_COLORS.get(account.type, "#6B7280"),
-                        group="liabilities",
-                    ))
-            else:
-                accounts_total += value
-                if value > 0:
-                    composition.append(ReportCompositionItem(
-                        key=str(account.id),
-                        label=get_account_name(account),
-                        value=round(value, 2),
-                        color=_ACCOUNT_TYPE_COLORS.get(account.type, "#6B7280"),
-                        group="accounts",
-                    ))
-        assets_total = 0.0
-        for asset, value in asset_rows:
-            if value > 0:
-                assets_total += value
-                composition.append(ReportCompositionItem(
-                    key=str(asset.id),
-                    label=asset.name,
-                    value=round(value, 2),
-                    color=_ASSET_TYPE_COLORS.get(asset.type, "#6B7280"),
-                    group="assets",
-                ))
-        return ReportDataPoint(
-            date=cutoff.isoformat(),
-            value=point.total,
-            breakdowns={
-                "accounts": round(accounts_total, 2),
-                "assets": round(assets_total, 2),
-                "liabilities": round(liabilities_total, 2),
-            },
-            composition=composition,
-        )
+        return _report_point_from_breakdown(cutoff, point, account_rows, asset_rows)
 
     if accounts is None:
         accounts = await _get_open_accounts(session, workspace_id, account_ids)
@@ -449,36 +470,63 @@ async def get_net_worth_report(
 
     points = _date_points(start, axis_end, interval)
 
-    # Fetch the open-account list once: it does not depend on the snapshot
-    # date, so every point below reuses it instead of re-querying it.
-    accounts = await _get_open_accounts(session, workspace_id, account_ids)
-
-    # Compute snapshot at each date point
     trend: list[ReportDataPoint] = []
-    for point in points:
-        dp = await _net_worth_at(
-            session, workspace_id, point, primary_currency, account_ids, asset_group_ids,
-            accounts=accounts,
-        )
-        dp.date = _format_date_label(point, interval)
-        dp.change = round(dp.value - trend[-1].value, 2) if trend else None
-        trend.append(dp)
+    baseline: Optional[ReportDataPoint] = None
+
+    if account_ids is None:
+        # Unfiltered: one bulk load covers the whole trend plus the baseline
+        # (plan P2's bulk-loading rule). A daily or weekly interval can ask
+        # for dozens to hundreds of points; calling `_net_worth_at` per point
+        # would reload every linked holding's history, every account's
+        # transaction deltas and every unlinked asset that many times over.
+        needs_baseline_date = not (points and points[0] == start)
+        dates = list(points) + ([start] if needs_baseline_date else [])
+        breakdowns = await net_worth_breakdowns_at(session, workspace_id, dates, primary_currency)
+        by_date = {point.date: (point, account_rows, asset_rows) for point, account_rows, asset_rows in breakdowns}
+
+        for point in points:
+            value, account_rows, asset_rows = by_date[point]
+            dp = _report_point_from_breakdown(point, value, account_rows, asset_rows)
+            dp.date = _format_date_label(point, interval)
+            dp.change = round(dp.value - trend[-1].value, 2) if trend else None
+            trend.append(dp)
+
+        if trend and points[0] == start:
+            baseline = trend[0]
+        else:
+            value, account_rows, asset_rows = by_date[start]
+            baseline = _report_point_from_breakdown(start, value, account_rows, asset_rows)
+    else:
+        # Collection filter: the valuation module has no notion of a subset
+        # of accounts/wallets, so this keeps the previous per-point,
+        # back-computed-everything path.
+        accounts = await _get_open_accounts(session, workspace_id, account_ids)
+        for point in points:
+            dp = await _net_worth_at(
+                session, workspace_id, point, primary_currency, account_ids, asset_group_ids,
+                accounts=accounts,
+            )
+            dp.date = _format_date_label(point, interval)
+            dp.change = round(dp.value - trend[-1].value, 2) if trend else None
+            trend.append(dp)
+
+        # The first trend point's *actual* cutoff (`points[0]`, before its
+        # `.date` was overwritten with a formatted label) equals `start` for
+        # every interval except monthly, which snaps to month-end. Only reuse
+        # it then — an approximate match would silently swap in the wrong
+        # day's snapshot.
+        if trend and points[0] == start:
+            baseline = trend[0]
+        else:
+            baseline = await _net_worth_at(
+                session, workspace_id, start, primary_currency, account_ids, asset_group_ids,
+                accounts=accounts,
+            )
 
     # Current snapshot (last point) for summary; baseline at period start for delta
     current = trend[-1] if trend else ReportDataPoint(
         date="", value=0, breakdowns={"accounts": 0, "assets": 0, "liabilities": 0}
     )
-    # The first trend point's *actual* cutoff (`points[0]`, before its `.date`
-    # was overwritten with a formatted label) equals `start` for every
-    # interval except monthly, which snaps to month-end. Only reuse it then —
-    # an approximate match would silently swap in the wrong day's snapshot.
-    if trend and points[0] == start:
-        baseline = trend[0]
-    else:
-        baseline = await _net_worth_at(
-            session, workspace_id, start, primary_currency, account_ids, asset_group_ids,
-            accounts=accounts,
-        )
     previous = baseline if trend else current
 
     change_amount = current.value - previous.value

@@ -482,7 +482,57 @@ async def _asset_value_primary(session: AsyncSession, asset: Asset, values_map: 
 
 
 # ---------------------------------------------------------------------------
-# One point, shared by `net_worth_history`'s loop and `net_worth_breakdown_at`
+# A loaded valuation context — bulk-loaded once, evaluated at any number of
+# dates. `net_worth_history` and `net_worth_breakdowns_at` both build one of
+# these exactly once per call, regardless of how many dates they value.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _ValuationContext:
+    today: date
+    accounts: list[Account]
+    plans: list[_AccountPlan]
+    series_by_account: dict[uuid.UUID, _PrefixSeries]
+    shared_today: dict[uuid.UUID, float]
+    not_backed: list[Asset]
+    values_map: dict[str, list[tuple[date, float]]]
+
+
+async def _load_context(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    dates: list[date],
+    overrides: dict[str, AccountAnnotation],
+) -> _ValuationContext:
+    """Everything needed to value any of `dates`: open accounts, their bucket
+    classification and (for holdings accounts) H(d) over `dates`, a
+    back-computed balance series per account, today's shared-balance-group
+    magnitudes, and the not-account-backed assets' value series. Exactly one
+    `AssetValue` query for every linked holding, one transaction-delta query
+    and one pending-delta query across every account — never one per date.
+    """
+    today = app_today()
+    accounts = await _get_open_accounts(session, workspace_id)
+    account_ids = [a.id for a in accounts]
+    plans = await _build_account_plans(session, workspace_id, accounts, overrides, dates, today)
+    series_by_account = await _native_balances_by_account(session, workspace_id, accounts, today)
+    shared_today = {
+        plan.account.id: (
+            await _account_balance_at(session, plan.account, today) if plan.account.shared_balance_group else 0.0
+        )
+        for plan in plans
+    }
+    not_backed = await _not_backed_assets(session, workspace_id, account_ids)
+    values_map = await _load_asset_native_values(session, not_backed) if not_backed else {}
+    return _ValuationContext(
+        today=today, accounts=accounts, plans=plans, series_by_account=series_by_account,
+        shared_today=shared_today, not_backed=not_backed, values_map=values_map,
+    )
+
+
+# ---------------------------------------------------------------------------
+# One point, evaluated from an already-loaded context
 # ---------------------------------------------------------------------------
 
 
@@ -631,39 +681,56 @@ async def net_worth_history(
     primary_currency = user.primary_currency if user else get_settings().default_currency
 
     month_ends = _month_end_points(today, months)
-    accounts = await _get_open_accounts(session, workspace_id)
-    account_ids = [a.id for a in accounts]
-
-    plans = await _build_account_plans(session, workspace_id, accounts, overrides, month_ends, today)
-    # Every account needs a back-computed series: non-holdings accounts use
-    # it for every point, and a holdings account still uses it for any point
-    # before its own first synced date (the `estimated` period).
-    series_by_account = await _native_balances_by_account(session, workspace_id, accounts, today)
-
-    shared_today: dict[uuid.UUID, float] = {}
-    for plan in plans:
-        shared_today[plan.account.id] = (
-            await _account_balance_at(session, plan.account, today)
-            if plan.account.shared_balance_group else 0.0
-        )
-
-    not_backed = await _not_backed_assets(session, workspace_id, account_ids)
-    values_map = await _load_asset_native_values(session, not_backed) if not_backed else {}
+    ctx = await _load_context(session, workspace_id, month_ends, overrides)
 
     points: list[NetWorthPoint] = []
     for as_of in month_ends:
         point, _account_values, _asset_values = await _point_at(
-            session, plans, series_by_account, shared_today, accounts, not_backed, values_map,
-            as_of, today, primary_currency,
+            session, ctx.plans, ctx.series_by_account, ctx.shared_today, ctx.accounts,
+            ctx.not_backed, ctx.values_map, as_of, ctx.today, primary_currency,
         )
         points.append(point)
 
     points.append(await latest_net_worth(session, workspace_id, user_id, overrides))
 
-    holdings_starts = [p.synced_from for p in plans if p.kind == "holdings" and p.synced_from is not None]
+    holdings_starts = [p.synced_from for p in ctx.plans if p.kind == "holdings" and p.synced_from is not None]
     synced_from = min(holdings_starts) if holdings_starts else None
 
     return NetWorthHistory(currency=primary_currency, synced_from=synced_from, points=points)
+
+
+async def net_worth_breakdowns_at(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    dates: list[date],
+    primary_currency: str,
+    overrides: dict[str, AccountAnnotation] = _EMPTY_OVERRIDES,
+) -> list[tuple[NetWorthPoint, list[tuple[Account, float]], list[tuple[Asset, float]]]]:
+    """Net worth at every one of `dates`, by bucket, plus the per-account and
+    per-asset primary-currency values behind each point — one `_load_context`
+    bulk load for the whole batch, then one `_point_at` pass per date.
+
+    This is what `report_service.get_net_worth_report`'s unfiltered path
+    calls once for its entire trend plus its baseline, instead of calling
+    `_net_worth_at` (and so `net_worth_breakdown_at`) once per point: on a
+    daily or weekly interval that used to mean dozens to hundreds of full
+    reloads (every linked holding's `AssetValue` history, every account's
+    transaction deltas, every unlinked asset) per request.
+    """
+    ctx = await _load_context(session, workspace_id, dates, overrides)
+    accounts_by_id = {plan.account.id: plan.account for plan in ctx.plans}
+    assets_by_id = {a.id: a for a in ctx.not_backed}
+
+    results: list[tuple[NetWorthPoint, list[tuple[Account, float]], list[tuple[Asset, float]]]] = []
+    for as_of in dates:
+        point, account_values, asset_values = await _point_at(
+            session, ctx.plans, ctx.series_by_account, ctx.shared_today, ctx.accounts,
+            ctx.not_backed, ctx.values_map, as_of, ctx.today, primary_currency,
+        )
+        account_rows = [(accounts_by_id[aid], val) for aid, val in account_values.items()]
+        asset_rows = [(assets_by_id[aid], val) for aid, val in asset_values.items()]
+        results.append((point, account_rows, asset_rows))
+    return results
 
 
 async def net_worth_breakdown_at(
@@ -673,37 +740,15 @@ async def net_worth_breakdown_at(
     primary_currency: str,
     overrides: dict[str, AccountAnnotation] = _EMPTY_OVERRIDES,
 ) -> tuple[NetWorthPoint, list[tuple[Account, float]], list[tuple[Asset, float]]]:
-    """Net worth at an arbitrary date, by bucket, plus the per-account and
-    per-asset primary-currency values behind it (shared-group collapsed).
+    """Net worth at one arbitrary date — `net_worth_breakdowns_at` for a
+    single date, for a caller (like a single `report_service._net_worth_at`
+    call) that only ever needs one point.
 
-    This is the building block `report_service._net_worth_at` delegates to
-    (plan P2): it does not need a `user_id` because its caller already knows
-    the workspace's `primary_currency`. At `as_of == today` the per-account
-    math here is algebraically identical to `latest_net_worth` (H(s) + C -
-    H(s) == the account's current balance), so Reports and the dashboard
-    agree on today's figure too, in addition to the historical fix.
+    It does not need a `user_id` because its caller already knows the
+    workspace's `primary_currency`. At `as_of == today` the per-account math
+    here is algebraically identical to `latest_net_worth` (H(s) + C - H(s) ==
+    the account's current balance), so Reports and the dashboard agree on
+    today's figure too, in addition to the historical fix.
     """
-    today = app_today()
-    accounts = await _get_open_accounts(session, workspace_id)
-    account_ids = [a.id for a in accounts]
-    plans = await _build_account_plans(session, workspace_id, accounts, overrides, [as_of], today)
-    series_by_account = await _native_balances_by_account(session, workspace_id, accounts, today)
-    shared_today = {
-        plan.account.id: (
-            await _account_balance_at(session, plan.account, today) if plan.account.shared_balance_group else 0.0
-        )
-        for plan in plans
-    }
-    not_backed = await _not_backed_assets(session, workspace_id, account_ids)
-    values_map = await _load_asset_native_values(session, not_backed) if not_backed else {}
-
-    point, account_values, asset_values = await _point_at(
-        session, plans, series_by_account, shared_today, accounts, not_backed, values_map,
-        as_of, today, primary_currency,
-    )
-
-    accounts_by_id = {plan.account.id: plan.account for plan in plans}
-    account_rows = [(accounts_by_id[aid], val) for aid, val in account_values.items()]
-    assets_by_id = {a.id: a for a in not_backed}
-    asset_rows = [(assets_by_id[aid], val) for aid, val in asset_values.items()]
-    return point, account_rows, asset_rows
+    [result] = await net_worth_breakdowns_at(session, workspace_id, [as_of], primary_currency, overrides)
+    return result

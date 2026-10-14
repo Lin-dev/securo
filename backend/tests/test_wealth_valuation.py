@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
@@ -33,8 +34,10 @@ from app.services.wealth.valuation import (
     holdings_value_by_account,
     latest_net_worth,
     net_worth_breakdown_at,
+    net_worth_breakdowns_at,
     net_worth_history,
 )
+from tests.conftest import engine as _sqlite_engine
 
 pytestmark = pytest.mark.asyncio
 
@@ -395,6 +398,90 @@ async def test_net_worth_report_latest_value_matches_the_valuation(session, test
     report = await report_service.get_net_worth_report(session, wid, uid, months=1)
 
     assert report.summary.primary_value == pytest.approx(point.total, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Bulk loading: the Reports page issues a bounded number of SQL statements,
+# regardless of how many points its date range asks for.
+# ---------------------------------------------------------------------------
+
+
+class _StatementCounter:
+    """Counts statements the test engine issues while this is active."""
+
+    def __init__(self):
+        self.count = 0
+
+    def _before_cursor_execute(self, conn, cursor, statement, parameters, context, executemany):
+        self.count += 1
+
+    def __enter__(self):
+        event.listen(_sqlite_engine.sync_engine, "before_cursor_execute", self._before_cursor_execute)
+        return self
+
+    def __exit__(self, *exc):
+        event.remove(_sqlite_engine.sync_engine, "before_cursor_execute", self._before_cursor_execute)
+
+
+async def test_net_worth_report_batches_its_bulk_loads_regardless_of_point_count(
+    session, test_user, test_workspace,
+):
+    uid, wid = test_user.id, test_workspace.id
+    conn = await _connection(session, uid, wid)
+    await _account(session, uid, wid, name="Checking", acc_type="checking", balance="1000", connection_id=conn.id, external_id="chk-1")
+    brokerage = await _account(session, uid, wid, name="Brokerage", acc_type="investment", balance="2000", connection_id=conn.id, external_id="inv-1")
+    asset = await _asset(session, uid, wid, connection_id=conn.id, account_id=brokerage.id, purchase_date=date.today() - timedelta(days=60), purchase_price="1800")
+    await _value(session, asset, d=date.today() - timedelta(days=60), amount="1800")
+    await _value(session, asset, d=date.today() - timedelta(days=55), amount="1850")
+    await _value(session, asset, d=date.today(), amount="2000")
+    await session.commit()
+
+    with _StatementCounter() as daily_counter:
+        daily_report = await report_service.get_net_worth_report(
+            session, wid, uid, interval="daily",
+            start_date=date.today() - timedelta(days=29), end_date=date.today(),
+        )
+    with _StatementCounter() as monthly_counter:
+        monthly_report = await report_service.get_net_worth_report(session, wid, uid, months=3, interval="monthly")
+
+    assert len(daily_report.trend) == 30
+    assert len(monthly_report.trend) < len(daily_report.trend)
+
+    # The statement count does not grow with the number of points: a 30-point
+    # daily report and a short monthly report both stay under the same small,
+    # fixed bound (one bulk load per request, not one per point). A per-point
+    # reload would issue dozens of statements for the daily report alone.
+    bound = 10
+    assert daily_counter.count <= bound, daily_counter.count
+    assert monthly_counter.count <= bound, monthly_counter.count
+
+    # Both reports' per-point values agree with calling the single-date
+    # valuation function directly for the same dates.
+    for point in daily_report.trend:
+        as_of = date.fromisoformat(point.date)
+        expected, _, _ = await net_worth_breakdown_at(session, wid, as_of, "BRL")
+        assert point.value == pytest.approx(expected.total, abs=0.01)
+
+
+async def test_net_worth_breakdowns_at_matches_per_date_calls(session, test_user, test_workspace):
+    uid, wid = test_user.id, test_workspace.id
+    conn = await _connection(session, uid, wid)
+    await _account(session, uid, wid, name="Checking", acc_type="checking", balance="1000", connection_id=conn.id, external_id="chk-1")
+    brokerage = await _account(session, uid, wid, name="Brokerage", acc_type="investment", balance="2000", connection_id=conn.id, external_id="inv-1")
+    asset = await _asset(session, uid, wid, connection_id=conn.id, account_id=brokerage.id, purchase_date=date.today() - timedelta(days=20), purchase_price="1800")
+    await _value(session, asset, d=date.today() - timedelta(days=20), amount="1800")
+    await _value(session, asset, d=date.today() - timedelta(days=15), amount="1900")
+    await _value(session, asset, d=date.today(), amount="2000")
+    await session.commit()
+
+    dates = [date.today() - timedelta(days=d) for d in (18, 10, 1, 0)]
+    batched = await net_worth_breakdowns_at(session, wid, dates, "BRL")
+
+    for as_of, (point, account_rows, asset_rows) in zip(dates, batched):
+        single_point, single_accounts, single_assets = await net_worth_breakdown_at(session, wid, as_of, "BRL")
+        assert point == single_point
+        assert {a.id: v for a, v in account_rows} == {a.id: v for a, v in single_accounts}
+        assert {a.id: v for a, v in asset_rows} == {a.id: v for a, v in single_assets}
 
 
 # ---------------------------------------------------------------------------
