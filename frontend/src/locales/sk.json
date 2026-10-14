@@ -1548,6 +1548,19 @@
     },
     "stub": "This section is being built."
   },
+  "charts": {
+    "showTable": "Show table",
+    "hideTable": "Hide table",
+    "empty": "No data for this period.",
+    "target": "Target",
+    "low": "Low",
+    "base": "Base",
+    "high": "High",
+    "actual": "Actual",
+    "total": "Total",
+    "marker": "Marker",
+    "bulletBarLabel": "{{value}} of a {{target}} target"
+  },
   "wealthSettings": {
     "saved": "Settings saved.",
     "source": {
