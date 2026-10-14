@@ -1629,6 +1629,33 @@
       "noHoldings": "One or more investment accounts have no holdings data yet, so their market moves aren't reflected."
     }
   },
+  "wealthSavings": {
+    "title": {
+      "rolling": "Your 3-month savings rate is {{rate}}.",
+      "fallback": "Your savings rate is {{rate}}.",
+      "empty": "No savings data for this period."
+    },
+    "cashToggleLabel": "Cash only",
+    "rateLabel": "Savings rate (incl. payroll contributions)",
+    "cashRateLabel": "Cash savings rate (cash only)",
+    "rollingLabel": "3-month rolling",
+    "definitionNote": "\"Incl. payroll contributions\" counts 401(k), HSA and IRA deposits as both income and saving; \"cash only\" looks at bank cash flow alone, so the two numbers normally differ.",
+    "partialBadge": "Partial",
+    "outsideCoverageBadge": "Outside coverage",
+    "flags": {
+      "partial": "This month is still in progress and shown as partial.",
+      "outsideCoverage": "Some months don't have enough data yet and are greyed out."
+    },
+    "table": {
+      "month": "Month",
+      "income": "Income",
+      "expenses": "Expenses",
+      "direct": "Direct contributions",
+      "rate": "Rate",
+      "cashRate": "Cash rate",
+      "rolling3m": "3-month rolling"
+    }
+  },
   "recurring": {
     "title": "Wiederkehrende Transaktionen",
     "add": "Wiederkehrende hinzufügen",
