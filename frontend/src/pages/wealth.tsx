@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 
 import { PageHeader } from '@/components/page-header'
 import { WEALTH_TABS, wealthTabFromParam, type WealthTab } from '@/lib/wealth-tabs'
+import { CashTab } from '@/components/wealth/cash/cash-tab'
 import { NetWorthTab } from '@/components/wealth/networth/networth-tab'
 import { RoadTab } from '@/components/wealth/road/road-tab'
 import { SavingsTab } from '@/components/wealth/savings/savings-tab'
@@ -51,6 +52,7 @@ export default function WealthPage() {
         {tab === 'road' && <RoadTab />}
         {tab === 'networth' && <NetWorthTab />}
         {tab === 'savings' && <SavingsTab />}
+        {tab === 'cash' && <CashTab />}
         {tab === 'settings' && <SettingsTab />}
       </div>
     </div>

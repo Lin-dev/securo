@@ -1,9 +1,9 @@
 /**
  * Tabs of the wealth page (fork). A tab is listed here only once its release
- * ships it: allocation and limits arrive in R3, so they are not offered yet,
+ * ships it: cash arrives in R2, allocation and limits in R3, so the latter are not offered yet,
  * and an unknown or not-yet-shipped `?tab=` falls back to the first tab.
  */
-export const WEALTH_TABS = ['road', 'networth', 'savings', 'settings'] as const
+export const WEALTH_TABS = ['road', 'networth', 'savings', 'cash', 'settings'] as const
 
 export type WealthTab = (typeof WEALTH_TABS)[number]
 
