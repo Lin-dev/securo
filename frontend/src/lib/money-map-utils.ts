@@ -40,6 +40,21 @@ export interface MoneyMapNode {
   name: string
   color: string
   side: MoneyMapSide
+  /** The category behind this node, when the composition item it was built
+   * from carries a real category id (see `categoryIdFromKey`). Unset for
+   * synthetic nodes (`center`, `surplus`, `deficit`, `contributions`) and
+   * for the few lane rows the backend keys by account instead
+   * (`accountId` below) or by a non-category token (`uncategorized`). */
+  categoryId?: string
+  /** The account behind this node, for the rare lane row the backend keys
+   * by account rather than category (`account:<id>`) -- a direct
+   * contribution that reached an investment account without passing
+   * through cash. */
+  accountId?: string
+  /** Set only on a collapsed "Other" node: the raw composition keys
+   * (category ids, `account:<id>`, or `uncategorized`/`direct_contributions`)
+   * folded into it, so a click can drill into all of them. */
+  foldedIds?: string[]
 }
 
 export interface MoneyMapLink {
@@ -77,8 +92,37 @@ export interface MoneyMap {
 
 const round2 = (v: number) => Math.round(v * 100) / 100
 
-/** Sort largest-first, then fold everything past the cap into a single "Other". */
-export function collapse(items: ReportCompositionItem[], otherLabel: string): ReportCompositionItem[] {
+/** A composition item, plus (only on a synthetic "Other" row) the ids of
+ * the items `collapse()` folded into it. */
+export interface CollapsedCompositionItem extends ReportCompositionItem {
+  foldedIds?: string[]
+}
+
+// Composition keys that never identify a real category -- the backend uses
+// them as literal lane tokens (`report_service.py`'s Money Map comp_map),
+// not a `Category.id`. Kept in lockstep with that file.
+const NON_CATEGORY_KEYS: ReadonlySet<string> = new Set(['uncategorized', 'other', 'direct_contributions'])
+const ACCOUNT_KEY_PREFIX = 'account:'
+
+/** The real category id behind a composition `key`, or `undefined` when the
+ * key is a non-category lane token (`uncategorized`, `other`,
+ * `direct_contributions`) or an account-keyed row (`account:<id>`). */
+export function categoryIdFromKey(key: string): string | undefined {
+  if (NON_CATEGORY_KEYS.has(key) || key.startsWith(ACCOUNT_KEY_PREFIX)) return undefined
+  return key
+}
+
+/** The real account id behind an account-keyed composition `key`
+ * (`account:<id>` -- the direct-contribution credit leg, see
+ * `report_service.py`'s Money Map lanes), or `undefined` for every other key. */
+export function accountIdFromKey(key: string): string | undefined {
+  return key.startsWith(ACCOUNT_KEY_PREFIX) ? key.slice(ACCOUNT_KEY_PREFIX.length) : undefined
+}
+
+/** Sort largest-first, then fold everything past the cap into a single
+ * "Other", remembering which keys were folded (`foldedIds`) so a click on
+ * "Other" can still drill into (some of) what it hides. */
+export function collapse(items: ReportCompositionItem[], otherLabel: string): CollapsedCompositionItem[] {
   const sorted = [...items].sort((a, b) => b.value - a.value)
   if (sorted.length <= MAX_NODES_PER_SIDE) return sorted
   const top = sorted.slice(0, MAX_NODES_PER_SIDE - 1)
@@ -86,8 +130,35 @@ export function collapse(items: ReportCompositionItem[], otherLabel: string): Re
   const otherValue = rest.reduce((s, c) => s + c.value, 0)
   return [
     ...top,
-    { key: 'other', label: otherLabel, value: otherValue, color: NEUTRAL_COLOR, group: rest[0].group },
+    {
+      key: 'other',
+      label: otherLabel,
+      value: otherValue,
+      color: NEUTRAL_COLOR,
+      group: rest[0].group,
+      foldedIds: rest.map((c) => c.key),
+    },
   ]
+}
+
+/** Every real category/account id behind the composition rows in the given
+ * groups (e.g. `['transfers_in', 'transfers_out']` for the whole transfers
+ * lane) -- the UNCOLLAPSED set, so a lane-level drill-down isn't limited to
+ * the handful of rows still visible after `collapse()`. */
+export function laneIds(
+  composition: ReportCompositionItem[],
+  groups: readonly string[],
+): { categoryIds: string[]; accountIds: string[] } {
+  const categoryIds: string[] = []
+  const accountIds: string[] = []
+  for (const c of composition) {
+    if (c.value <= 0 || !groups.includes(c.group)) continue
+    const categoryId = categoryIdFromKey(c.key)
+    const accountId = accountIdFromKey(c.key)
+    if (categoryId) categoryIds.push(categoryId)
+    if (accountId) accountIds.push(accountId)
+  }
+  return { categoryIds, accountIds }
 }
 
 const sum = (items: ReportCompositionItem[]) => items.reduce((s, c) => s + c.value, 0)
@@ -148,18 +219,29 @@ export function buildMoneyMap(composition: ReportCompositionItem[], labels: Mone
         : c.label
   const isNeutral = (c: ReportCompositionItem) => c.key === 'uncategorized' || c.key === 'other'
   const colorFor = (c: ReportCompositionItem, color: string) => (isNeutral(c) ? NEUTRAL_COLOR : color)
+  // Every category/account-composition node is built the same way: an id
+  // namespaced by side and index, the translated/neutral label and colour,
+  // and -- plan S5 -- the ids a click needs to drill back into Transactions.
+  const pushCompositionNode = (
+    prefix: string, c: CollapsedCompositionItem, i: number, side: MoneyMapSide, color: string,
+  ) =>
+    pushNode({
+      id: `${prefix}-${c.key}-${i}`,
+      name: labelFor(c),
+      color: colorFor(c, color),
+      side,
+      categoryId: categoryIdFromKey(c.key),
+      accountId: accountIdFromKey(c.key),
+      foldedIds: c.foldedIds,
+    })
 
   // Left column, top → bottom: earned (green), contributed straight into
   // investments (blue), moved in (violet), and the deficit if the hub needs it.
-  income.forEach((c, i) =>
-    pushNode({ id: `in-${c.key}-${i}`, name: labelFor(c), color: colorFor(c, INCOME_COLOR), side: 'income' }),
-  )
+  income.forEach((c, i) => pushCompositionNode('in', c, i, 'income', INCOME_COLOR))
   if (contributions > 0) {
     pushNode({ id: 'contributions', name: labels.directContributions, color: INVEST_COLOR, side: 'contribution' })
   }
-  transfersIn.forEach((c, i) =>
-    pushNode({ id: `tin-${c.key}-${i}`, name: labelFor(c), color: colorFor(c, TRANSFER_COLOR), side: 'transfer_in' }),
-  )
+  transfersIn.forEach((c, i) => pushCompositionNode('tin', c, i, 'transfer_in', TRANSFER_COLOR))
   // Deficit appears as an inflow on the income side so the centre balances.
   if (totals.net < 0) {
     pushNode({ id: 'deficit', name: labels.deficit, color: DEFICIT_COLOR, side: 'income' })
@@ -169,15 +251,9 @@ export function buildMoneyMap(composition: ReportCompositionItem[], labels: Mone
 
   // Right column, top → bottom: expenses (red), investments (blue), transfers
   // out (violet), surplus (green) — matching the centre bar's stacked split.
-  expense.forEach((c, i) =>
-    pushNode({ id: `ex-${c.key}-${i}`, name: labelFor(c), color: colorFor(c, EXPENSE_COLOR), side: 'expense' }),
-  )
-  investment.forEach((c, i) =>
-    pushNode({ id: `inv-${c.key}-${i}`, name: labelFor(c), color: colorFor(c, INVEST_COLOR), side: 'investment' }),
-  )
-  transfersOut.forEach((c, i) =>
-    pushNode({ id: `tout-${c.key}-${i}`, name: labelFor(c), color: colorFor(c, TRANSFER_COLOR), side: 'transfer_out' }),
-  )
+  expense.forEach((c, i) => pushCompositionNode('ex', c, i, 'expense', EXPENSE_COLOR))
+  investment.forEach((c, i) => pushCompositionNode('inv', c, i, 'investment', INVEST_COLOR))
+  transfersOut.forEach((c, i) => pushCompositionNode('tout', c, i, 'transfer_out', TRANSFER_COLOR))
   if (totals.net > 0) {
     pushNode({ id: 'surplus', name: labels.surplus, color: SURPLUS_COLOR, side: 'expense' })
   }

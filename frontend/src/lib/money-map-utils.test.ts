@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { ReportCompositionItem } from '@/types'
 import {
+  accountIdFromKey,
   buildMoneyMap,
+  categoryIdFromKey,
   collapse,
   DEFICIT_COLOR,
   INVEST_COLOR,
+  laneIds,
   MAX_NODES_PER_SIDE,
   NEUTRAL_COLOR,
   TRANSFER_COLOR,
@@ -114,6 +117,94 @@ describe('buildMoneyMap', () => {
     const unc = nodeNamed(map, 'Uncategorized')
     expect(unc?.color).toBe(NEUTRAL_COLOR)
   })
+
+  it('keeps a category node\'s category id, and its lane in `side`', () => {
+    const catId = '11111111-1111-1111-1111-111111111111'
+    const map = buildMoneyMap([item('expenses', catId, 100, 'Rent')], labels)
+    const rent = nodeNamed(map, 'Rent')
+    expect(rent?.categoryId).toBe(catId)
+    expect(rent?.accountId).toBeUndefined()
+    expect(rent?.side).toBe('expense')
+  })
+
+  it('keeps the account id of an account-keyed row instead of a category id', () => {
+    const map = buildMoneyMap([
+      item('income', 'salary', 1000, 'Salary'),
+      item('expenses', 'rent', 400, 'Rent'),
+      item('direct_contributions', 'direct_contributions', 700, 'Direct contributions'),
+      item('investments', 'account:plan-1', 700, 'Employer 401(k)'),
+    ], labels)
+    const plan = nodeNamed(map, 'Employer 401(k)')
+    expect(plan?.accountId).toBe('plan-1')
+    expect(plan?.categoryId).toBeUndefined()
+    // The synthetic lane node has neither -- there is no single row behind it.
+    const contrib = nodeNamed(map, 'Direct contributions')
+    expect(contrib?.categoryId).toBeUndefined()
+    expect(contrib?.accountId).toBeUndefined()
+  })
+
+  it('does not treat "uncategorized" or "other" as a category id', () => {
+    const map = buildMoneyMap([
+      item('income', 'uncategorized', 10, 'whatever'),
+      item('expenses', 'rent', 5, 'Rent'),
+    ], labels)
+    expect(nodeNamed(map, 'Uncategorized')?.categoryId).toBeUndefined()
+  })
+
+  it('keeps foldedIds on a collapsed "Other" node', () => {
+    const items = Array.from({ length: 12 }, (_, i) => item('expenses', `cat-${i}`, i + 1))
+    const map = buildMoneyMap(items, labels)
+    const other = nodeNamed(map, 'Other')
+    // The 4 smallest (cat-0..cat-3) are the ones folded away.
+    expect(other?.foldedIds?.slice().sort()).toEqual(['cat-0', 'cat-1', 'cat-2', 'cat-3'])
+  })
+})
+
+describe('categoryIdFromKey / accountIdFromKey', () => {
+  it('reads a plain key as a category id', () => {
+    expect(categoryIdFromKey('cat-1')).toBe('cat-1')
+    expect(accountIdFromKey('cat-1')).toBeUndefined()
+  })
+
+  it('reads an account-keyed row as an account id, not a category id', () => {
+    expect(categoryIdFromKey('account:acct-1')).toBeUndefined()
+    expect(accountIdFromKey('account:acct-1')).toBe('acct-1')
+  })
+
+  it('treats the non-category lane tokens as neither', () => {
+    for (const key of ['uncategorized', 'other', 'direct_contributions']) {
+      expect(categoryIdFromKey(key)).toBeUndefined()
+      expect(accountIdFromKey(key)).toBeUndefined()
+    }
+  })
+})
+
+describe('laneIds', () => {
+  const composition: ReportCompositionItem[] = [
+    item('transfers_out', 'cat-out', 100, 'Card payment'),
+    item('transfers_in', 'cat-in', 50, 'Held in trust'),
+    item('transfers_in', 'uncategorized', 5, 'whatever'),
+    item('investments', 'account:plan-1', 700, 'Employer 401(k)'),
+    item('expenses', 'cat-rent', 400, 'Rent'),
+  ]
+
+  it('collects every real id across the given groups, uncollapsed', () => {
+    const { categoryIds, accountIds } = laneIds(composition, ['transfers_in', 'transfers_out'])
+    expect(categoryIds.sort()).toEqual(['cat-in', 'cat-out'])
+    expect(accountIds).toEqual([])
+  })
+
+  it('separates account-keyed rows from category rows', () => {
+    const { categoryIds, accountIds } = laneIds(composition, ['investments'])
+    expect(categoryIds).toEqual([])
+    expect(accountIds).toEqual(['plan-1'])
+  })
+
+  it('ignores groups that were not asked for', () => {
+    const { categoryIds, accountIds } = laneIds(composition, ['expenses'])
+    expect(categoryIds).toEqual(['cat-rent'])
+    expect(accountIds).toEqual([])
+  })
 })
 
 describe('collapse', () => {
@@ -132,5 +223,19 @@ describe('collapse', () => {
   it('leaves short lists alone apart from sorting', () => {
     const out = collapse([item('income', 'a', 1), item('income', 'b', 3)], 'Other')
     expect(out.map((c) => c.key)).toEqual(['b', 'a'])
+  })
+
+  it('remembers the keys folded into "Other" as foldedIds', () => {
+    const items = Array.from({ length: 12 }, (_, i) => item('expenses', `c${i}`, i + 1))
+    const out = collapse(items, 'Other')
+    const other = out[out.length - 1]
+    expect(other.foldedIds?.slice().sort()).toEqual(['c0', 'c1', 'c2', 'c3'])
+    // A row that survives collapsing (still its own node) carries no foldedIds.
+    expect(out[0].foldedIds).toBeUndefined()
+  })
+
+  it('does not add foldedIds when nothing was folded', () => {
+    const out = collapse([item('income', 'a', 1), item('income', 'b', 3)], 'Other')
+    expect(out.every((c) => c.foldedIds === undefined)).toBe(true)
   })
 })
