@@ -42,6 +42,7 @@ from app.services.dashboard_service import (
     _get_forecast_transactions,
     _get_open_accounts,
 )
+from app.services.wealth.valuation import net_worth_breakdown_at
 
 CATEGORY_TREND_TOP_N = 11
 
@@ -197,14 +198,72 @@ async def _net_worth_at(
 ) -> ReportDataPoint:
     """Compute a single net worth snapshot at a given date, converted to primary currency.
 
-    Under a Collection filter (``account_ids`` set), only those accounts are
-    summed and only assets in the collection's wallets (``asset_group_ids``)
-    are included.
+    Unfiltered (no Collection), this delegates to the wealth valuation module
+    (plan P2, critique C3): an investment account with linked holdings is
+    valued from its holdings (H(d)) plus a flat cash offset instead of the
+    back-computed ledger, so a price move shows up in the Reports trend the
+    same way it does on /wealth. This changes historical Reports figures for
+    a workspace with synced holdings (see the release notes).
+
+    Under a Collection filter (``account_ids`` set), this keeps the previous
+    back-computed-everything path: the valuation module has no notion of a
+    subset of accounts/wallets, which only the Collection filter needs.
 
     ``accounts`` lets a caller that already fetched the (date-independent) open
     account list for this workspace/filter pass it in, instead of re-querying
-    it for every snapshot in a multi-point trend. Omit it to fetch as before.
+    it for every snapshot in a multi-point trend. Only read on the filtered
+    path below; the delegated path fetches its own.
     """
+    if account_ids is None:
+        point, account_rows, asset_rows = await net_worth_breakdown_at(
+            session, workspace_id, cutoff, primary_currency,
+        )
+        composition: list[ReportCompositionItem] = []
+        accounts_total = 0.0
+        liabilities_total = 0.0
+        for account, value in account_rows:
+            if account.type == "credit_card" or value < 0:
+                liabilities_total += abs(value)
+                if abs(value) > 0:
+                    composition.append(ReportCompositionItem(
+                        key=str(account.id),
+                        label=get_account_name(account),
+                        value=round(abs(value), 2),
+                        color=_ACCOUNT_TYPE_COLORS.get(account.type, "#6B7280"),
+                        group="liabilities",
+                    ))
+            else:
+                accounts_total += value
+                if value > 0:
+                    composition.append(ReportCompositionItem(
+                        key=str(account.id),
+                        label=get_account_name(account),
+                        value=round(value, 2),
+                        color=_ACCOUNT_TYPE_COLORS.get(account.type, "#6B7280"),
+                        group="accounts",
+                    ))
+        assets_total = 0.0
+        for asset, value in asset_rows:
+            if value > 0:
+                assets_total += value
+                composition.append(ReportCompositionItem(
+                    key=str(asset.id),
+                    label=asset.name,
+                    value=round(value, 2),
+                    color=_ASSET_TYPE_COLORS.get(asset.type, "#6B7280"),
+                    group="assets",
+                ))
+        return ReportDataPoint(
+            date=cutoff.isoformat(),
+            value=point.total,
+            breakdowns={
+                "accounts": round(accounts_total, 2),
+                "assets": round(assets_total, 2),
+                "liabilities": round(liabilities_total, 2),
+            },
+            composition=composition,
+        )
+
     if accounts is None:
         accounts = await _get_open_accounts(session, workspace_id, account_ids)
 
