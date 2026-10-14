@@ -29,7 +29,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
 
-from app.agents.services.crypto import decrypt, encrypt
+from app.core.crypto import decrypt, encrypt
 from app.providers.favicon import favicon_url_for
 from app.providers.base import (
     AccountData,

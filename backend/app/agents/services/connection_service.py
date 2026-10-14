@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models.connection import LlmConnection
 from app.agents.providers.registry import build_provider, list_providers
-from app.agents.services.crypto import decrypt, encrypt
+from app.core.crypto import decrypt, encrypt
 
 
 VALID_KINDS = set(list_providers())  # ollama, openai, anthropic, openai_compatible

@@ -22,7 +22,7 @@ from typing import Any, Optional
 import httpx
 from jose import jwt
 
-from app.agents.services.crypto import decrypt, encrypt
+from app.core.crypto import decrypt, encrypt
 from app.core.config import get_settings
 from app.providers.base import (
     AccountData,
