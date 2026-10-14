@@ -42,7 +42,8 @@ export default defineConfig({
           environment: 'jsdom',
           setupFiles: ['./src/test/setup.ts'],
           // Every other discovered test keeps the browser environment.
-          exclude: [...configDefaults.exclude, ...nodeTests],
+          // scripts/*.test.mjs are node:test suites for the CLI tools (npm run test:scripts).
+          exclude: [...configDefaults.exclude, ...nodeTests, 'scripts/**'],
         },
       },
     ],

@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "dev:docker": "node ../scripts/dev-frontend.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:scripts": "node --test 'scripts/*.test.mjs'"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
