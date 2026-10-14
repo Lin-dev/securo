@@ -337,6 +337,7 @@ export default function AssetsPage() {
     queryClient.refetchQueries({ queryKey: ['assets'] })
     queryClient.refetchQueries({ queryKey: ['portfolio-trend'] })
     queryClient.refetchQueries({ queryKey: ['dashboard'] })
+    queryClient.refetchQueries({ queryKey: ['wealth'] })
   }
 
   const createMutation = useMutation({
