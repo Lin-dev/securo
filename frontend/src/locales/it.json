@@ -1476,6 +1476,74 @@
     },
     "stub": "This section is being built."
   },
+  "wealthSettings": {
+    "saved": "Settings saved.",
+    "source": {
+      "default": "Default",
+      "user": "Yours"
+    },
+    "buckets": {
+      "cash": "Cash",
+      "taxable": "Taxable",
+      "retirement_pretax": "Retirement (pre-tax)",
+      "retirement_roth": "Retirement (Roth)",
+      "retirement_hsa": "HSA",
+      "crypto": "Crypto",
+      "property_other": "Property & other",
+      "card_debt": "Card debt",
+      "other_debt": "Other debt"
+    },
+    "milestone": {
+      "title": "Milestone goal",
+      "label": "Net-worth goal",
+      "none": "No goal",
+      "optionLabel": "{{name}} — {{amount}}",
+      "empty": "You don't have a net-worth goal yet.",
+      "goToGoals": "Create one on the Goals page"
+    },
+    "assumptions": {
+      "title": "Assumptions",
+      "returnLabel": "Expected annual return",
+      "returnHelp": "Used to project your net worth forward. Between -5% and 15%.",
+      "returnError": "Enter a return between -5% and 15%.",
+      "withdrawalLabel": "Withdrawal rate",
+      "withdrawalHelp": "Used to work out your FI number. Above 0% and up to 10%.",
+      "withdrawalError": "Enter a withdrawal rate above 0% and up to 10%.",
+      "bufferLabel": "Cash buffer (months)",
+      "bufferHelp": "Months of spending kept outside idle cash. From 0 to 24.",
+      "bufferError": "Enter a buffer between 0 and 24 months."
+    },
+    "accounts": {
+      "title": "Accounts",
+      "account": "Account",
+      "bucket": "Bucket",
+      "liquid": "Liquid",
+      "apr": "APR %",
+      "source": "Source",
+      "reset": "Reset",
+      "bucketFor": "Bucket for {{name}}",
+      "liquidFor": "Liquid for {{name}}",
+      "aprFor": "APR for {{name}}",
+      "aprError": "Enter an APR between 0% and 100%.",
+      "defaultSuffix": " (default)",
+      "orphanedTitle": "Overrides for accounts that no longer exist",
+      "empty": "No accounts yet."
+    },
+    "income": {
+      "title": "Income categories",
+      "help": "Credits in these categories count as income in your typical figures.",
+      "useDefaults": "Use defaults",
+      "defaultSuffix": " (default)",
+      "empty": "No categories yet."
+    },
+    "oneOffs": {
+      "title": "One-off transactions",
+      "help": "One-offs are left out of your \"typical\" monthly figures.",
+      "proposed": "Detected",
+      "empty": "No one-off transactions yet.",
+      "toggleLabel": "Count \"{{description}}\" as a one-off"
+    }
+  },
   "recurring": {
     "title": "Transazioni ricorrenti",
     "add": "Aggiungi ricorrente",
