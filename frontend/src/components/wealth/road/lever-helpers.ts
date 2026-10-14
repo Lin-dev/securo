@@ -37,33 +37,38 @@ export interface LeverCopy {
   shift: string
 }
 
-/** The "what it is" line's dollar figure, by lever key. `null` means the
- *  lever can't be described yet (e.g. `cut_top` with no top controllable
- *  category known) — the caller skips that card. */
-function whatItIsAmount(key: WealthLeverKey, levers: WealthLevers | undefined, lever: WealthLeverResult): number | null {
-  if (key === 'idle_cash') return levers?.idle_cash ?? lever.amount ?? null
-  if (key === 'cut_top') return levers?.top_controllable?.band_cut ?? lever.amount ?? null
-  return FIXED_MONTHLY_AMOUNT[key] ?? lever.amount ?? null
-}
-
+/**
+ * The "what it is" line's dollar figure. `idle_cash` and `cut_top` read
+ * from the user's own data (`WealthLevers`), so their amount is formatted
+ * with `maskedMoney` and disappears in privacy mode. `plus_500`/`1000`/
+ * `2000` are fixed hypothetical increments baked into the lever key, not
+ * anyone's data, so they're formatted with the plain `money` and stay
+ * visible in privacy mode — otherwise all three cards read "+••••• a
+ * month" and can't be told apart (R1 gate finding #2).
+ */
 function whatItIs(
   lever: WealthLeverResult,
   levers: WealthLevers | undefined,
   t: Translate,
   money: FormatMoney,
+  maskedMoney: FormatMoney,
 ): string | null {
-  const amount = whatItIsAmount(lever.key, levers, lever)
   switch (lever.key) {
-    case 'idle_cash':
-      return amount == null ? null : t('wealthRoad.levers.idleCash', { amount: money(amount) })
+    case 'idle_cash': {
+      const amount = levers?.idle_cash ?? lever.amount ?? null
+      return amount == null ? null : t('wealthRoad.levers.idleCash', { amount: maskedMoney(amount) })
+    }
     case 'plus_500':
     case 'plus_1000':
-    case 'plus_2000':
+    case 'plus_2000': {
+      const amount = FIXED_MONTHLY_AMOUNT[lever.key] ?? lever.amount ?? null
       return amount == null ? null : t('wealthRoad.levers.plusMonthly', { amount: money(amount) })
+    }
     case 'cut_top': {
       const category = levers?.top_controllable?.category
+      const amount = levers?.top_controllable?.band_cut ?? lever.amount ?? null
       if (!category || amount == null) return null
-      return t('wealthRoad.levers.cutTop', { category, amount: money(amount) })
+      return t('wealthRoad.levers.cutTop', { category, amount: maskedMoney(amount) })
     }
     case 'return_plus_1':
       return t('wealthRoad.levers.returnHigher')
@@ -100,8 +105,9 @@ export function describeLever(
   levers: WealthLevers | undefined,
   t: Translate,
   money: FormatMoney,
+  maskedMoney: FormatMoney,
 ): LeverCopy | null {
-  const line = whatItIs(lever, levers, t, money)
+  const line = whatItIs(lever, levers, t, money, maskedMoney)
   if (line == null) return null
   return { key: lever.key, whatItIs: line, shift: shiftText(lever, t) }
 }

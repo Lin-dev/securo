@@ -57,11 +57,15 @@ function RoadLeversBody({ projection, levers }: { projection: WealthProjection; 
   const { t } = useTranslation()
   const locale = useDisplayLocale()
   const { mask } = usePrivacyMode()
-  const money = (value: number) => mask(formatMoney(value, projection.currency, { locale }))
+  // `money` is plain (fixed hypothetical increments, not the user's data);
+  // `maskedMoney` is for amounts read from the user's own wealth state
+  // (idle cash, the top controllable category's cut) — see lever-helpers.ts.
+  const money = (value: number) => formatMoney(value, projection.currency, { locale })
+  const maskedMoney = (value: number) => mask(formatMoney(value, projection.currency, { locale }))
 
   // Sorting and describing a handful of levers is cheap — no useMemo needed.
   const cards = sortLevers(projection.levers)
-    .map((lever) => describeLever(lever, levers, t, money))
+    .map((lever) => describeLever(lever, levers, t, money, maskedMoney))
     .filter((copy): copy is NonNullable<typeof copy> => copy != null)
 
   return (

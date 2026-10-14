@@ -6,6 +6,7 @@ import type { WealthLeverResult, WealthLevers } from '@/types/wealth'
 import { describeLever, formatSignedMonths, sortLevers } from './lever-helpers'
 
 const money = (value: number) => `$${value.toLocaleString()}`
+const maskedMoney = (value: number) => `MASKED($${value.toLocaleString()})`
 
 const idleCashLever: WealthLeverResult = {
   key: 'idle_cash',
@@ -70,40 +71,62 @@ describe('formatSignedMonths', () => {
 
 describe('describeLever', () => {
   it('prefers the current idle-cash figure (levers endpoint) over the projection lever amount', () => {
-    const copy = describeLever(idleCashLever, levers, t, money)
-    expect(copy?.whatItIs).toBe(t('wealthRoad.levers.idleCash', { amount: '$26,000' }))
+    const copy = describeLever(idleCashLever, levers, t, money, maskedMoney)
+    expect(copy?.whatItIs).toBe(t('wealthRoad.levers.idleCash', { amount: 'MASKED($26,000)' }))
   })
 
   it('falls back to the lever\'s own amount when the levers query has not resolved', () => {
-    const copy = describeLever(idleCashLever, undefined, t, money)
-    expect(copy?.whatItIs).toBe(t('wealthRoad.levers.idleCash', { amount: '$20,000' }))
+    const copy = describeLever(idleCashLever, undefined, t, money, maskedMoney)
+    expect(copy?.whatItIs).toBe(t('wealthRoad.levers.idleCash', { amount: 'MASKED($20,000)' }))
   })
 
   it('names the top controllable category and its band cut for cut_top', () => {
     const cutTopLever: WealthLeverResult = { ...idleCashLever, key: 'cut_top', amount: null }
-    const copy = describeLever(cutTopLever, levers, t, money)
-    expect(copy?.whatItIs).toBe(t('wealthRoad.levers.cutTop', { category: 'Dining out', amount: '$600' }))
+    const copy = describeLever(cutTopLever, levers, t, money, maskedMoney)
+    expect(copy?.whatItIs).toBe(t('wealthRoad.levers.cutTop', { category: 'Dining out', amount: 'MASKED($600)' }))
   })
 
   it('skips cut_top entirely when there is no top controllable category', () => {
     const cutTopLever: WealthLeverResult = { ...idleCashLever, key: 'cut_top', amount: null }
     const noTopControllable: WealthLevers = { ...levers, top_controllable: null }
-    expect(describeLever(cutTopLever, noTopControllable, t, money)).toBeNull()
+    expect(describeLever(cutTopLever, noTopControllable, t, money, maskedMoney)).toBeNull()
   })
 
   it('describes a return lever with fixed text and no amount', () => {
-    const copy = describeLever(returnMinusLever, levers, t, money)
+    const copy = describeLever(returnMinusLever, levers, t, money, maskedMoney)
     expect(copy?.whatItIs).toBe(t('wealthRoad.levers.returnLower'))
   })
 
   it('formats the date-shift line with the sign and the label', () => {
-    const copy = describeLever(idleCashLever, levers, t, money)
+    const copy = describeLever(idleCashLever, levers, t, money, maskedMoney)
     expect(copy?.shift).toBe(t('wealthRoad.levers.shift', { months: '−4', label: 'Q2 2033' }))
   })
 
   it('describes an unreachable lever as not reachable', () => {
     const unreachable: WealthLeverResult = { ...idleCashLever, date: null, shift_months: null, label: null }
-    const copy = describeLever(unreachable, levers, t, money)
+    const copy = describeLever(unreachable, levers, t, money, maskedMoney)
     expect(copy?.shift).toBe(t('wealthRoad.levers.notReachable'))
+  })
+
+  it('uses the PLAIN formatter for the fixed +$500/+$1,000/+$2,000 increments, never the masked one', () => {
+    const plus1000: WealthLeverResult = { ...plus500Lever, key: 'plus_1000', amount: 1000 }
+    const plus2000: WealthLeverResult = { ...plus500Lever, key: 'plus_2000', amount: 2000 }
+
+    expect(describeLever(plus500Lever, levers, t, money, maskedMoney)?.whatItIs).toBe(
+      t('wealthRoad.levers.plusMonthly', { amount: '$500' }),
+    )
+    expect(describeLever(plus1000, levers, t, money, maskedMoney)?.whatItIs).toBe(
+      t('wealthRoad.levers.plusMonthly', { amount: '$1,000' }),
+    )
+    expect(describeLever(plus2000, levers, t, money, maskedMoney)?.whatItIs).toBe(
+      t('wealthRoad.levers.plusMonthly', { amount: '$2,000' }),
+    )
+  })
+
+  it('uses the MASKED formatter for idle_cash and cut_top, which come from the user\'s own data', () => {
+    const cutTopLever: WealthLeverResult = { ...idleCashLever, key: 'cut_top', amount: null }
+
+    expect(describeLever(idleCashLever, levers, t, money, maskedMoney)?.whatItIs).toContain('MASKED(')
+    expect(describeLever(cutTopLever, levers, t, money, maskedMoney)?.whatItIs).toContain('MASKED(')
   })
 })
