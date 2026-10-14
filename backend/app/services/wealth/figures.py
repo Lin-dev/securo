@@ -400,6 +400,7 @@ class AnnualFigure:
 class MedianMonth:
     cash_flow_after_investing: Optional[float]
     saving: Optional[float]  # income - expenses + direct, for the median full month
+    expenses: Optional[float]  # median monthly spending, one-offs excluded (plan P3's buffer/cushion input)
     full_months: int
 
 
@@ -438,12 +439,14 @@ async def typical_figures(
     full_months = _full_months(cov["from_date"], today)
     cash_flows: list[float] = []
     savings: list[float] = []
+    expenses_list: list[float] = []
     for month in full_months:
         month_figures = await _period_figures_with_ctx(
             session, workspace_id, ctx, month, month_end(month), one_offs
         )
         cash_flows.append(month_figures.cash_flow_after_investing)
         savings.append(_saving(month_figures))
+        expenses_list.append(month_figures.expenses)
 
     return TypicalFigures(
         coverage=cov,
@@ -455,6 +458,7 @@ async def typical_figures(
         median_month=MedianMonth(
             cash_flow_after_investing=statistics.median(cash_flows) if cash_flows else None,
             saving=statistics.median(savings) if savings else None,
+            expenses=statistics.median(expenses_list) if expenses_list else None,
             full_months=len(full_months),
         ),
     )
@@ -600,3 +604,95 @@ async def _detect_one_offs_with_ctx(
                 lane=lane, proposed=proposed, selected=selected, is_direct=is_direct,
             ))
     return rows
+
+
+# --- rolling ratio-of-sums (P1/S2) --------------------------------------------------
+
+
+def rolling_rate(window: Sequence[PeriodFigures]) -> Optional[float]:
+    """The savings rate as a ratio of sums over `window`: Σ(income - expenses +
+    direct) / Σ(income + direct). Shared by the summary's `savings_rate_3m`
+    (the last 3 full months) and the savings-rate series' `rolling_3m`/
+    `rolling_12m` (every month's own trailing window) — a month with no data
+    contributes 0 to both sums rather than being skipped (plan P1/S2), which
+    falls out for free as long as the caller's `window` already covers it."""
+    income = sum(f.income for f in window)
+    expenses = sum(f.expenses for f in window)
+    direct = sum(f.direct for f in window)
+    denom = income + direct
+    return (income - expenses + direct) / denom if denom > 0 else None
+
+
+# --- per-category breakdown (top controllable) --------------------------------------
+
+
+async def _pnl_totals_by_category(
+    session: AsyncSession, workspace_id: uuid.UUID, ctx: _Context, start: date, end: date
+) -> dict[uuid.UUID, float]:
+    """`_pnl_totals`'s categorized debit side, kept per category instead of
+    summed into one `expenses` total. Mirrors `_pnl_totals` exactly (same
+    filters, same refund netting, same investment-bucket drop); uncategorized
+    debits are dropped since there is no category to key them by."""
+    rows = (
+        await session.execute(
+            select(Transaction.category_id, Transaction.type, _amount_col())
+            .where(*_shared_filters(ctx, workspace_id, start, end), counts_as_pnl())
+        )
+    ).all()
+    debit_by_category: dict[uuid.UUID, float] = {}
+    refund_by_category: dict[uuid.UUID, float] = {}
+    for category_id, txn_type, amount_raw in rows:
+        amount = abs(float(amount_raw or 0))
+        if amount <= 0 or category_id is None:
+            continue  # uncategorized rows (including the investment-bucket drop) have no category to key by
+        if txn_type == "credit":
+            if category_id not in ctx.income_category_ids:
+                refund_by_category[category_id] = refund_by_category.get(category_id, 0.0) + amount
+        else:
+            debit_by_category[category_id] = debit_by_category.get(category_id, 0.0) + amount
+    return {
+        cat_id: max(0.0, total - refund_by_category.get(cat_id, 0.0))
+        for cat_id, total in debit_by_category.items()
+    }
+
+
+async def typical_expense_by_category(
+    session: AsyncSession, workspace_id: uuid.UUID, user_id: uuid.UUID, *, settings: WealthSettingsValues
+) -> dict[str, float]:
+    """Monthly expense per category, typical (one-offs excluded) over the
+    coverage window — what `wealth.levers.top_controllable` reads the biggest
+    controllable category from. Keyed by category name; a category with
+    nothing left after refunds and one-offs, or no name to report, is
+    dropped."""
+    ctx = await _build_context(session, workspace_id, settings)
+    today = app_today()
+    cov = await coverage_window(session, workspace_id, today)
+    scale = cov["scale"]
+    by_cat = await _pnl_totals_by_category(session, workspace_id, ctx, cov["from_date"], cov["to_date"])
+
+    one_offs = await _detect_one_offs_with_ctx(session, workspace_id, ctx, today, settings)
+    one_off_amounts = {row.transaction_id: row.amount for row in one_offs}
+    one_off_expense_ids = [
+        row.transaction_id for row in one_offs
+        if row.selected and row.lane == "expenses" and cov["from_date"] <= row.date <= cov["to_date"]
+    ]
+    if one_off_expense_ids:
+        cat_rows = (
+            await session.execute(
+                select(Transaction.id, Transaction.category_id).where(Transaction.id.in_(one_off_expense_ids))
+            )
+        ).all()
+        for txn_id, cat_id in cat_rows:
+            if cat_id is not None and cat_id in by_cat:
+                by_cat[cat_id] = max(0.0, by_cat[cat_id] - one_off_amounts[txn_id])
+
+    if not by_cat:
+        return {}
+    names = (
+        await session.execute(select(Category.id, Category.name).where(Category.id.in_(by_cat.keys())))
+    ).all()
+    name_by_id = {cat_id: name for cat_id, name in names}
+    return {
+        name_by_id[cat_id]: round(amount * scale / 12, 2)
+        for cat_id, amount in by_cat.items() if cat_id in name_by_id and amount > 0
+    }
