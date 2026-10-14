@@ -49,6 +49,24 @@ _NamedCat = namedtuple("_NamedCat", ["name", "group_name"])
 _Lane = Literal["income", "expenses", "invested"]
 
 
+@dataclass(frozen=True)
+class _OneOff:
+    """`OneOffRow` plus whether it's a *direct* contribution (an unpaired credit
+    into an investment account). `OneOffRow` is the API contract and has no such
+    field; `_period_figures_with_ctx` needs it internally, to also subtract a
+    direct one-off from `direct`, not just `invested` — otherwise `direct` would
+    exceed `invested` and inflate `cash_flow_after_investing` and saving."""
+
+    transaction_id: uuid.UUID
+    date: date
+    description: str
+    amount: float
+    lane: _Lane
+    proposed: bool
+    selected: bool
+    is_direct: bool
+
+
 def _next_month(d: date) -> date:
     return date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
 
@@ -269,7 +287,7 @@ async def _period_figures_with_ctx(
     ctx: _Context,
     start: date,
     end: date,
-    one_offs: Sequence[OneOffRow] = (),
+    one_offs: Sequence[_OneOff] = (),
 ) -> PeriodFigures:
     """`period_figures`'s body, taking an already-built `_Context` and an already
     -detected one-off list so a multi-month caller resolves each only once."""
@@ -285,6 +303,15 @@ async def _period_figures_with_ctx(
             expenses -= row.amount
         elif row.lane == "invested":
             invested -= row.amount
+            if row.is_direct:
+                direct -= row.amount  # a direct one-off's amount is part of both sums
+
+    # A one-off whose category was later refunded (or any other overshoot) must
+    # not drive a lane negative; `direct` is never clamped — it stays <= invested
+    # automatically, since the same amount was subtracted from both above.
+    income = max(0.0, income)
+    expenses = max(0.0, expenses)
+    invested = max(0.0, invested)
 
     cash_flow_after_investing, savings_rate, cash_rate = _derived(income, expenses, invested, direct)
     return PeriodFigures(
@@ -438,13 +465,18 @@ async def typical_figures(
 
 async def _lane_candidates(
     session: AsyncSession, workspace_id: uuid.UUID, ctx: _Context, start: date, end: date
-) -> dict[_Lane, list[tuple[uuid.UUID, date, str, float]]]:
+) -> dict[_Lane, list[tuple[uuid.UUID, date, str, float, bool]]]:
     """Individual transactions behind each lane's total, over [start, end] — the row
     granularity `_pnl_totals`/`_invested_and_direct` sum away. A row appears here iff
     it is one the matching total sums: income and expenses mirror `_pnl_totals`;
-    invested mirrors `_invested_and_direct` (and so `investment_lane_rows`'s filter),
-    read at transaction grain instead of grouped."""
-    candidates: dict[_Lane, list[tuple[uuid.UUID, date, str, float]]] = {"income": [], "expenses": [], "invested": []}
+    invested mirrors `_invested_and_direct` exactly, including its `Account.type ==
+    "investment"` test (not the effective bucket — a re-bucketed account must not
+    make the two disagree on what counts). The last element is `is_direct`: always
+    False for income/expenses, and for invested, True for an unpaired credit into
+    an investment-typed account (a direct contribution)."""
+    candidates: dict[_Lane, list[tuple[uuid.UUID, date, str, float, bool]]] = {
+        "income": [], "expenses": [], "invested": [],
+    }
 
     pnl_rows = (
         await session.execute(
@@ -461,16 +493,16 @@ async def _lane_candidates(
             continue
         if txn_type == "credit":
             if category_id is not None and category_id in ctx.income_category_ids:
-                candidates["income"].append((txn_id, txn_date, description, amount))
+                candidates["income"].append((txn_id, txn_date, description, amount, False))
         else:
             if category_id is None and ctx.account_buckets.get(account_id) in INVESTMENT_BUCKETS:
                 continue  # an uncategorized trade/fee — not P&L, never a one-off
-            candidates["expenses"].append((txn_id, txn_date, description, amount))
+            candidates["expenses"].append((txn_id, txn_date, description, amount, False))
 
     invested_rows = (
         await session.execute(
             select(
-                Transaction.id, ctx.report_date, Transaction.description, Transaction.account_id,
+                Transaction.id, ctx.report_date, Transaction.description, Account.type,
                 Transaction.type, Transaction.transfer_pair_id, _amount_col(), Category.name,
             )
             .select_from(Transaction)
@@ -490,16 +522,16 @@ async def _lane_candidates(
             )
         )
     ).all()
-    for txn_id, txn_date, description, account_id, txn_type, transfer_pair_id, amount_raw, cat_name in invested_rows:
+    for txn_id, txn_date, description, acct_type, txn_type, transfer_pair_id, amount_raw, cat_name in invested_rows:
         amount = abs(float(amount_raw or 0))
         if amount <= 0 or (cat_name or "").lower() != _INVESTING_NAME:
             continue
         unpaired = transfer_pair_id is None
-        if ctx.account_buckets.get(account_id) in INVESTMENT_BUCKETS:
+        if acct_type == "investment":
             if txn_type == "credit" and unpaired:
-                candidates["invested"].append((txn_id, txn_date, description, amount))
+                candidates["invested"].append((txn_id, txn_date, description, amount, True))
         elif txn_type == "debit":
-            candidates["invested"].append((txn_id, txn_date, description, amount))
+            candidates["invested"].append((txn_id, txn_date, description, amount, False))
     return candidates
 
 
@@ -518,7 +550,14 @@ async def detect_one_offs(
     forced in by an override.
     """
     ctx = await _build_context(session, workspace_id, settings)
-    return await _detect_one_offs_with_ctx(session, workspace_id, ctx, today, settings)
+    rows = await _detect_one_offs_with_ctx(session, workspace_id, ctx, today, settings)
+    return [
+        OneOffRow(
+            transaction_id=row.transaction_id, date=row.date, description=row.description,
+            amount=row.amount, lane=row.lane, proposed=row.proposed, selected=row.selected,
+        )
+        for row in rows
+    ]
 
 
 async def _detect_one_offs_with_ctx(
@@ -527,7 +566,7 @@ async def _detect_one_offs_with_ctx(
     ctx: _Context,
     today: date,
     settings: WealthSettingsValues,
-) -> list[OneOffRow]:
+) -> list[_OneOff]:
     cov = await coverage_window(session, workspace_id, today)
     full_months = _full_months(cov["from_date"], today)
     if not full_months:
@@ -547,17 +586,17 @@ async def _detect_one_offs_with_ctx(
     }
 
     candidates = await _lane_candidates(session, workspace_id, ctx, window_start, window_end)
-    rows: list[OneOffRow] = []
+    rows: list[_OneOff] = []
     for lane, lane_rows in candidates.items():
         threshold = thresholds[lane]
-        for txn_id, txn_date, description, amount in lane_rows:
+        for txn_id, txn_date, description, amount, is_direct in lane_rows:
             proposed = amount > threshold
             override = settings.one_off_overrides.get(str(txn_id))
             selected = override if override is not None else proposed
             if not (proposed or override is True):
                 continue
-            rows.append(OneOffRow(
+            rows.append(_OneOff(
                 transaction_id=txn_id, date=txn_date, description=description, amount=amount,
-                lane=lane, proposed=proposed, selected=selected,
+                lane=lane, proposed=proposed, selected=selected, is_direct=is_direct,
             ))
     return rows

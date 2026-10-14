@@ -297,3 +297,127 @@ async def test_categorized_row_in_investment_account_counts_regardless_of_bucket
         session, wid, uid, day, day, settings=with_override,
     )
     assert result_with_override.expenses == pytest.approx(275.0)  # now the uncategorized $75 counts too
+
+
+DIRECT_ONE_OFF_AMOUNT = 9000.0
+
+
+async def _seed_direct_one_off_scenario(session: AsyncSession, test_user, test_workspace) -> dict:
+    """The same base-month pattern as `_seed_scenario`, but the one-off is an
+    *unpaired* credit into the investment account (a direct contribution) rather
+    than a paired one — the case that used to only half-subtract."""
+    uid, wid = test_user.id, test_workspace.id
+    months = _month_keys()
+    checking = await _account(session, uid, wid, "Checking", "checking")
+    brokerage = await _account(session, uid, wid, "Brokerage", "investment")
+
+    salary = await _category(session, uid, wid, "Salary")
+    shopping = await _category(session, uid, wid, "Shopping")
+    contrib = await _category(session, uid, wid, "Investment contribution", transfer=True)
+
+    txns: list[Transaction] = []
+    for month in (months["m3"], months["m2"], months["m1"]):
+        pair = uuid.uuid4()
+        txns += [
+            _txn(uid, wid, checking, 5000, "credit", salary, when=month),
+            _txn(uid, wid, checking, 800, "debit", shopping, when=month),
+            _txn(uid, wid, checking, 100, "credit", shopping, when=month),
+            _txn(uid, wid, checking, 1000, "debit", contrib, pair=pair, when=month),
+            _txn(uid, wid, brokerage, 1000, "credit", contrib, pair=pair, when=month),
+            _txn(uid, wid, brokerage, 300, "credit", contrib, when=month),  # the "normal" direct contribution
+        ]
+
+    one_off_date = months["m2"] + timedelta(days=14)
+    one_off = _txn(uid, wid, brokerage, DIRECT_ONE_OFF_AMOUNT, "credit", contrib, when=one_off_date)
+    txns.append(one_off)
+
+    session.add_all(txns)
+    await session.commit()
+    return {"months": months, "one_off_txn_id": one_off.id}
+
+
+async def test_direct_one_off_is_subtracted_from_both_invested_and_direct(session, test_user, test_workspace):
+    """A one-off that is itself a direct contribution (an unpaired credit landing
+    in an investment account, with no sending leg Securo can see) must shrink
+    both `invested` and `direct` by the same amount — otherwise `direct` would
+    exceed `invested` and inflate cash flow after investing and saving."""
+    seed = await _seed_direct_one_off_scenario(session, test_user, test_workspace)
+    m2 = seed["months"]["m2"]
+    settings = WealthSettingsValues()
+
+    one_offs = await figures.detect_one_offs(
+        session, test_workspace.id, test_user.id, seed["months"]["today"], settings=settings,
+    )
+    row = next(r for r in one_offs if r.transaction_id == seed["one_off_txn_id"])
+    assert row.lane == "invested"
+    assert row.proposed is True
+
+    actual = await figures.period_figures(
+        session, test_workspace.id, test_user.id, m2, month_end(m2), settings=settings,
+    )
+    assert actual.invested == pytest.approx(BASE_INVESTED + DIRECT_ONE_OFF_AMOUNT)
+    assert actual.direct == pytest.approx(BASE_DIRECT + DIRECT_ONE_OFF_AMOUNT)
+    assert actual.direct <= actual.invested
+
+    typical = await figures.period_figures(
+        session, test_workspace.id, test_user.id, m2, month_end(m2), settings=settings,
+        exclude_one_offs=True,
+    )
+    assert typical.invested == pytest.approx(BASE_INVESTED)
+    assert typical.direct == pytest.approx(BASE_DIRECT)  # not BASE_DIRECT + the one-off
+    assert typical.direct <= typical.invested
+    assert typical.cash_flow_after_investing == pytest.approx(BASE_CASH_FLOW_AFTER_INVESTING)
+
+    result = await figures.typical_figures(session, test_workspace.id, test_user.id, settings=settings)
+    scale = result.coverage["scale"]
+    assert result.invested.all - result.invested.typical == pytest.approx(DIRECT_ONE_OFF_AMOUNT * scale)
+    assert result.direct.all - result.direct.typical == pytest.approx(DIRECT_ONE_OFF_AMOUNT * scale)
+    assert result.saving.all - result.saving.typical == pytest.approx(DIRECT_ONE_OFF_AMOUNT * scale)
+    assert result.median_month.cash_flow_after_investing == pytest.approx(BASE_CASH_FLOW_AFTER_INVESTING)
+
+
+async def test_rebucketed_investment_account_still_feeds_invested_and_one_off_detection(
+    session, test_user, test_workspace,
+):
+    """`_lane_candidates` must classify the invested lane the same way the totals
+    do — by `Account.type == "investment"`, not the effective bucket — or a
+    re-bucketed account's rows either vanish from one-off detection while still
+    counting in the totals, or the reverse."""
+    uid, wid = test_user.id, test_workspace.id
+    months = _month_keys()
+    checking = await _account(session, uid, wid, "Checking", "checking")
+    cash_mgmt = await _account(session, uid, wid, "Investment Cash Mgmt", "investment")
+    salary = await _category(session, uid, wid, "Salary")
+    shopping = await _category(session, uid, wid, "Shopping")
+    contrib = await _category(session, uid, wid, "Investment contribution", transfer=True)
+
+    txns: list[Transaction] = []
+    for month in (months["m3"], months["m2"], months["m1"]):
+        txns += [
+            _txn(uid, wid, checking, 5000, "credit", salary, when=month),
+            _txn(uid, wid, checking, 800, "debit", shopping, when=month),
+            _txn(uid, wid, checking, 100, "credit", shopping, when=month),
+            _txn(uid, wid, cash_mgmt, 300, "credit", contrib, when=month),  # unpaired direct, every month
+        ]
+    one_off_date = months["m2"] + timedelta(days=14)
+    one_off = _txn(uid, wid, cash_mgmt, DIRECT_ONE_OFF_AMOUNT, "credit", contrib, when=one_off_date)
+    txns.append(one_off)
+    session.add_all(txns)
+    await session.commit()
+
+    # Re-bucketed away from every investment bucket, to "cash".
+    settings = WealthSettingsValues(accounts={str(cash_mgmt.id): AccountAnnotation(bucket="cash")})
+
+    m2_figures = await figures.period_figures(
+        session, wid, uid, months["m2"], month_end(months["m2"]), settings=settings,
+    )
+    assert m2_figures.invested == pytest.approx(300.0 + DIRECT_ONE_OFF_AMOUNT)
+    assert m2_figures.direct == pytest.approx(300.0 + DIRECT_ONE_OFF_AMOUNT)
+
+    one_offs = await figures.detect_one_offs(
+        session, wid, uid, months["today"], settings=settings,
+    )
+    row = next((r for r in one_offs if r.transaction_id == one_off.id), None)
+    assert row is not None
+    assert row.lane == "invested"
+    assert row.proposed is True
