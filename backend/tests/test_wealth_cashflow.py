@@ -25,6 +25,7 @@ from app.models.transaction import Transaction
 from app.models.workspace import WorkspaceMember
 from app.schemas.recurring_transaction import RecurringTransactionCreate
 from app.schemas.wealth import WealthSettingsValues
+from app.services.credit_card_service import get_cycle_dates
 from app.services.wealth import cashflow
 from app.services.wealth.merchant import merchant_key
 from app.services.wealth.spending import month_start
@@ -211,6 +212,130 @@ async def test_an_invoice_is_excluded_from_upcoming(session: AsyncSession, test_
     result = await cashflow.upcoming(session, ctx, days=30)
     assert result.items == []
     assert result.total == 0.0
+
+
+# --- estimated card bills (later cycles) --------------------------------------
+
+
+def _paid_off_card_history(uid, wid, card: Account, monthly: float) -> list[Transaction]:
+    """Two full prior months of `monthly`-sized card spend, each paid off by a
+    transfer-tagged credit before the next charge (so `pnl_row_filter` nets
+    the *spend*, not the payment, to `monthly` per month) — `_typical_card_spend`'s
+    median over those two months is then exactly `monthly`."""
+    m2, m1 = month_start(TODAY, 2), month_start(TODAY, 1)
+    return [
+        _txn(uid, wid, card, monthly, "debit", description="Card m2", when=m2),
+        _txn(uid, wid, card, monthly, "credit", description="Card payment",
+             when=m1 + timedelta(days=2), transfer_pair_id=uuid.uuid4()),
+        _txn(uid, wid, card, monthly, "debit", description="Card m1", when=m1 + timedelta(days=5)),
+        _txn(uid, wid, card, monthly, "credit", description="Card payment",
+             when=TODAY - timedelta(days=3), transfer_pair_id=uuid.uuid4()),
+    ]
+
+
+async def test_a_90_day_window_adds_two_estimated_bills_at_the_median_card_spend(
+    session: AsyncSession, test_user, test_workspace,
+):
+    uid, wid = test_user.id, test_workspace.id
+    ctx = await _ctx(session, test_user, test_workspace)
+    due_day = (TODAY + timedelta(days=5)).day
+    card = await _account(
+        session, uid, wid, name="Visa", acc_type="credit_card",
+        statement_close_day=due_day, payment_due_day=due_day,
+    )
+    session.add_all(_paid_off_card_history(uid, wid, card, 800))
+    # Today's own unbilled charge: the first bill's fallback amount.
+    session.add(_txn(uid, wid, card, 50, "debit", description="Card today", when=TODAY))
+    await session.commit()
+
+    result = await cashflow.upcoming(session, ctx, days=90)
+    bills = sorted((i for i in result.items if i.kind == "card_bill"), key=lambda i: i.date)
+
+    assert len(bills) == 3
+    assert bills[0].amount == pytest.approx(50.0)
+    assert bills[0].description == "Visa bill"
+    for later in bills[1:]:
+        assert later.amount == pytest.approx(800.0)
+        assert later.description == "Estimated card bill: Visa"
+    # Successive, roughly a month apart.
+    assert bills[0].date < bills[1].date < bills[2].date
+    assert 25 <= (bills[1].date - bills[0].date).days <= 32
+    assert 25 <= (bills[2].date - bills[1].date).days <= 32
+
+
+async def test_a_card_with_no_history_uses_its_30_day_spending(
+    session: AsyncSession, test_user, test_workspace,
+):
+    uid, wid = test_user.id, test_workspace.id
+    ctx = await _ctx(session, test_user, test_workspace)
+    due_day = (TODAY + timedelta(days=7)).day
+    card = await _account(
+        session, uid, wid, name="Fresh Card", acc_type="credit_card",
+        statement_close_day=due_day, payment_due_day=due_day,
+    )
+    # The card's entire history: one recent charge, no full covered month yet.
+    session.add(_txn(uid, wid, card, 300, "debit", description="New card charge", when=TODAY - timedelta(days=5)))
+    await session.commit()
+
+    result = await cashflow.upcoming(session, ctx, days=45)
+    bills = sorted((i for i in result.items if i.kind == "card_bill"), key=lambda i: i.date)
+
+    assert len(bills) == 2
+    assert bills[1].description.startswith("Estimated card bill:")
+    assert bills[1].amount == pytest.approx(300.0)  # the last-30-days fallback, not a median of zero
+
+
+async def test_the_low_point_reflects_the_later_estimated_bills(
+    session: AsyncSession, test_user, test_workspace,
+):
+    uid, wid = test_user.id, test_workspace.id
+    ctx = await _ctx(session, test_user, test_workspace)
+    checking = await _account(session, uid, wid, name="Checking", acc_type="checking")
+    salary, rent = await _category(session, uid, wid, "Salary"), await _category(session, uid, wid, "Rent")
+    await _two_full_months(session, uid, wid, checking, salary, rent)  # start_cash = 8,000
+
+    due_day = (TODAY + timedelta(days=5)).day
+    card = await _account(
+        session, uid, wid, name="Visa", acc_type="credit_card",
+        statement_close_day=due_day, payment_due_day=due_day,
+    )
+    session.add_all(_paid_off_card_history(uid, wid, card, 800))
+    session.add(_txn(uid, wid, card, 50, "debit", description="Card today", when=TODAY))
+    await session.commit()
+
+    result = await cashflow.cash_forecast(session, ctx, WealthSettingsValues(), days=90)
+    assert result.low_point is not None
+    # 8,000 - 50 (first bill) - 800 - 800 (the two later, estimated bills)
+    assert result.low_point.balance == pytest.approx(8_000 - 50 - 800 - 800)
+
+
+async def test_upcoming_includes_an_estimated_bill_when_one_falls_inside_the_window(
+    session: AsyncSession, test_user, test_workspace,
+):
+    uid, wid = test_user.id, test_workspace.id
+    ctx = await _ctx(session, test_user, test_workspace)
+    due_day = (TODAY + timedelta(days=1)).day
+    card = await _account(
+        session, uid, wid, name="Amex", acc_type="credit_card",
+        statement_close_day=due_day, payment_due_day=due_day,
+    )
+    session.add_all(_paid_off_card_history(uid, wid, card, 400))
+    # Fully paid off as of today — the first bill is nothing; only the estimated,
+    # later cycle should appear.
+    session.add(_txn(uid, wid, card, 400, "credit", description="Card payment",
+                      when=TODAY - timedelta(days=1), transfer_pair_id=uuid.uuid4()))
+    await session.commit()
+
+    first_due = get_cycle_dates(due_day, due_day, TODAY)["next_due_date"]
+    second_due = get_cycle_dates(due_day, due_day, first_due + timedelta(days=1))["next_due_date"]
+    days = (second_due - TODAY).days + 1
+
+    result = await cashflow.upcoming(session, ctx, days=days)
+    estimated = [i for i in result.items if i.kind == "card_bill" and i.date == second_due]
+
+    assert len(estimated) == 1
+    assert estimated[0].description == "Estimated card bill: Amex"
+    assert estimated[0].amount == pytest.approx(400.0)
 
 
 # --- cash forecast ------------------------------------------------------------

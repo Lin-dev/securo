@@ -14,11 +14,23 @@
   - installments: a subset of the above, flagged by the Transaction's own
     installment metadata (`installment_number`/`total_installments`/
     `installment_purchase_date`, mirroring `transaction_service._is_installment`).
-  - each credit card's next bill: a synced `CreditCardBill` when the provider
-    exposes one (`account_service.get_credit_card_bills`), else the cycle's
-    due date (`credit_card_service.get_cycle_dates`) with the card's own
-    running balance (posted + pending, `dashboard_service._account_balance_at`)
-    as the amount owed — the existing services, not a re-derived cycle sum.
+  - every credit card bill due inside the window, not only the next one. A
+    90-day window spans about three monthly cycles per card, and a card
+    purchase only ever reaches cash through its bill, so stopping at the
+    first bill would silently drop most of a card-heavy household's
+    spending from both `upcoming` and the forecast. The *first* bill is
+    today's reality: a synced `CreditCardBill` when the provider exposes
+    one (`account_service.get_credit_card_bills`), else the cycle's due
+    date (`credit_card_service.get_cycle_dates`) with the card's own
+    running balance (posted + pending,
+    `dashboard_service._account_balance_at`) as the amount owed. Every
+    *later* cycle inside the window is synced when the provider already has
+    it, else stepped one cycle at a time with `get_cycle_dates` (feeding
+    the previous due date + 1 day back in as `reference`) and sized at the
+    card's own typical monthly spend (`_typical_card_spend`, plan P1's
+    filters, one-offs excluded) — an **estimated** bill, labelled
+    "Estimated card bill: <card>", but still `kind="card_bill"` so every
+    consumer of the contract treats it exactly like a real one.
 
 ## Dedupe rules
 
@@ -70,13 +82,14 @@ points (the balance never changes on a day silently skipped).
 """
 from __future__ import annotations
 
+import statistics
 import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Optional
+from typing import Mapping, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_clock import app_today
@@ -97,20 +110,23 @@ from app.schemas.wealth import (
     WealthSettingsValues,
 )
 from app.services import dashboard_service
-from app.services._query_filters import counts_as_pnl, is_split_parent
+from app.services._query_filters import counts_as_pnl, is_split_parent, reporting_date_col
 from app.services.account_service import get_account_name, get_credit_card_bills
+from app.services.admin_service import get_credit_card_accounting_mode
 from app.services.credit_card_service import get_cycle_dates
 from app.services.fx_rate_service import convert
 from app.services.wealth.buckets import INVESTMENT_BUCKETS
-from app.services.wealth.figures import account_bucket_map, typical_figures
+from app.services.wealth.coverage import coverage_window
+from app.services.wealth.figures import account_bucket_map, detect_one_offs, pnl_row_filter, typical_figures
 from app.services.wealth.merchant import detect_recurring, merchant_key
 from app.services.wealth.settings import load_settings
-from app.services.wealth.spending import month_start
+from app.services.wealth.spending import month_end, month_start
 from app.services.wealth.valuation import latest_net_worth
 
 _SUBSCRIPTION_FREQUENCIES = frozenset({"monthly"})
 _MATCH_WINDOW_DAYS = 3
 _MATCH_AMOUNT_TOLERANCE = 0.10
+_MAX_ESTIMATED_CYCLES = 8  # safety cap; even a 180-day window is at most ~7 monthly cycles
 
 
 def item_hits_cash(kind: UpcomingKind, bucket: Optional[Bucket]) -> bool:
@@ -173,55 +189,173 @@ def _matches(projection: _RawItem, real: _RawItem) -> bool:
     return merchant_key(projection.description) == merchant_key(real.description)
 
 
+def _full_months_before(coverage_from: date, today: date) -> list[date]:
+    """Calendar months (first day) entirely inside `[coverage_from, today)` —
+    mirrors `figures._full_months` locally rather than reaching into that
+    private name from another module."""
+    def _next_month(d: date) -> date:
+        return date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
+
+    cursor = date(coverage_from.year, coverage_from.month, 1)
+    if cursor < coverage_from:
+        cursor = _next_month(cursor)
+    current_month = date(today.year, today.month, 1)
+    out: list[date] = []
+    while cursor < current_month:
+        out.append(cursor)
+        cursor = _next_month(cursor)
+    return out
+
+
+async def _typical_card_spend(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    settings: WealthSettingsValues,
+    buckets: Mapping[uuid.UUID, Bucket],
+    today: date,
+    card_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, float]:
+    """Each card's typical monthly spend: the median, over full covered
+    months (plan P1's `coverage_window`), of P1-filtered debits net of
+    P1-filtered credits on that same account (so a refund landing back on
+    the card reduces it, the same way a real statement would) — the lead's
+    selected one-offs (`figures.detect_one_offs`) excluded throughout. A
+    card with no P1 row in any full month yet (new workspace, or a card
+    added since) falls back to its own last 30 days."""
+    if not card_ids:
+        return {}
+    mode = await get_credit_card_accounting_mode(session)
+    report_date = reporting_date_col(mode)
+    filters = pnl_row_filter(workspace_id, buckets)
+
+    one_offs = await detect_one_offs(session, workspace_id, user_id, today, settings=settings)
+    excluded_ids = {row.transaction_id for row in one_offs if row.lane == "expenses" and row.selected}
+
+    async def _net_by_account(start: date, end: date) -> tuple[dict[uuid.UUID, float], set[uuid.UUID]]:
+        rows = (
+            await session.execute(
+                select(
+                    Transaction.account_id, Transaction.type, Transaction.id,
+                    func.coalesce(Transaction.amount_primary, Transaction.amount),
+                )
+                .where(*filters, Transaction.account_id.in_(card_ids), report_date >= start, report_date <= end)
+            )
+        ).all()
+        net: dict[uuid.UUID, float] = {cid: 0.0 for cid in card_ids}
+        seen: set[uuid.UUID] = set()
+        for account_id, txn_type, txn_id, amount in rows:
+            seen.add(account_id)
+            if txn_id in excluded_ids:
+                continue
+            signed = float(amount) if txn_type == "debit" else -float(amount)
+            net[account_id] = net.get(account_id, 0.0) + signed
+        return {cid: max(0.0, v) for cid, v in net.items()}, seen
+
+    cov = await coverage_window(session, workspace_id, today)
+    full_months = _full_months_before(cov["from_date"], today)
+
+    monthly_totals: dict[uuid.UUID, list[float]] = {cid: [] for cid in card_ids}
+    any_seen: set[uuid.UUID] = set()
+    for month in full_months:
+        net, seen = await _net_by_account(month, month_end(month))
+        any_seen |= seen
+        for cid in card_ids:
+            monthly_totals[cid].append(net[cid])
+
+    missing = [cid for cid in card_ids if cid not in any_seen]
+    recent: dict[uuid.UUID, float] = {}
+    if missing:
+        recent, _ = await _net_by_account(today - timedelta(days=29), today)
+
+    return {
+        cid: round(statistics.median(monthly_totals[cid]), 2) if cid in any_seen else round(recent.get(cid, 0.0), 2)
+        for cid in card_ids
+    }
+
+
 async def _card_bill_items(
     session: AsyncSession,
     workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
     accounts: list[Account],
+    buckets: Mapping[uuid.UUID, Bucket],
+    settings: WealthSettingsValues,
     primary_currency: str,
     today: date,
     days: int,
 ) -> list[_RawItem]:
-    """Each credit-card account's next bill: a synced `CreditCardBill` when the
-    provider exposes one, else the cycle's due date with the card's own
-    running balance (posted + pending) as the amount owed. Skips a card with
-    no cycle configured, nothing owed, or whose next bill falls outside
-    `[today, today + days)`."""
+    """Every credit-card bill due inside `[today, today + days)` — see the
+    module docstring: the first bill per card is real (synced or today's
+    running balance), every later cycle is synced when the provider has it,
+    else an estimated bill sized at that card's typical monthly spend. A
+    card with neither a synced future bill nor both cycle days configured
+    gets only its first bill — there is nothing to step forward with."""
     window_end = today + timedelta(days=days)
+    cards = [a for a in accounts if a.type == "credit_card"]
+    cards_with_cycle = [a for a in cards if a.statement_close_day and a.payment_due_day]
+    typical_spend = await _typical_card_spend(
+        session, workspace_id, user_id, settings, buckets, today, [a.id for a in cards_with_cycle],
+    )
+
     items: list[_RawItem] = []
-    for account in accounts:
-        if account.type != "credit_card":
-            continue
+    for account in cards:
+        name = get_account_name(account)
+        synced = await get_credit_card_bills(session, account.id, workspace_id, limit=12)
+        real_bills = sorted(
+            (b for b in (synced or []) if today <= b.due_date < window_end), key=lambda b: b.due_date,
+        )
 
-        due_date: Optional[date] = None
-        amount_native = 0.0
-        currency = account.currency
-
-        synced = await get_credit_card_bills(session, account.id, workspace_id, limit=5)
-        upcoming_synced = [b for b in (synced or []) if b.due_date >= today]
-        if upcoming_synced:
-            bill = min(upcoming_synced, key=lambda b: b.due_date)
-            due_date = bill.due_date
-            amount_native = float(bill.total_amount)
-            currency = bill.currency
+        last_due: Optional[date] = None
+        if real_bills:
+            for bill in real_bills:
+                converted, _ = await convert(
+                    session, Decimal(str(bill.total_amount)), bill.currency, primary_currency, today,
+                )
+                if float(converted) > 0:
+                    items.append(_RawItem(
+                        date=bill.due_date, description=f"{name} bill", amount=round(float(converted), 2),
+                        kind="card_bill", account_id=account.id, account=name,
+                    ))
+                last_due = bill.due_date
         else:
-            cycle = get_cycle_dates(account.statement_close_day, account.payment_due_day, today)
-            due_date = cycle["next_due_date"]
+            due_date: Optional[date] = None
+            if account.statement_close_day and account.payment_due_day:
+                cycle = get_cycle_dates(account.statement_close_day, account.payment_due_day, today)
+                due_date = cycle["next_due_date"]
             if due_date is not None:
                 balance = await dashboard_service._account_balance_at(
                     session, account, today, include_pending=True,
                 )
                 amount_native = -balance if balance < 0 else 0.0
+                if amount_native > 0 and due_date < window_end:
+                    converted, _ = await convert(
+                        session, Decimal(str(amount_native)), account.currency, primary_currency, today,
+                    )
+                    items.append(_RawItem(
+                        date=due_date, description=f"{name} bill", amount=round(float(converted), 2),
+                        kind="card_bill", account_id=account.id, account=name,
+                    ))
+                last_due = due_date
 
-        if due_date is None or amount_native <= 0 or not (today <= due_date < window_end):
-            continue
+        if last_due is None or not (account.statement_close_day and account.payment_due_day):
+            continue  # nothing to step forward from, or no cycle to step with
 
-        converted, _ = await convert(
-            session, Decimal(str(amount_native)), currency, primary_currency, today,
-        )
-        items.append(_RawItem(
-            date=due_date, description=f"{get_account_name(account)} bill", amount=round(float(converted), 2),
-            kind="card_bill", account_id=account.id, account=get_account_name(account),
-        ))
+        typical = typical_spend.get(account.id, 0.0)
+        cursor = last_due
+        for _ in range(_MAX_ESTIMATED_CYCLES):
+            cycle = get_cycle_dates(
+                account.statement_close_day, account.payment_due_day, cursor + timedelta(days=1),
+            )
+            next_due = cycle["next_due_date"]
+            if next_due is None or next_due >= window_end:
+                break
+            if typical > 0:
+                items.append(_RawItem(
+                    date=next_due, description=f"Estimated card bill: {name}", amount=round(typical, 2),
+                    kind="card_bill", account_id=account.id, account=name,
+                ))
+            cursor = next_due
     return items
 
 
@@ -279,7 +413,9 @@ async def upcoming(session: AsyncSession, ctx: WorkspaceContext, days: int) -> U
         if not (x.is_installment and buckets.get(x.account_id) == "card_debt")
     ]
 
-    card_bills = await _card_bill_items(session, workspace_id, accounts, primary_currency, today, days)
+    card_bills = await _card_bill_items(
+        session, workspace_id, user_id, accounts, buckets, settings, primary_currency, today, days,
+    )
 
     all_items = sorted(deduped_recurring + visible_real + card_bills, key=lambda it: it.date)
     total = round(sum(it.amount for it in all_items if item_hits_cash(it.kind, buckets.get(it.account_id))), 2)
@@ -335,7 +471,10 @@ async def cash_forecast(
         elif p.type == "debit":
             daily_out[d] = daily_out.get(d, 0.0) + amt
 
-    for bill in await _card_bill_items(session, workspace_id, accounts, primary_currency, today, days):
+    card_bills = await _card_bill_items(
+        session, workspace_id, user_id, accounts, buckets, settings, primary_currency, today, days,
+    )
+    for bill in card_bills:
         daily_out[bill.date] = daily_out.get(bill.date, 0.0) + bill.amount
 
     required_dates = sorted({today, last_day} | set(daily_in) | set(daily_out))
