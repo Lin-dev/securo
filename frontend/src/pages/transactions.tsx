@@ -173,6 +173,11 @@ export default function TransactionsPage() {
     return initial ? [initial] : []
   })
   const [filterUncategorized, setFilterUncategorized] = useState<boolean>(false)
+  // Scope to exactly the Wealth Cockpit's P1 P&L rows (plan B5c/S5) -- the
+  // same set the income/expense figures and the Money Map's drill-downs are
+  // built from. Deliberately a different flag from `summaryScope`, which
+  // scopes to the dashboard's own (looser) ledger figures.
+  const [wealthPnlOnly, setWealthPnlOnly] = useState<boolean>(() => searchParams.get('wealth_pnl_only') === '1')
   // Seed the date range from the URL, or default to the current month on first
   // open (no ?from/?to). Done in the initializer so it survives effect re-runs
   // (e.g. React StrictMode's double-invoke in development).
@@ -316,6 +321,7 @@ export default function TransactionsPage() {
     const categories = searchParams.get('category_id');
     setFilterCategoryIds(categories ? categories.split(',') : []);
     setFilterUncategorized(searchParams.get('uncategorized') === '1');
+    setWealthPnlOnly(searchParams.get('wealth_pnl_only') === '1')
     const accounts = searchParams.get('account_id');
     setFilterAccountIds(accounts ? accounts.split(',') : []);
     const urlFrom = searchParams.get('from')
@@ -351,6 +357,7 @@ export default function TransactionsPage() {
         ['status', filterStatus],
         ['category_id', filterCategoryIds.join(',')],
         ['uncategorized', filterUncategorized ? '1' : ''],
+        ['wealth_pnl_only', wealthPnlOnly ? '1' : ''],
         ['account_id', filterAccountIds.join(',')],
         ['from', filterFrom],
         ['to', filterTo],
@@ -377,6 +384,7 @@ export default function TransactionsPage() {
     filterStatus,
     filterCategoryIds,
     filterUncategorized,
+    wealthPnlOnly,
     filterAccountIds,
     filterFrom,
     filterTo,
@@ -400,7 +408,7 @@ export default function TransactionsPage() {
     setSelectedIds(new Set())
     setLastSelectedId(null)
     setBulkCategory('')
-  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery, summaryScope])
+  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, wealthPnlOnly, filterPayee, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery, summaryScope])
 
   useEffect(() => {
     if (viewMode === 'calendar') {
@@ -450,7 +458,7 @@ export default function TransactionsPage() {
     && activeAccountIds !== null && activeAccountIds.length === 0
 
   const { data, isLoading } = useQuery({
-    queryKey: ['transactions', page, limit, effectiveAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, hideIgnored, searchQuery, tagFilters, summaryScope, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
+    queryKey: ['transactions', page, limit, effectiveAccountIds, filterCategoryIds, filterUncategorized, wealthPnlOnly, filterPayee, filterGroupId, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, hideIgnored, searchQuery, tagFilters, summaryScope, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
     enabled: !noAccounts,
     queryFn: () =>
       transactions.list({
@@ -463,6 +471,7 @@ export default function TransactionsPage() {
         type: filterType || undefined,
         status: filterStatus || undefined,
         uncategorized: filterUncategorized ? true : undefined,
+        wealth_pnl_only: wealthPnlOnly ? true : undefined,
         from: filterFrom || undefined,
         to: filterTo || undefined,
         min_amount: filterMinAmount ? Number(filterMinAmount) : undefined,
@@ -501,6 +510,7 @@ export default function TransactionsPage() {
     type: filterType || undefined,
     status: filterStatus || undefined,
     uncategorized: filterUncategorized || undefined,
+    wealth_pnl_only: wealthPnlOnly || undefined,
     from: filterFrom || undefined,
     to: filterTo || undefined,
     min_amount: filterMinAmount || undefined,
@@ -1026,7 +1036,12 @@ export default function TransactionsPage() {
           tags: tagFilters.length > 0 ? tagFilters : undefined,
           exclude_ignored: hideIgnored ? true : undefined,
           summary_scope: summaryScope ?? undefined,
-        })
+          // The backend's `/transactions/export` already accepts this filter
+          // (plan B5c); it's left off `transactions.export`'s own params type
+          // in api.ts (out of this slice's one allowed api.ts edit, the
+          // `list` call's params), so it's widened in here instead.
+          ...(wealthPnlOnly ? { wealth_pnl_only: true } : {}),
+        } as Parameters<typeof transactions.export>[0] & { wealth_pnl_only?: boolean })
       }
       toast.success(t('transactions.exportSuccess'))
     } catch {
@@ -1548,6 +1563,7 @@ export default function TransactionsPage() {
           setFilterAccountIds([])
           setFilterCategoryIds([])
           setFilterUncategorized(false)
+          setWealthPnlOnly(false)
           setFilterPayee('')
           setFilterGroupId('')
           setFilterType('')
@@ -1576,6 +1592,20 @@ export default function TransactionsPage() {
               onClick={() => { setFilterGroupId(''); setPage(1) }}
               className="ml-0.5 text-primary/60 hover:text-primary"
               aria-label={t('transactions.clearGroupFilter')}
+            >
+              ×
+            </button>
+          </span>
+        </div>
+      )}
+      {wealthPnlOnly && (
+        <div className="mb-4 flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/15 bg-primary/5 px-3 py-1 text-xs font-medium text-primary">
+            {t('transactions.wealthPnlOnlyChipLabel')}
+            <button
+              onClick={() => { setWealthPnlOnly(false); setPage(1) }}
+              className="ml-0.5 text-primary/60 hover:text-primary"
+              aria-label={t('transactions.clearWealthPnlOnlyFilter')}
             >
               ×
             </button>
