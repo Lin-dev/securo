@@ -3,7 +3,10 @@ import { useSearchParams } from 'react-router-dom'
 
 import { PageHeader } from '@/components/page-header'
 import { WEALTH_TABS, wealthTabFromParam, type WealthTab } from '@/lib/wealth-tabs'
-import { WealthTabStub } from '@/components/wealth/wealth-tab-stub'
+import { NetWorthTab } from '@/components/wealth/networth/networth-tab'
+import { RoadTab } from '@/components/wealth/road/road-tab'
+import { SavingsTab } from '@/components/wealth/savings/savings-tab'
+import { SettingsTab } from '@/components/wealth/settings/settings-tab'
 
 /** The road to the user's net-worth milestone (fork). One page, one tab per question;
  *  the tab lives in the URL so a link or a reload lands on the same view. */
@@ -45,7 +48,10 @@ export default function WealthPage() {
       </div>
 
       <div role="tabpanel">
-        <WealthTabStub tab={tab} />
+        {tab === 'road' && <RoadTab />}
+        {tab === 'networth' && <NetWorthTab />}
+        {tab === 'savings' && <SavingsTab />}
+        {tab === 'settings' && <SettingsTab />}
       </div>
     </div>
   )
