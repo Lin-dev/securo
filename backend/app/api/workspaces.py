@@ -156,9 +156,11 @@ async def update_workspace(
     # workspace). Other members keep their own currency_display override.
     new_currency = updates.get("default_currency")
     if new_currency and (user.preferences or {}).get("currency_display") != new_currency:
+        from app.services.wealth.preferences import keep_protected_preferences
+
         prefs = dict(user.preferences or {})
         prefs["currency_display"] = new_currency
-        user.preferences = prefs
+        user.preferences = await keep_protected_preferences(session, user.id, prefs)
         session.add(user)
     await session.commit()
     await session.refresh(workspace)

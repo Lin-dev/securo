@@ -38,6 +38,11 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     ) -> User:
         if user_update.password is not None:
             require_local_auth_enabled()
+        incoming = getattr(user_update, "preferences", None)
+        if incoming is not None:
+            from app.services.wealth.preferences import keep_protected_preferences
+
+            setattr(user_update, "preferences", await keep_protected_preferences(self.user_db.session, user.id, incoming))
         return await super().update(user_update, user, safe=safe, request=request)
 
     async def on_after_register(self, user: User, request: Optional[Request] = None):

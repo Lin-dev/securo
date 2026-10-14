@@ -130,7 +130,9 @@ async def update_user(
     if data.is_superuser is not None:
         user.is_superuser = data.is_superuser
     if data.preferences is not None:
-        user.preferences = data.preferences
+        from app.services.wealth.preferences import keep_protected_preferences
+
+        user.preferences = await keep_protected_preferences(session, user.id, data.preferences)
     if data.password is not None:
         from fastapi_users.password import PasswordHelper
 
