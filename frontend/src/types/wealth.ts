@@ -59,6 +59,7 @@ export interface WealthSettingsValues {
   income_category_ids: string[] | null
   one_off_overrides: Record<string, boolean>
   accounts: Record<string, WealthAccountAnnotation>
+  spending_cap: number | null
 }
 
 export interface WealthAccountSettingRow {
@@ -110,6 +111,8 @@ export interface WealthSettingsUpdate {
   reset_income_categories?: boolean
   one_off_overrides?: Record<string, boolean | null>
   accounts?: Record<string, WealthAccountAnnotation | null>
+  spending_cap?: number
+  clear_spending_cap?: boolean
 }
 
 // --- summary ----------------------------------------------------------------
@@ -258,3 +261,113 @@ export interface WealthLevers {
   move: WealthThisMonthMove | null
   investing_exceeds_saving: boolean
 }
+
+// --- R2: spend smarter --------------------------------------------------------
+
+export type WealthPaceStatus = 'under' | 'on_pace' | 'over' | 'no_budget'
+export type WealthUpcomingKind = 'recurring' | 'card_bill' | 'installment' | 'pending'
+
+export interface WealthBudgetSuggestion {
+  category_id: string
+  category: string
+  group_name: string | null
+  monthly_median: number
+  months_used: number
+  existing_budget: number | null
+}
+
+export interface WealthBudgetSuggestions {
+  currency: string
+  months: string[]
+  suggestions: WealthBudgetSuggestion[]
+  total_suggested: number
+  typical_monthly_spending: number | null
+}
+
+export interface WealthApplyBudgetSuggestions {
+  category_ids: string[]
+}
+
+export interface WealthApplyBudgetSuggestionsResult {
+  created: number
+  skipped: number
+}
+
+export interface WealthCapPace {
+  cap: number
+  spent: number
+  expected_to_date: number
+  projected_month_end: number
+  status: WealthPaceStatus
+  left_to_spend: number
+  left_per_day: number | null
+}
+
+export interface WealthBudgetPace {
+  currency: string
+  month: string
+  days_elapsed: number
+  days_in_month: number
+  cap: WealthCapPace | null
+  spent: number
+}
+
+export interface WealthUpcomingCharge {
+  date: string
+  description: string
+  amount: number
+  kind: WealthUpcomingKind
+  account: string | null
+  category: string | null
+  recurring_id: string | null
+}
+
+export interface WealthUpcoming {
+  currency: string
+  days: number
+  items: WealthUpcomingCharge[]
+  total: number
+}
+
+export interface WealthCashForecastPoint {
+  date: string
+  balance: number
+  inflow: number
+  outflow: number
+}
+
+export interface WealthCashForecast {
+  currency: string
+  days: number
+  start_cash: number
+  buffer: number
+  points: WealthCashForecastPoint[]
+  low_point: WealthCashForecastPoint | null
+  first_negative_date: string | null
+  first_below_buffer_date: string | null
+}
+
+export interface WealthSubscription {
+  merchant: string
+  monthly: number
+  annual: number
+  months_seen: number
+  last_charge: string | null
+  recurring_id: string | null
+}
+
+export interface WealthRecurringSuggestion {
+  merchant: string
+  monthly: number
+  months: number
+  create_payload: Record<string, unknown>
+}
+
+export interface WealthSubscriptionAudit {
+  currency: string
+  subscriptions: WealthSubscription[]
+  monthly_total: number
+  annual_total: number
+  suggestions: WealthRecurringSuggestion[]
+}
+

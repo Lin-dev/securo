@@ -794,6 +794,14 @@ export interface BudgetVsActual {
   projected_prev_month_amount: number
   percentage_used: number | null
   is_recurring: boolean
+  // Fork R2 pace (current month only)
+  expected_to_date?: number | string | null
+  projected_month_end?: number | string | null
+  pace_status?: 'under' | 'on_pace' | 'over' | 'no_budget' | null
+  left_to_spend?: number | string | null
+  left_per_day?: number | string | null
+  days_elapsed?: number | null
+  days_in_month?: number | null
 }
 
 export interface Asset {

@@ -102,6 +102,13 @@ import type {
 } from '@/types'
 import type { SummaryScope } from '@/lib/summary-scope'
 import type {
+  WealthApplyBudgetSuggestions,
+  WealthApplyBudgetSuggestionsResult,
+  WealthBudgetPace,
+  WealthBudgetSuggestions,
+  WealthCashForecast,
+  WealthSubscriptionAudit,
+  WealthUpcoming,
   WealthLevers,
   WealthNetWorthHistory,
   WealthProjection,
@@ -2335,6 +2342,30 @@ export const wealth = {
   },
   levers: async (): Promise<WealthLevers> => {
     const { data } = await api.get('/wealth/levers')
+    return data
+  },
+  budgetPace: async (): Promise<WealthBudgetPace> => {
+    const { data } = await api.get('/wealth/budget-pace')
+    return data
+  },
+  budgetSuggestions: async (): Promise<WealthBudgetSuggestions> => {
+    const { data } = await api.get('/wealth/budget-suggestions')
+    return data
+  },
+  applyBudgetSuggestions: async (body: WealthApplyBudgetSuggestions): Promise<WealthApplyBudgetSuggestionsResult> => {
+    const { data } = await api.post('/wealth/budget-suggestions/apply', body)
+    return data
+  },
+  upcoming: async (days = 30): Promise<WealthUpcoming> => {
+    const { data } = await api.get('/wealth/upcoming', { params: { days } })
+    return data
+  },
+  cashForecast: async (days = 90): Promise<WealthCashForecast> => {
+    const { data } = await api.get('/wealth/cash-forecast', { params: { days } })
+    return data
+  },
+  subscriptions: async (): Promise<WealthSubscriptionAudit> => {
+    const { data } = await api.get('/wealth/subscriptions')
     return data
   },
 }

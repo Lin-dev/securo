@@ -4,6 +4,11 @@
  * change that breaks a consumer fails the typecheck here first.
  */
 import type {
+  WealthBudgetPace,
+  WealthBudgetSuggestions,
+  WealthCashForecast,
+  WealthSubscriptionAudit,
+  WealthUpcoming,
   WealthBucket,
   WealthLevers,
   WealthNetWorthHistory,
@@ -132,6 +137,7 @@ export const wealthSettingsFixture: WealthSettingsRead = {
     income_category_ids: null,
     one_off_overrides: {},
     accounts: {},
+    spending_cap: null,
   },
   sources: { goal_id: 'user', projection: 'default', buffer_months: 'default', income_category_ids: 'default', one_off_overrides: 'default', accounts: 'default' },
   accounts: [
@@ -141,3 +147,61 @@ export const wealthSettingsFixture: WealthSettingsRead = {
   income_categories: [{ id: 'cat-1', name: 'Salary', group_name: 'Income', is_default: true, selected: true }],
   one_offs: [{ transaction_id: 'tx-1', date: '2026-07-20', description: 'Lump deposit', amount: 9900, lane: 'invested', proposed: true, selected: true }],
 }
+
+export const wealthBudgetSuggestionsFixture: WealthBudgetSuggestions = {
+  currency: 'USD',
+  months: ['2026-08-01', '2026-09-01'],
+  suggestions: [
+    { category_id: 'cat-dining', category: 'Dining out', group_name: 'Food', monthly_median: 600, months_used: 2, existing_budget: null },
+    { category_id: 'cat-groceries', category: 'Groceries', group_name: 'Food', monthly_median: 450, months_used: 2, existing_budget: 400 },
+  ],
+  total_suggested: 1050,
+  typical_monthly_spending: 4000,
+}
+
+export const wealthBudgetPaceFixture: WealthBudgetPace = {
+  currency: 'USD',
+  month: '2026-10-01',
+  days_elapsed: 14,
+  days_in_month: 31,
+  cap: { cap: 4000, spent: 2100, expected_to_date: 1900, projected_month_end: 4400, status: 'over', left_to_spend: 1900, left_per_day: 111.76 },
+  spent: 2100,
+}
+
+export const wealthUpcomingFixture: WealthUpcoming = {
+  currency: 'USD',
+  days: 30,
+  items: [
+    { date: '2026-10-20', description: 'Streaming service', amount: 15.49, kind: 'recurring', account: 'Card', category: 'Subscriptions', recurring_id: 'rec-1' },
+    { date: '2026-10-25', description: 'Card bill', amount: 1200, kind: 'card_bill', account: 'Checking', category: null, recurring_id: null },
+  ],
+  total: 1215.49,
+}
+
+export const wealthCashForecastFixture: WealthCashForecast = {
+  currency: 'USD',
+  days: 90,
+  start_cash: 20000,
+  buffer: 12000,
+  points: [
+    { date: '2026-10-14', balance: 20000, inflow: 0, outflow: 0 },
+    { date: '2026-10-25', balance: 18800, inflow: 0, outflow: 1200 },
+    { date: '2026-10-31', balance: 24800, inflow: 6000, outflow: 0 },
+  ],
+  low_point: { date: '2026-10-25', balance: 18800, inflow: 0, outflow: 1200 },
+  first_negative_date: null,
+  first_below_buffer_date: null,
+}
+
+export const wealthSubscriptionsFixture: WealthSubscriptionAudit = {
+  currency: 'USD',
+  subscriptions: [
+    { merchant: 'STREAMING CO', monthly: 15.49, annual: 185.88, months_seen: 4, last_charge: '2026-09-20', recurring_id: 'rec-1' },
+  ],
+  monthly_total: 15.49,
+  annual_total: 185.88,
+  suggestions: [
+    { merchant: 'GYM CLUB', monthly: 40, months: 3, create_payload: { description: 'GYM CLUB', amount: 40, type: 'debit', frequency: 'monthly' } },
+  ],
+}
+

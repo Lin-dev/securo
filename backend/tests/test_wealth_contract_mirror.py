@@ -40,6 +40,19 @@ _PAIRS = {
     "WealthTopControllable": schemas.TopControllable,
     "WealthThisMonthMove": schemas.ThisMonthMove,
     "WealthLevers": schemas.WealthLevers,
+    "WealthBudgetSuggestion": schemas.BudgetSuggestion,
+    "WealthBudgetSuggestions": schemas.BudgetSuggestions,
+    "WealthApplyBudgetSuggestions": schemas.ApplyBudgetSuggestions,
+    "WealthApplyBudgetSuggestionsResult": schemas.ApplyBudgetSuggestionsResult,
+    "WealthCapPace": schemas.CapPace,
+    "WealthBudgetPace": schemas.BudgetPace,
+    "WealthUpcomingCharge": schemas.UpcomingCharge,
+    "WealthUpcoming": schemas.Upcoming,
+    "WealthCashForecastPoint": schemas.CashForecastPoint,
+    "WealthCashForecast": schemas.CashForecast,
+    "WealthSubscription": schemas.Subscription,
+    "WealthRecurringSuggestion": schemas.RecurringSuggestion,
+    "WealthSubscriptionAudit": schemas.SubscriptionAudit,
 }
 
 

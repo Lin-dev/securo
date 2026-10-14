@@ -43,3 +43,11 @@ class BudgetVsActual(BaseModel):
     projected_prev_month_amount: Decimal = Decimal("0")
     percentage_used: Optional[float] = None
     is_recurring: bool = False
+    # Fork R2 pace (workspace timezone, current month only; None for other months).
+    expected_to_date: Optional[Decimal] = None
+    projected_month_end: Optional[Decimal] = None
+    pace_status: Optional[str] = None  # under, on_pace, over, no_budget
+    left_to_spend: Optional[Decimal] = None
+    left_per_day: Optional[Decimal] = None
+    days_elapsed: Optional[int] = None
+    days_in_month: Optional[int] = None

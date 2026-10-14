@@ -74,6 +74,8 @@ class WealthSettingsValues(BaseModel):
     # transaction id -> True (treat as one-off) / False (not a one-off), overriding the detector.
     one_off_overrides: dict[str, bool] = {}
     accounts: dict[str, AccountAnnotation] = {}
+    # R2: a monthly spending cap the user sets; None = no cap.
+    spending_cap: Optional[float] = Field(None, gt=0)
 
 
 class AccountSettingRow(BaseModel):
@@ -128,6 +130,8 @@ class WealthSettingsUpdate(BaseModel):
     reset_income_categories: bool = False
     one_off_overrides: Optional[dict[str, Optional[bool]]] = None
     accounts: Optional[dict[str, Optional[AccountAnnotation]]] = None
+    spending_cap: Optional[float] = Field(None, gt=0)
+    clear_spending_cap: bool = False
 
 
 # --- summary (hero) -----------------------------------------------------------
@@ -280,3 +284,124 @@ class WealthLevers(BaseModel):
     top_controllable: Optional[TopControllable]
     move: Optional[ThisMonthMove]
     investing_exceeds_saving: bool  # on the median month only
+
+
+# --- R2: spend smarter --------------------------------------------------------
+
+PaceStatus = Literal["under", "on_pace", "over", "no_budget"]
+UpcomingKind = Literal["recurring", "card_bill", "installment", "pending"]
+
+
+class BudgetSuggestion(BaseModel):
+    """One category's suggested monthly budget: the median of its full covered months
+    (refunds netted, one-offs excluded, the same split-share semantics as budget actuals)."""
+
+    category_id: uuid.UUID
+    category: str
+    group_name: Optional[str]
+    monthly_median: float
+    months_used: int
+    existing_budget: Optional[float]  # the category's current monthly budget, if any
+
+
+class BudgetSuggestions(BaseModel):
+    currency: str
+    months: list[date]  # the full months the medians come from (first day of each)
+    suggestions: list[BudgetSuggestion]
+    total_suggested: float  # sum of the medians; not the typical total
+    typical_monthly_spending: Optional[float]  # P1 median month, for comparison
+
+
+class ApplyBudgetSuggestions(BaseModel):
+    category_ids: list[uuid.UUID]
+
+
+class ApplyBudgetSuggestionsResult(BaseModel):
+    created: int
+    skipped: int  # already had a recurring budget
+
+
+class CapPace(BaseModel):
+    cap: float
+    spent: float
+    expected_to_date: float  # recurring scheduled to date + discretionary share of the rest
+    projected_month_end: float
+    status: PaceStatus
+    left_to_spend: float
+    left_per_day: Optional[float]
+
+
+class BudgetPace(BaseModel):
+    """The month's pace for the spending cap (budget rows carry their own pace on
+    /api/budgets/comparison)."""
+
+    currency: str
+    month: date
+    days_elapsed: int  # workspace timezone, today included
+    days_in_month: int
+    cap: Optional[CapPace]
+    spent: float  # P1 expenses month to date
+
+
+class UpcomingCharge(BaseModel):
+    date: date
+    description: str
+    amount: float  # positive = money out
+    kind: UpcomingKind
+    account: Optional[str]
+    category: Optional[str]
+    recurring_id: Optional[uuid.UUID]
+
+
+class Upcoming(BaseModel):
+    currency: str
+    days: int
+    items: list[UpcomingCharge]
+    total: float
+
+
+class CashForecastPoint(BaseModel):
+    date: date
+    balance: float
+    inflow: float
+    outflow: float
+
+
+class CashForecast(BaseModel):
+    """Liquid cash over the next `days`: today's cash bucket, plus scheduled inflows
+    (recurring income), minus scheduled outflows (bills, card bills; card purchases reach
+    cash only through the bill)."""
+
+    currency: str
+    days: int
+    start_cash: float
+    buffer: float
+    points: list[CashForecastPoint]
+    low_point: Optional[CashForecastPoint]
+    first_negative_date: Optional[date]
+    first_below_buffer_date: Optional[date]
+
+
+class Subscription(BaseModel):
+    merchant: str
+    monthly: float
+    annual: float
+    months_seen: int
+    last_charge: Optional[date]
+    recurring_id: Optional[uuid.UUID]  # set when a recurring rule already tracks it
+
+
+class RecurringSuggestion(BaseModel):
+    merchant: str
+    monthly: float
+    months: int
+    create_payload: dict  # body for POST /api/recurring-transactions
+
+
+class SubscriptionAudit(BaseModel):
+    currency: str
+    subscriptions: list[Subscription]
+    monthly_total: float
+    annual_total: float
+    suggestions: list[RecurringSuggestion]  # detected but not yet tracked
+

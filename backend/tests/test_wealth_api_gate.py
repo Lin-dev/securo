@@ -5,7 +5,9 @@ from httpx import AsyncClient
 from app.api.wealth import router
 from app.schemas.wealth import BUCKETS, Bucket
 
-_PATHS = ["/settings", "/summary", "/net-worth-history", "/savings-rate", "/projection", "/levers"]
+_PATHS = ["/settings", "/summary", "/net-worth-history", "/savings-rate", "/projection", "/levers",
+          "/budget-pace", "/budget-suggestions", "/upcoming", "/cash-forecast", "/subscriptions"]
+_POST_PATHS = ["/budget-suggestions/apply"]
 
 
 @pytest.mark.asyncio
@@ -13,7 +15,8 @@ async def test_personal_workspace_reaches_every_wealth_route(client: AsyncClient
     for path in _PATHS:
         response = await client.get(f"/api/wealth{path}", headers=auth_headers)
         # every slice has landed (B1 settings, B3 the rest); never 404 (unmounted or gated off)
-        assert response.status_code == 200, (path, response.status_code, response.text)
+        # 501 until its slice lands (R2 routes); never 404 (unmounted or gated off)
+        assert response.status_code in (200, 501), (path, response.status_code, response.text)
 
 
 @pytest.mark.asyncio
@@ -32,7 +35,7 @@ async def test_business_workspace_does_not_see_wealth(client: AsyncClient, auth_
 
 def test_router_serves_exactly_the_contracted_paths():
     paths = {getattr(r, "path", "") for r in router.routes}
-    assert paths == {f"/api/wealth{p}" for p in _PATHS}
+    assert paths == {f"/api/wealth{p}" for p in _PATHS + _POST_PATHS}
 
 
 def test_bucket_tuple_matches_the_literal():

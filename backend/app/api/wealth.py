@@ -15,7 +15,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,13 @@ from app.core.module_gate import require_module, require_module_write
 from app.core.workspace_context import WorkspaceContext
 from app.models.goal import Goal
 from app.schemas.wealth import (
+    ApplyBudgetSuggestions,
+    ApplyBudgetSuggestionsResult,
+    BudgetPace,
+    BudgetSuggestions,
+    CashForecast,
+    SubscriptionAudit,
+    Upcoming,
     Coverage,
     GoalProgress,
     NetWorthHistory,
@@ -277,3 +284,59 @@ async def get_levers(
         cash_cushion_months=lf.cash_cushion_months, cash_flow=lf.cash_flow, top_controllable=lf.top_controllable,
         move=lf.move, investing_exceeds_saving=lf.investing_exceeds_saving,
     )
+
+
+# --- R2: spend smarter (B5a / B5b) -------------------------------------------
+
+
+def _not_yet() -> HTTPException:
+    return HTTPException(status_code=501, detail="Not implemented yet")
+
+
+@router.get("/budget-pace", response_model=BudgetPace)
+async def get_budget_pace(
+    ctx: WorkspaceContext = Depends(read_ctx), session: AsyncSession = Depends(get_async_session)
+) -> BudgetPace:
+    raise _not_yet()
+
+
+@router.get("/budget-suggestions", response_model=BudgetSuggestions)
+async def get_budget_suggestions(
+    ctx: WorkspaceContext = Depends(read_ctx), session: AsyncSession = Depends(get_async_session)
+) -> BudgetSuggestions:
+    raise _not_yet()
+
+
+@router.post("/budget-suggestions/apply", response_model=ApplyBudgetSuggestionsResult)
+async def apply_budget_suggestions(
+    body: ApplyBudgetSuggestions,
+    ctx: WorkspaceContext = Depends(write_ctx),
+    session: AsyncSession = Depends(get_async_session),
+) -> ApplyBudgetSuggestionsResult:
+    raise _not_yet()
+
+
+@router.get("/upcoming", response_model=Upcoming)
+async def get_upcoming(
+    days: int = Query(30, ge=1, le=90),
+    ctx: WorkspaceContext = Depends(read_ctx),
+    session: AsyncSession = Depends(get_async_session),
+) -> Upcoming:
+    raise _not_yet()
+
+
+@router.get("/cash-forecast", response_model=CashForecast)
+async def get_cash_forecast(
+    days: int = Query(90, ge=7, le=180),
+    ctx: WorkspaceContext = Depends(read_ctx),
+    session: AsyncSession = Depends(get_async_session),
+) -> CashForecast:
+    raise _not_yet()
+
+
+@router.get("/subscriptions", response_model=SubscriptionAudit)
+async def get_subscriptions(
+    ctx: WorkspaceContext = Depends(read_ctx), session: AsyncSession = Depends(get_async_session)
+) -> SubscriptionAudit:
+    raise _not_yet()
+
