@@ -48,6 +48,7 @@ from app.schemas.wealth import (
 )
 from app.services.fx_rate_service import convert
 from app.services.module_service import ModuleId
+from app.services.wealth import budgets as budgets_service
 from app.services.wealth import levers as levers_service
 from app.services.wealth.buckets import INVESTMENT_BUCKETS
 from app.services.wealth.figures import TypicalFigures, monthly_figures, rolling_rate, typical_expense_by_category, typical_figures
@@ -297,14 +298,16 @@ def _not_yet() -> HTTPException:
 async def get_budget_pace(
     ctx: WorkspaceContext = Depends(read_ctx), session: AsyncSession = Depends(get_async_session)
 ) -> BudgetPace:
-    raise _not_yet()
+    settings = load_settings(ctx.user)
+    return await budgets_service.budget_pace(session, ctx, settings)
 
 
 @router.get("/budget-suggestions", response_model=BudgetSuggestions)
 async def get_budget_suggestions(
     ctx: WorkspaceContext = Depends(read_ctx), session: AsyncSession = Depends(get_async_session)
 ) -> BudgetSuggestions:
-    raise _not_yet()
+    settings = load_settings(ctx.user)
+    return await budgets_service.suggest_budgets(session, ctx, settings)
 
 
 @router.post("/budget-suggestions/apply", response_model=ApplyBudgetSuggestionsResult)
@@ -313,7 +316,7 @@ async def apply_budget_suggestions(
     ctx: WorkspaceContext = Depends(write_ctx),
     session: AsyncSession = Depends(get_async_session),
 ) -> ApplyBudgetSuggestionsResult:
-    raise _not_yet()
+    return await budgets_service.apply_budget_suggestions(session, ctx, body.category_ids)
 
 
 @router.get("/upcoming", response_model=Upcoming)
