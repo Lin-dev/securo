@@ -126,8 +126,10 @@ def compute(
     `figures.typical_figures`'s result, and `category_monthly` is
     `figures.typical_expense_by_category`'s result."""
     if median_monthly_spend is None:
+        # No full month of spending yet: there is no buffer to measure cash
+        # against, so nothing is called idle (never "invest all of it").
         buffer = 0.0
-        idle_cash = max(0.0, cash)
+        idle_cash = 0.0
         cash_cushion_months = None
     else:
         buffer = buffer_months * median_monthly_spend
