@@ -15,9 +15,10 @@ from app.models.goal import Goal
 from app.models.user import User
 from app.schemas.goal import GoalCreate, GoalRead, GoalSummary, GoalUpdate
 from app.services.asset_service import _compute_current_value, _get_latest_value, get_asset_values_at
-from app.services.dashboard_service import _account_balance_at, _get_open_accounts
+from app.services.dashboard_service import _account_balance_at
 from app.services.account_service import get_account_name
 from app.services.fx_rate_service import convert
+from app.services.wealth.valuation import latest_net_worth
 
 
 async def _get_primary_currency(session: AsyncSession, user_id: uuid.UUID) -> str:
@@ -92,27 +93,14 @@ async def _resolve_current_amount(
             return await _sum_native_totals_in_currency(session, assets_by_currency, goal_currency)
         return goal.current_amount
     elif goal.tracking_type == "net_worth":
-        # Reuse dashboard's account query and balance logic so manual accounts
-        # (whose balance is computed from transactions) are handled correctly.
-        accounts = await _get_open_accounts(session, workspace_id)
-        today = app_today()
-        total = Decimal("0")
-        for acc in accounts:
-            bal = Decimal(str(await _account_balance_at(session, acc, today)))
-            total += await _convert_amount(session, bal, acc.currency, goal_currency)
-
-        # Add asset values (scoped by the goal's workspace). Holdings synced
-        # from one of the accounts summed above are already inside that
-        # account's balance and are skipped (issue #343).
-        assets_by_currency, _ = await get_asset_values_at(
-            session,
-            workspace_id,
-            by_workspace=True,
-            counted_account_ids=[acc.id for acc in accounts],
-        )
-        total += await _sum_native_totals_in_currency(session, assets_by_currency, goal_currency)
-
-        return total
+        # Delegate to the wealth valuation module (plan P6/P2) so the Goal,
+        # the dashboard and the wealth hero always agree to the cent,
+        # including the shared-balance-group dedupe the old per-account sum
+        # here used to miss. `latest_net_worth`'s total is already in the
+        # workspace's primary currency.
+        point = await latest_net_worth(session, workspace_id, user_id)
+        primary_currency = await _get_primary_currency(session, user_id)
+        return await _convert_amount(session, Decimal(str(point.total)), primary_currency, goal_currency)
     else:
         return goal.current_amount
 
