@@ -14,11 +14,21 @@ from app.models.asset_group import AssetGroup
 from app.models.goal import Goal
 from app.models.user import User
 from app.schemas.goal import GoalCreate, GoalRead, GoalSummary, GoalUpdate
+from app.schemas.wealth import WealthSettingsValues
 from app.services.asset_service import _compute_current_value, _get_latest_value, get_asset_values_at
 from app.services.dashboard_service import _account_balance_at
 from app.services.account_service import get_account_name
 from app.services.fx_rate_service import convert
-from app.services.wealth.valuation import latest_net_worth
+from app.services.wealth.buckets import INVESTMENT_BUCKETS
+from app.services.wealth.figures import typical_figures
+from app.services.wealth.projection import (
+    ProjectionInputs,
+    add_months,
+    months_to_target,
+    required_monthly_contribution,
+)
+from app.services.wealth.settings import load_settings
+from app.services.wealth.valuation import NetWorthPoint, latest_net_worth
 
 
 async def _get_primary_currency(session: AsyncSession, user_id: uuid.UUID) -> str:
@@ -196,17 +206,92 @@ def _compute_on_track(
     return "behind"
 
 
+def _month_index(d: date) -> int:
+    return d.year * 12 + d.month
+
+
+def _compute_net_worth_on_track(
+    current: Decimal, target: Decimal, target_date: Optional[date],
+    projected_date: Optional[date], today: date,
+) -> Optional[str]:
+    """`on_track` for a net-worth goal, from the P5 projection engine instead
+    of the straight-line baseline `_compute_on_track` uses: achieved once
+    current reaches target, overdue once the target date has passed without
+    that, else ahead/on_track/behind from how the engine's own projected date
+    compares to the target date. With no target date, `None` — same as
+    `_compute_on_track` ("keep existing behaviour" for that case)."""
+    if not target_date:
+        return None
+    if current >= target:
+        return "achieved"
+    if today > target_date:
+        return "overdue"
+    if projected_date is None:
+        return "behind"  # unreachable within the engine's horizon
+    if _month_index(target_date) - _month_index(projected_date) >= 3:
+        return "ahead"
+    if projected_date <= target_date:
+        return "on_track"
+    return "behind"
+
+
+async def _net_worth_goal_fields(
+    session: AsyncSession, goal: Goal, user_id: uuid.UUID,
+) -> tuple[Decimal, Optional[date], Optional[float], Optional[str]]:
+    """current, projected_date, monthly_contribution and on_track for a
+    net_worth goal, all from one `latest_net_worth` call and one wealth-
+    figures snapshot — shared by `_enrich_goal` and `get_goal_summary` so the
+    list and the dashboard widget can never disagree about the same goal
+    (plan P5/P6)."""
+    point: NetWorthPoint = await latest_net_worth(session, goal.workspace_id, user_id)
+    primary_currency = await _get_primary_currency(session, user_id)
+    current = await _convert_amount(session, Decimal(str(point.total)), primary_currency, goal.currency)
+
+    user = await session.get(User, user_id)
+    settings = load_settings(user) if user is not None else WealthSettingsValues()
+    typical = await typical_figures(session, goal.workspace_id, user_id, settings=settings)
+    invested = sum(point.buckets[b] for b in INVESTMENT_BUCKETS)
+    non_invested = point.total - invested
+    target_total_primary, _ = await convert(session, goal.target_amount, goal.currency, primary_currency)
+    inputs = ProjectionInputs(
+        invested=invested, non_invested=non_invested, target_total=float(target_total_primary),
+        monthly_contribution=typical.saving.typical / 12, annual_return=settings.projection.return_nominal,
+    )
+
+    today = app_today()
+    months = months_to_target(inputs)
+    projected_date = add_months(today, months) if months is not None else None
+
+    monthly_contribution: Optional[float] = None
+    if goal.target_date:
+        if current >= goal.target_amount or today >= goal.target_date:
+            monthly_contribution = 0.0
+        else:
+            months_remaining = (goal.target_date.year - today.year) * 12 + (goal.target_date.month - today.month)
+            if months_remaining <= 0:
+                months_remaining = 1
+            raw = required_monthly_contribution(inputs, months_remaining)
+            monthly_contribution = round(raw, 2) if raw is not None else None
+
+    on_track = _compute_net_worth_on_track(current, goal.target_amount, goal.target_date, projected_date, today)
+    return current, projected_date, monthly_contribution, on_track
+
+
 async def _enrich_goal(
     session: AsyncSession, goal: Goal, user_id: uuid.UUID
 ) -> GoalRead:
     """Enrich a goal with computed fields."""
-    current = await _resolve_current_amount(session, goal, user_id)
+    projected_date: Optional[date] = None
+    if goal.tracking_type == "net_worth":
+        current, projected_date, monthly, on_track = await _net_worth_goal_fields(session, goal, user_id)
+    else:
+        current = await _resolve_current_amount(session, goal, user_id)
+        monthly = _compute_monthly_contribution(current, goal.target_amount, goal.target_date)
+        goal_start = goal.created_at.date() if goal.created_at else None
+        on_track = _compute_on_track(
+            current, goal.target_amount, goal.target_date, goal_start, goal.initial_amount
+        )
     percentage = _compute_percentage(current, goal.target_amount)
-    monthly = _compute_monthly_contribution(current, goal.target_amount, goal.target_date)
-    goal_start = goal.created_at.date() if goal.created_at else None
-    on_track = _compute_on_track(
-        current, goal.target_amount, goal.target_date, goal_start, goal.initial_amount
-    )
 
     account_name = await _linked_name(session, Account, goal.account_id)
     asset_name = await _linked_name(session, Asset, goal.asset_id)
@@ -244,6 +329,7 @@ async def _enrich_goal(
         percentage=percentage,
         monthly_contribution=monthly,
         on_track=on_track,
+        projected_date=projected_date,
         account_name=account_name,
         asset_name=asset_name,
         asset_group_name=asset_group_name,
@@ -364,13 +450,17 @@ async def get_goal_summary(
     goals = list(result.scalars().all())
     summaries = []
     for goal in goals:
-        current = await _resolve_current_amount(session, goal, user_id)
+        projected_date: Optional[date] = None
+        if goal.tracking_type == "net_worth":
+            current, projected_date, monthly, on_track = await _net_worth_goal_fields(session, goal, user_id)
+        else:
+            current = await _resolve_current_amount(session, goal, user_id)
+            monthly = _compute_monthly_contribution(current, goal.target_amount, goal.target_date)
+            goal_start = goal.created_at.date() if goal.created_at else None
+            on_track = _compute_on_track(
+                current, goal.target_amount, goal.target_date, goal_start, goal.initial_amount
+            )
         percentage = _compute_percentage(current, goal.target_amount)
-        monthly = _compute_monthly_contribution(current, goal.target_amount, goal.target_date)
-        goal_start = goal.created_at.date() if goal.created_at else None
-        on_track = _compute_on_track(
-            current, goal.target_amount, goal.target_date, goal_start, goal.initial_amount
-        )
         summaries.append(GoalSummary(
             id=goal.id,
             name=goal.name,
@@ -384,5 +474,6 @@ async def get_goal_summary(
             percentage=percentage,
             monthly_contribution=monthly,
             on_track=on_track,
+            projected_date=projected_date,
         ))
     return summaries

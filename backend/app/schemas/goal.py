@@ -85,6 +85,10 @@ class GoalRead(BaseModel):
     percentage: float = 0
     monthly_contribution: Optional[float] = None
     on_track: Optional[str] = None  # ahead, on_track, behind, overdue, achieved
+    # Net-worth goals only (plan P5/P6): the base-scenario date from the wealth
+    # projection engine, run with this goal's target. None for every other
+    # tracking type, and for a net-worth goal the engine can't reach.
+    projected_date: Optional[_Date] = None
 
     # Linked account/asset info
     account_name: Optional[str] = None
@@ -107,3 +111,4 @@ class GoalSummary(BaseModel):
     percentage: float = 0
     monthly_contribution: Optional[float] = None
     on_track: Optional[str] = None
+    projected_date: Optional[_Date] = None

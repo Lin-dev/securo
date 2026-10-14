@@ -280,6 +280,35 @@ def levers(
     return out
 
 
+def required_monthly_contribution(inputs: ProjectionInputs, months: int) -> Optional[float]:
+    """The constant monthly contribution that lands exactly on `inputs.target`
+    after `months` steps of the engine's own recurrence (`B_next = B * (1 +
+    r_m) + c`), starting from `inputs.invested` at `inputs.annual_return` —
+    `inputs.monthly_contribution` is ignored; this solves for the one that
+    reaches the target, by inverting the future-value-of-an-annuity identity.
+
+    `r_m == 0`: the plain division `(target - balance) / months`. `r_m != 0`:
+    `c = (target - balance * (1 + r_m) ** months) / (((1 + r_m) ** months - 1)
+    / r_m)` (the annuity factor in the denominator is this contribution's
+    total future value per dollar; it is 0 only when `r_m == -1`, an input
+    this engine never produces). The result may be negative (growth alone
+    overshoots the target) — never clamped here, same as `monthly_contribution`
+    elsewhere in this module. `months <= 0` has no well-defined contribution:
+    `None`."""
+    if months <= 0:
+        return None
+    rate = monthly_rate(inputs.annual_return)
+    balance = inputs.invested
+    target = inputs.target
+    if rate == 0:
+        return (target - balance) / months
+    growth = (1 + rate) ** months
+    annuity_factor = (growth - 1) / rate
+    if annuity_factor == 0:
+        return None
+    return (target - balance * growth) / annuity_factor
+
+
 def fi_figures(annual_expenses: Optional[float], withdrawal_rate: float) -> FiFigures:
     """The FI number in today's dollars (P5): typical annual expenses /
     withdrawal rate. Unlike the $1M target, this is never inflated to a nominal
