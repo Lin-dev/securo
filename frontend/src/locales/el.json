@@ -124,6 +124,7 @@
     "splitGroups": "Ομάδες",
     "goals": "Στόχοι",
     "reports": "Αναφορές",
+    "wealth": "Wealth",
     "groupAnalysis": "Ανάλυση",
     "groupSetup": "Ρύθμιση",
     "groupAccounts": "Λογαριασμοί",
@@ -1457,6 +1458,19 @@
     "wallet": "Πορτοφόλι",
     "selectWallet": "Επιλογή πορτοφολιού",
     "walletHint": "Παρακολουθήστε αυτόν τον στόχο με τη συνολική αξία όλων των περιουσιακών στοιχείων στο επιλεγμένο πορτοφόλι."
+  },
+  "wealth": {
+    "title": "Wealth",
+    "tabsLabel": "Wealth sections",
+    "tabs": {
+      "road": "Milestone",
+      "networth": "Net worth",
+      "savings": "Savings",
+      "allocation": "Allocation",
+      "limits": "Limits",
+      "settings": "Settings"
+    },
+    "stub": "This section is being built."
   },
   "recurring": {
     "title": "Επαναλαμβανόμενες συναλλαγές",

@@ -10,6 +10,7 @@ import {
   Split,
   Tag,
   Target,
+  TrendingUp,
   Upload,
   Users,
 } from 'lucide-react'
@@ -40,6 +41,7 @@ export const navItems: NavItem[] = [
   { type: 'link', key: 'accounts', path: '/accounts', icon: Building2, module: 'accounts' },
   { type: 'link', key: 'import', path: '/import', icon: Upload, module: 'import' },
   { type: 'separator', labelKey: 'nav.groupAnalysis' },
+  { type: 'link', key: 'wealth', path: '/wealth', icon: TrendingUp, module: 'wealth' },
   { type: 'link', key: 'reports', path: '/reports', icon: BarChart3, module: 'reports' },
   { type: 'link', key: 'assets', path: '/assets', icon: Landmark, module: 'assets' },
   { type: 'separator', labelKey: 'nav.groupSetup' },

@@ -25,6 +25,7 @@ const PERSONAL_MODULES: ModuleId[] = [
   'payees',
   'split_groups',
   'rules',
+  'wealth',
 ]
 
 const linkKeys = (items: NavItem[]) =>
@@ -56,6 +57,7 @@ describe('visibleNavItems', () => {
       'transactions',
       'accounts',
       'import',
+      'wealth',
       'reports',
       'assets',
       'budgets',
@@ -68,6 +70,12 @@ describe('visibleNavItems', () => {
     ])
     // All three section headers survive.
     expect(personal.filter((i) => i.type === 'separator')).toHaveLength(3)
+  })
+
+  it('leaves the wealth planner out of a business workspace', () => {
+    const business = visibleNavItems(navItems, allExcept('wealth'))
+    expect(linkKeys(business)).not.toContain('wealth')
+    expect(linkKeys(business)).toContain('reports')
   })
 
   it('adds invoices for a workspace that has it', () => {

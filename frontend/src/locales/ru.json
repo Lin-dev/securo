@@ -124,6 +124,7 @@
     "splitGroups": "Группы",
     "goals": "Цели",
     "reports": "Отчёты",
+    "wealth": "Wealth",
     "groupAnalysis": "Анализ",
     "groupSetup": "Настройка",
     "groupAccounts": "Счета",
@@ -1474,6 +1475,19 @@
     "wallet": "Кошелек",
     "selectWallet": "Выберите кошелек",
     "walletHint": "Отслеживайте эту цель по суммарной стоимости всех активов в выбранном кошельке."
+  },
+  "wealth": {
+    "title": "Wealth",
+    "tabsLabel": "Wealth sections",
+    "tabs": {
+      "road": "Milestone",
+      "networth": "Net worth",
+      "savings": "Savings",
+      "allocation": "Allocation",
+      "limits": "Limits",
+      "settings": "Settings"
+    },
+    "stub": "This section is being built."
   },
   "recurring": {
     "title": "Регулярные транзакции",

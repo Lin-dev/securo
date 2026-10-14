@@ -124,6 +124,7 @@
     "splitGroups": "Grupos",
     "goals": "Metas",
     "reports": "Relatórios",
+    "wealth": "Wealth",
     "groupAnalysis": "Análise",
     "groupSetup": "Configuração",
     "groupAccounts": "Contas",
@@ -1461,6 +1462,19 @@
     "wallet": "Carteira",
     "selectWallet": "Selecionar carteira",
     "walletHint": "Acompanhe este objetivo pelo valor combinado de todos os ativos na carteira selecionada."
+  },
+  "wealth": {
+    "title": "Wealth",
+    "tabsLabel": "Wealth sections",
+    "tabs": {
+      "road": "Milestone",
+      "networth": "Net worth",
+      "savings": "Savings",
+      "allocation": "Allocation",
+      "limits": "Limits",
+      "settings": "Settings"
+    },
+    "stub": "This section is being built."
   },
   "recurring": {
     "title": "Transações Recorrentes",

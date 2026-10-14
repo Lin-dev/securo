@@ -26,6 +26,7 @@ describe('MODULE_IDS', () => {
         'rules',
         'split_groups',
         'transactions',
+        'wealth',
       ].sort(),
     )
   })

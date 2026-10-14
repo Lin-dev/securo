@@ -124,6 +124,7 @@
     "splitGroups": "Gruppen",
     "goals": "Ziele",
     "reports": "Berichte",
+    "wealth": "Wealth",
     "groupAnalysis": "Analyse",
     "groupSetup": "Einrichtung",
     "groupAccounts": "Konten",
@@ -1458,6 +1459,19 @@
     "wallet": "Portfolio",
     "selectWallet": "Portfolio auswählen",
     "walletHint": "Verfolge dieses Ziel mit dem Gesamtwert aller Vermögenswerte im ausgewählten Portfolio."
+  },
+  "wealth": {
+    "title": "Wealth",
+    "tabsLabel": "Wealth sections",
+    "tabs": {
+      "road": "Milestone",
+      "networth": "Net worth",
+      "savings": "Savings",
+      "allocation": "Allocation",
+      "limits": "Limits",
+      "settings": "Settings"
+    },
+    "stub": "This section is being built."
   },
   "recurring": {
     "title": "Wiederkehrende Transaktionen",

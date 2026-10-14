@@ -34,6 +34,7 @@ PERSONAL_MODULES = [
     "rules",
     "split_groups",
     "transactions",
+    "wealth",
 ]
 
 
@@ -48,18 +49,18 @@ def test_personal_resolves_to_todays_navigation():
     assert resolve_modules(ws("personal")) == PERSONAL_MODULES
 
 
-def test_business_is_personal_plus_invoices():
+def test_business_is_personal_plus_invoices_without_wealth():
     assert resolve_modules(ws("business")) == sorted(
-        PERSONAL_MODULES + ["invoices"]
+        [m for m in PERSONAL_MODULES if m != "wealth"] + ["invoices"]
     )
 
 
-def test_invoices_is_the_only_difference():
+def test_invoices_and_wealth_are_the_only_differences():
     """Resist giving the policies more differences than the product has."""
     personal = set(resolve_modules(ws("personal")))
     business = set(resolve_modules(ws("business")))
     assert business - personal == {"invoices"}
-    assert personal - business == set()
+    assert personal - business == {"wealth"}
 
 
 def test_every_workspace_kind_has_a_policy():

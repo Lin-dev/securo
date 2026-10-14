@@ -124,6 +124,7 @@
     "splitGroups": "Groepen",
     "goals": "Doelen",
     "reports": "Rapporten",
+    "wealth": "Wealth",
     "groupAnalysis": "Analyse",
     "groupSetup": "Instellen",
     "groupAccounts": "Rekeningen",
@@ -1459,6 +1460,19 @@
     "wallet": "Portemonnee",
     "selectWallet": "Portemonnee selecteren",
     "walletHint": "Volg dit doel met de gecombineerde waarde van alle activa in de geselecteerde portemonnee."
+  },
+  "wealth": {
+    "title": "Wealth",
+    "tabsLabel": "Wealth sections",
+    "tabs": {
+      "road": "Milestone",
+      "networth": "Net worth",
+      "savings": "Savings",
+      "allocation": "Allocation",
+      "limits": "Limits",
+      "settings": "Settings"
+    },
+    "stub": "This section is being built."
   },
   "recurring": {
     "title": "Terugkerende transacties",

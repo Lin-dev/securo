@@ -124,6 +124,7 @@
     "splitGroups": "समूह",
     "goals": "लक्ष्य",
     "reports": "रिपोर्ट",
+    "wealth": "Wealth",
     "groupAnalysis": "विश्लेषण",
     "groupSetup": "सेटअप",
     "groupAccounts": "खाते",
@@ -1457,6 +1458,19 @@
     "wallet": "वॉलेट",
     "selectWallet": "वॉलेट चुनें",
     "walletHint": "चयनित वॉलेट की सभी संपत्तियों के कुल मूल्य से इस लक्ष्य को ट्रैक करें।"
+  },
+  "wealth": {
+    "title": "Wealth",
+    "tabsLabel": "Wealth sections",
+    "tabs": {
+      "road": "Milestone",
+      "networth": "Net worth",
+      "savings": "Savings",
+      "allocation": "Allocation",
+      "limits": "Limits",
+      "settings": "Settings"
+    },
+    "stub": "This section is being built."
   },
   "recurring": {
     "title": "आवर्ती लेन-देन",

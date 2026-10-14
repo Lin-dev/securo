@@ -124,6 +124,7 @@
     "splitGroups": "Skupiny",
     "goals": "Ciele",
     "reports": "Reporty",
+    "wealth": "Wealth",
     "groupAnalysis": "Analýza",
     "groupSetup": "Konfigurácia",
     "groupAccounts": "Účty",
@@ -1533,6 +1534,19 @@
     "wallet": "Peňaženka",
     "selectWallet": "Vybrať peňaženku",
     "walletHint": "Sleduj tento cieľ podľa celkovej hodnoty všetkých aktív vo vybranej peňaženke."
+  },
+  "wealth": {
+    "title": "Wealth",
+    "tabsLabel": "Wealth sections",
+    "tabs": {
+      "road": "Milestone",
+      "networth": "Net worth",
+      "savings": "Savings",
+      "allocation": "Allocation",
+      "limits": "Limits",
+      "settings": "Settings"
+    },
+    "stub": "This section is being built."
   },
   "recurring": {
     "title": "Opakované transakcie",

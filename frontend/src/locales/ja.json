@@ -124,6 +124,7 @@
     "splitGroups": "グループ",
     "goals": "目標",
     "reports": "レポート",
+    "wealth": "Wealth",
     "groupAnalysis": "分析",
     "groupSetup": "設定",
     "groupAccounts": "口座",
@@ -1457,6 +1458,19 @@
     "wallet": "ウォレット",
     "selectWallet": "ウォレットを選択",
     "walletHint": "選択したウォレット内の全資産の合計値でこの目標を追跡します。"
+  },
+  "wealth": {
+    "title": "Wealth",
+    "tabsLabel": "Wealth sections",
+    "tabs": {
+      "road": "Milestone",
+      "networth": "Net worth",
+      "savings": "Savings",
+      "allocation": "Allocation",
+      "limits": "Limits",
+      "settings": "Settings"
+    },
+    "stub": "This section is being built."
   },
   "recurring": {
     "title": "定期取引",

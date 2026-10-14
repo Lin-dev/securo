@@ -124,6 +124,7 @@
     "splitGroups": "Групи",
     "goals": "Цілі",
     "reports": "Звіти",
+    "wealth": "Wealth",
     "groupAnalysis": "Аналіз",
     "groupSetup": "Налаштування",
     "groupAccounts": "Рахунки",
@@ -1474,6 +1475,19 @@
     "wallet": "Гаманець",
     "selectWallet": "Виберіть гаманець",
     "walletHint": "Відстежуйте цю ціль за сумарною вартістю всіх активів у вибраному гаманці."
+  },
+  "wealth": {
+    "title": "Wealth",
+    "tabsLabel": "Wealth sections",
+    "tabs": {
+      "road": "Milestone",
+      "networth": "Net worth",
+      "savings": "Savings",
+      "allocation": "Allocation",
+      "limits": "Limits",
+      "settings": "Settings"
+    },
+    "stub": "This section is being built."
   },
   "recurring": {
     "title": "Регулярні транзакції",

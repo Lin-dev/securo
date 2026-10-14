@@ -59,6 +59,7 @@ class ModuleId(str, Enum):
     SPLIT_GROUPS = "split_groups"
     RULES = "rules"
     INVOICES = "invoices"
+    WEALTH = "wealth"
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,9 @@ CATALOG: Mapping[ModuleId, ModuleSpec] = {
         ModuleSpec(ModuleId.SPLIT_GROUPS, default_enabled=True),
         ModuleSpec(ModuleId.RULES, default_enabled=True),
         ModuleSpec(ModuleId.INVOICES, default_enabled=False),
+        # Fork: the road-to-a-milestone page. Household finances only, so the
+        # business policy takes it away.
+        ModuleSpec(ModuleId.WEALTH, default_enabled=True),
     )
 }
 
@@ -119,10 +123,11 @@ class PersonalPolicy:
 
 
 class BusinessPolicy:
-    """The catalog defaults plus what a workspace tracking work needs."""
+    """The catalog defaults plus what a workspace tracking work needs,
+    minus the household net-worth planner (fork)."""
 
     def modules(self, base: frozenset[ModuleId]) -> frozenset[ModuleId]:
-        return base | {ModuleId.INVOICES}
+        return (base - {ModuleId.WEALTH}) | {ModuleId.INVOICES}
 
 
 KIND_POLICIES: Mapping[str, ModulePolicy] = {
