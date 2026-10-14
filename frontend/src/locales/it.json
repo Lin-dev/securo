@@ -882,7 +882,16 @@
     "fxRateUsed": "Tasso di cambio: {{rate}}",
     "refreshRates": "Aggiorna i tassi di cambio",
     "ratesRefreshed": "Tassi di cambio aggiornati",
-    "ratesError": "Impossibile aggiornare i tassi di cambio"
+    "ratesError": "Impossibile aggiornare i tassi di cambio",
+    "wealthGoalProjected": "Projected: {{label}}",
+    "wealthSavingsRateCaption": "incl. payroll contributions",
+    "wealthSavingsRateHelp": "(income − expenses + payroll contributions) ÷ (income + payroll contributions)",
+    "wealthCashCushionTitle": "Cash cushion",
+    "wealthCashCushionViewLink": "View on Wealth",
+    "wealthCashCushionMonths": "{{months}} months of spending in cash",
+    "wealthCashCushionUnknown": "Not enough data yet for a cash cushion figure",
+    "wealthIdleCashAboveBuffer": "Idle cash above your buffer: {{amount}}",
+    "wealthCashCushionChangeBuffer": "Change your buffer"
   },
   "transactions": {
     "title": "Transazioni",

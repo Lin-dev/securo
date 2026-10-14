@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { format } from 'date-fns'
-import { dashboard, transactions, budgets, categories as categoriesApi, categoryGroups as categoryGroupsApi, accounts as accountsApi, goals as goalsApi, groups as groupsApi, payees as payeesApi, rules as rulesApi } from '@/lib/api'
+import { dashboard, transactions, budgets, categories as categoriesApi, categoryGroups as categoryGroupsApi, accounts as accountsApi, goals as goalsApi, groups as groupsApi, payees as payeesApi, rules as rulesApi, wealth } from '@/lib/api'
 import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
 import { toast } from 'sonner'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -54,11 +54,14 @@ import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useAuth } from '@/contexts/auth-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
+import { useWorkspace } from '@/contexts/workspace-context'
+import { useEffectiveTimezone } from '@/hooks/use-timezone'
 import { resolveDateFnsLocale } from '@/lib/date-fns-locale'
 import type { Rule, Transaction } from '@/types'
 import { formatCurrency } from '@/lib/format'
+import { formatMonth, formatQuarter } from '@/lib/chart-format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
-import { useEffectiveTimezone } from '@/hooks/use-timezone'
+import { CashCushionCard } from '@/components/dashboard/cash-cushion-card'
 import { resolveClickedDay } from '@/components/dashboard/day-drilldown'
 import { resolveBudgetPaceToday } from '@/components/dashboard/budget-pace'
 
@@ -99,6 +102,8 @@ export default function DashboardPage() {
   const { mask, privacyMode, MASK } = usePrivacyMode()
   const isMobile = useIsMobile()
   const { user } = useAuth()
+  const { hasModule } = useWorkspace()
+  const wealthEnabled = hasModule('wealth')
   const timeZone = useEffectiveTimezone()
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
   const displayName = user?.preferences?.display_name || ''
@@ -281,6 +286,22 @@ export default function DashboardPage() {
     queryFn: () => goalsApi.summary(3),
   })
 
+  // Wealth (fork, plan S3): gated on the workspace module, same as every
+  // other wealth-related read. `summary` backs both the Goals card's
+  // "Projected: …" line (date precision + whether the module is even on)
+  // and the cash-cushion card; `savingsRate` backs the P1 savings-rate tile.
+  const { data: wealthSummary, isLoading: wealthSummaryLoading } = useQuery({
+    queryKey: ['wealth', 'summary'],
+    queryFn: wealth.summary,
+    enabled: wealthEnabled,
+  })
+
+  const { data: wealthSavingsRate } = useQuery({
+    queryKey: ['wealth', 'savings-rate', 12],
+    queryFn: () => wealth.savingsRate(12),
+    enabled: wealthEnabled,
+  })
+
   const updateMutation = useMutation({
     mutationFn: ({ id, ...data }: TransactionSavePayload & { id: string }) =>
       transactions.update(id, data),
@@ -448,6 +469,18 @@ export default function DashboardPage() {
   const projectedSpend = expenses > 0 && isCurrentMonth && daysElapsed > 0
     ? (expenses / daysElapsed) * daysInMonth
     : null
+
+  // P1 savings rate (plan P1): (income − expenses + payroll contributions)
+  // / (income + payroll contributions), for the selected month, when the
+  // wealth module is on and that month is in the series. Falls back to the
+  // existing (income − expenses) / income figure otherwise, unchanged.
+  const wealthMonthForSelected = wealthEnabled
+    ? wealthSavingsRate?.months.find((m) => m.month.startsWith(selectedMonth))
+    : undefined
+  const usesWealthSavingsRate = wealthMonthForSelected?.rate != null
+  const displayedSavingsRatePct = usesWealthSavingsRate
+    ? wealthMonthForSelected!.rate! * 100
+    : savingsRate
 
   // Uncategorized data
   const uncategorizedCount = summary?.pending_categorization ?? 0
@@ -621,17 +654,29 @@ export default function DashboardPage() {
   const txListLoading = currentTxLoading || projectedTxLoading
 
   // Savings rate display
-  const savingsRateColor = income === 0 && expenses > 0
-    ? 'text-rose-500'
-    : savingsRate > 0
+  const savingsRateColor = usesWealthSavingsRate
+    ? displayedSavingsRatePct > 0
       ? 'text-emerald-600'
-      : savingsRate < 0
+      : displayedSavingsRatePct < 0
         ? 'text-rose-500'
         : 'text-muted-foreground'
+    : income === 0 && expenses > 0
+      ? 'text-rose-500'
+      : savingsRate > 0
+        ? 'text-emerald-600'
+        : savingsRate < 0
+          ? 'text-rose-500'
+          : 'text-muted-foreground'
 
-  const savingsRateDisplay = income === 0 && expenses > 0
-    ? '---'
-    : `${savingsRate.toFixed(0)}%`
+  const savingsRateDisplay = usesWealthSavingsRate
+    ? `${displayedSavingsRatePct.toFixed(0)}%`
+    : income === 0 && expenses > 0
+      ? '---'
+      : `${savingsRate.toFixed(0)}%`
+
+  const savingsRateCaptionKey = usesWealthSavingsRate
+    ? 'dashboard.wealthSavingsRateCaption'
+    : 'dashboard.savingsRateCaption'
 
   return (
     <div>
@@ -876,7 +921,25 @@ export default function DashboardPage() {
                 <p className={`text-xl font-bold tabular-nums ${savingsRateColor}`}>
                   {savingsRateDisplay}
                 </p>
-                <p className="text-[10px] text-muted-foreground mt-0.5">{t('dashboard.savingsRateCaption')}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                  <span>{t(savingsRateCaptionKey)}</span>
+                  {usesWealthSavingsRate && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label={t('dashboard.wealthSavingsRateHelp')}
+                          className="inline-flex items-center justify-center w-3 h-3 rounded-full bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground transition-colors text-[8px] font-bold leading-none"
+                        >
+                          i
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent className="w-56">
+                        <p>{t('dashboard.wealthSavingsRateHelp')}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </p>
               </>
             )}
           </div>
@@ -1235,12 +1298,31 @@ export default function DashboardPage() {
                         <span className={`font-medium ${otc.cls}`}>{t(otc.key)}</span>
                       )}
                     </div>
+                    {wealthEnabled && wealthSummary && goal.projected_date && (
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        {t('dashboard.wealthGoalProjected', {
+                          label: wealthSummary.precision === 'quarter'
+                            ? formatQuarter(goal.projected_date)
+                            : formatMonth(goal.projected_date, locale),
+                        })}
+                      </p>
+                    )}
                   </div>
                 </div>
               )
             })}
           </div>
         </div>
+      )}
+
+      {/* Cash cushion card (plan S3): wealth-module only. */}
+      {wealthEnabled && (
+        <CashCushionCard
+          cashCushionMonths={wealthSummary?.cash_cushion_months ?? null}
+          idleCash={wealthSummary?.idle_cash ?? 0}
+          currency={wealthSummary?.currency ?? primaryCurrency}
+          isLoading={wealthSummaryLoading}
+        />
       )}
 
       {/* Period Transactions */}

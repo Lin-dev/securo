@@ -968,6 +968,8 @@ export interface Goal {
   account_name: string | null
   asset_name: string | null
   asset_group_name: string | null
+  /** Net-worth goals only (fork, plan P6): the P5 engine's projected date. */
+  projected_date?: string | null
 }
 
 export interface GoalSummary {
@@ -983,6 +985,8 @@ export interface GoalSummary {
   percentage: number
   monthly_contribution: number | null
   on_track: string | null
+  /** Net-worth goals only (fork, plan P6): the P5 engine's projected date. */
+  projected_date?: string | null
 }
 
 export interface PaginatedResponse<T> {

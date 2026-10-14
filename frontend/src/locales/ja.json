@@ -880,7 +880,16 @@
     "fxRateUsed": "為替レート: {{rate}}",
     "refreshRates": "為替レートを更新",
     "ratesRefreshed": "為替レートを更新しました",
-    "ratesError": "為替レートの更新に失敗しました"
+    "ratesError": "為替レートの更新に失敗しました",
+    "wealthGoalProjected": "Projected: {{label}}",
+    "wealthSavingsRateCaption": "incl. payroll contributions",
+    "wealthSavingsRateHelp": "(income − expenses + payroll contributions) ÷ (income + payroll contributions)",
+    "wealthCashCushionTitle": "Cash cushion",
+    "wealthCashCushionViewLink": "View on Wealth",
+    "wealthCashCushionMonths": "{{months}} months of spending in cash",
+    "wealthCashCushionUnknown": "Not enough data yet for a cash cushion figure",
+    "wealthIdleCashAboveBuffer": "Idle cash above your buffer: {{amount}}",
+    "wealthCashCushionChangeBuffer": "Change your buffer"
   },
   "transactions": {
     "title": "取引",
