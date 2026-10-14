@@ -866,6 +866,7 @@
     "drillDownShownTotal": "Total exibido",
     "drillDownEmpty": "Nenhuma transação encontrada",
     "drillDownClose": "Fechar",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Transações de cartão de crédito são agrupadas pela data de vencimento da fatura (modo competência).",
     "savingsRate": "Taxa de Economia",
     "savingsRateCaption": "da renda deste mês ficou guardada",
@@ -1194,7 +1195,9 @@
     "suggestionBadgeTooltip": "Um pagamento pode quitar esta cobrança. Abra a fila para responder.",
     "clearGroupFilter": "Limpar filtro de grupo",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Contas",
@@ -2338,6 +2341,7 @@
     "deficit": "Déficit",
     "cashFlowNode": "Fluxo de Caixa",
     "flowChartAria": "Diagrama de fluxo de caixa: receitas fluindo para as despesas",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Categoria",
     "amount": "Valor",
     "investments": "Investimentos",

@@ -866,6 +866,7 @@
     "drillDownShownTotal": "Totale mostrato",
     "drillDownEmpty": "Nessuna transazione trovata",
     "drillDownClose": "Chiudi",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Le transazioni con carta di credito sono raggruppate per scadenza dell'estratto conto (modalità per competenza).",
     "savingsRate": "Tasso di risparmio",
     "savingsRateCaption": "del reddito di questo mese risparmiato",
@@ -1194,7 +1195,9 @@
     "suggestionBadgeTooltip": "Un pagamento potrebbe saldare questa fattura. Apri la coda per rispondere.",
     "clearGroupFilter": "Rimuovi filtro gruppo",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Conti",
@@ -2338,6 +2341,7 @@
     "deficit": "Disavanzo",
     "cashFlowNode": "Flusso di cassa",
     "flowChartAria": "Diagramma del flusso di cassa: entrate che confluiscono nelle spese",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Categoria",
     "amount": "Importo",
     "investments": "Investimenti",

@@ -864,6 +864,7 @@
     "drillDownShownTotal": "表示合計",
     "drillDownEmpty": "取引が見つかりません",
     "drillDownClose": "閉じる",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "クレジットカードの取引は請求の支払期日ごとにまとめられます(発生基準)。",
     "savingsRate": "貯蓄率",
     "savingsRateCaption": "今月の収入に占める貯蓄の割合",
@@ -1192,7 +1193,9 @@
     "suggestionBadgeTooltip": "これが何かを消し込む可能性があります。キューを開いて回答してください。",
     "clearGroupFilter": "グループフィルターを解除",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "口座",
@@ -2334,6 +2337,7 @@
     "deficit": "赤字",
     "cashFlowNode": "キャッシュフロー",
     "flowChartAria": "キャッシュフロー図: 収入源から支出への流れ",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "カテゴリ",
     "amount": "金額",
     "investments": "投資",

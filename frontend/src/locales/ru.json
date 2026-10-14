@@ -872,6 +872,7 @@
     "drillDownShownTotal": "Показанная сумма",
     "drillDownEmpty": "Транзакции не найдены",
     "drillDownClose": "Закрыть",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Кредитные карты: транзакции группируются по дате платежа (метод начисления).",
     "savingsRate": "Норма сбережений",
     "savingsRateCaption": "дохода в этом месяце сохранено",
@@ -1206,7 +1207,9 @@
     "suggestionBadgeTooltip": "Платёж может закрыть этот счёт. Откройте очередь, чтобы ответить.",
     "clearGroupFilter": "Сбросить фильтр группы",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Счета",
@@ -2351,6 +2354,7 @@
     "deficit": "Дефицит",
     "cashFlowNode": "Денежный поток",
     "flowChartAria": "Диаграмма денежных потоков: источники доходов перетекают в расходы",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Категория",
     "amount": "Сумма",
     "investments": "Инвестиции",

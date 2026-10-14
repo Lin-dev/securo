@@ -864,6 +864,7 @@
     "drillDownShownTotal": "Εμφανιζόμενο σύνολο",
     "drillDownEmpty": "Δεν βρέθηκαν συναλλαγές",
     "drillDownClose": "Κλείσιμο",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Οι συναλλαγές πιστωτικών καρτών ομαδοποιούνται κατά την ημερομηνία λήξης του λογαριασμού (λειτουργία δεδουλευμένων).",
     "savingsRate": "Ποσοστό αποταμίευσης",
     "savingsRateCaption": "ποσοστό του εισοδήματος που αποταμιεύτηκε αυτόν τον μήνα",
@@ -1390,7 +1391,9 @@
     "suggestionBadgeTooltip": "Μια πληρωμή μπορεί να εξοφλεί ένα τιμολόγιο. Ανοίξτε την ουρά για να απαντήσετε.",
     "clearGroupFilter": "Κατάργηση φίλτρου ομάδας",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "budgets": {
     "title": "Προϋπολογισμοί",
@@ -2390,6 +2393,7 @@
     "deficit": "Έλλειμμα",
     "cashFlowNode": "Ταμειακή ροή",
     "flowChartAria": "Διάγραμμα ταμειακών ροών: πηγές εσόδων που ρέουν προς τα έξοδα",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Κατηγορία",
     "amount": "Ποσό",
     "investments": "Επενδύσεις",

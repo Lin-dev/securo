@@ -866,6 +866,7 @@
     "drillDownShownTotal": "Total affiché",
     "drillDownEmpty": "Aucune transaction trouvée",
     "drillDownClose": "Fermer",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Les transactions par carte de crédit sont regroupées par date d'échéance de la facture (mode comptabilité d'engagement).",
     "savingsRate": "Taux d'épargne",
     "savingsRateCaption": "de vos revenus épargnés ce mois-ci",
@@ -1194,7 +1195,9 @@
     "suggestionBadgeTooltip": "Un paiement peut solder cette facture. Ouvrez la file pour répondre.",
     "clearGroupFilter": "Effacer le filtre de groupe",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Comptes",
@@ -2338,6 +2341,7 @@
     "deficit": "Déficit",
     "cashFlowNode": "Flux de trésorerie",
     "flowChartAria": "Diagramme de flux de trésorerie : les sources de revenus s'écoulent vers les dépenses",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Catégorie",
     "amount": "Montant",
     "investments": "Investissements",

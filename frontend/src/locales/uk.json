@@ -872,6 +872,7 @@
     "drillDownShownTotal": "Показана сума",
     "drillDownEmpty": "Транзакції не знайдено",
     "drillDownClose": "Закрити",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Кредитні картки: транзакції групуються за датою платежу (метод нарахування).",
     "savingsRate": "Норма заощаджень",
     "savingsRateCaption": "доходу заощаджено цього місяця",
@@ -1206,7 +1207,9 @@
     "suggestionBadgeTooltip": "Платіж може закрити цей рахунок. Відкрийте чергу, щоб відповісти.",
     "clearGroupFilter": "Скинути фільтр групи",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Рахунки",
@@ -2351,6 +2354,7 @@
     "deficit": "Дефіцит",
     "cashFlowNode": "Грошовий потік",
     "flowChartAria": "Діаграма грошових потоків: джерела доходів перетікають у витрати",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Категорія",
     "amount": "Сума",
     "investments": "Інвестиції",

@@ -864,6 +864,7 @@
     "drillDownShownTotal": "Angezeigte Summe",
     "drillDownEmpty": "Keine Transaktionen gefunden",
     "drillDownClose": "Schließen",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Kreditkartentransaktionen werden nach dem Fälligkeitsdatum der Abrechnung gruppiert (Soll-Modus).",
     "savingsRate": "Sparquote",
     "savingsRateCaption": "des Einkommens diesen Monat gespart",
@@ -1192,7 +1193,9 @@
     "suggestionBadgeTooltip": "Eine Zahlung könnte diese Rechnung begleichen. Öffnen Sie die Warteschlange.",
     "clearGroupFilter": "Gruppenfilter entfernen",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Konten",
@@ -2335,6 +2338,7 @@
     "deficit": "Defizit",
     "cashFlowNode": "Geldfluss",
     "flowChartAria": "Geldfluss-Diagramm: Einnahmequellen fließen hin zu Ausgaben",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Kategorie",
     "amount": "Betrag",
     "investments": "Investitionen",

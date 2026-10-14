@@ -875,6 +875,7 @@
     "drillDownShownTotal": "Wyświetlana suma",
     "drillDownEmpty": "Nie znaleziono transakcji",
     "drillDownClose": "Zamknij",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Transakcje kartą kredytową są grupowane wg terminu płatności rachunku (tryb memoriałowy).",
     "savingsRate": "Stopa oszczędności",
     "savingsRateCaption": "dochodu z tego miesiąca zaoszczędzone",
@@ -1233,7 +1234,9 @@
     "suggestionBadgeTooltip": "Płatność może opłacić tę fakturę. Otwórz kolejkę, aby odpowiedzieć.",
     "clearGroupFilter": "Wyczyść filtr grupy",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Konta",
@@ -2423,6 +2426,7 @@
     "deficit": "Deficyt",
     "cashFlowNode": "Przepływ pieniędzy",
     "flowChartAria": "Diagram przepływu pieniędzy: przychody przepływające do wydatków",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Kategoria",
     "amount": "Kwota",
     "investments": "Inwestycje",

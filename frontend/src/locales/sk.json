@@ -876,6 +876,7 @@
     "drillDownShownTotal": "Zobrazená suma",
     "drillDownEmpty": "Nenašli sa žiadne transakcie",
     "drillDownClose": "Zavrieť",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Transakcie kreditnou kartou sú zoskupené podľa dátumu splatnosti výpisu (akruálny režim).",
     "savingsRate": "Miera úspor",
     "savingsRateCaption": "z príjmu tento mesiac usporené",
@@ -1244,7 +1245,9 @@
     "suggestionBadgeTooltip": "Platba môže uhradiť túto faktúru. Otvorte front a odpovedzte.",
     "clearGroupFilter": "Zrušiť filter skupiny",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Účty",
@@ -2450,6 +2453,7 @@
     "deficit": "Deficit",
     "cashFlowNode": "Cash flow",
     "flowChartAria": "Diagram cash flow: zdroje príjmov pretekajúce do výdavkov",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Kategória",
     "amount": "Suma",
     "investments": "Investície",

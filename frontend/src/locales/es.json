@@ -866,6 +866,7 @@
     "drillDownShownTotal": "Total mostrado",
     "drillDownEmpty": "No se encontraron transacciones",
     "drillDownClose": "Cerrar",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Las transacciones con tarjeta de crédito se agrupan por la fecha de vencimiento de la factura (modo acumulado).",
     "savingsRate": "Tasa de ahorro",
     "savingsRateCaption": "de tus ingresos ahorrado este mes",
@@ -1194,7 +1195,9 @@
     "suggestionBadgeTooltip": "Un pago puede saldar esta factura. Abre la cola para responder.",
     "clearGroupFilter": "Quitar filtro de grupo",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Cuentas",
@@ -2338,6 +2341,7 @@
     "deficit": "Déficit",
     "cashFlowNode": "Flujo de caja",
     "flowChartAria": "Diagrama de flujo de caja: ingresos que fluyen hacia los gastos",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Categoría",
     "amount": "Importe",
     "investments": "Inversiones",

@@ -864,6 +864,7 @@
     "drillDownShownTotal": "Total shown",
     "drillDownEmpty": "No transactions found",
     "drillDownClose": "Close",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "Credit-card transactions are grouped by bill due date (accrual mode).",
     "savingsRate": "Savings Rate",
     "savingsRateCaption": "share of income saved this month",
@@ -1192,7 +1193,9 @@
     "suggestionBadgeTooltip": "A payment may settle this. Open the queue to answer.",
     "clearGroupFilter": "Clear group filter",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "Accounts",
@@ -2334,6 +2337,7 @@
     "deficit": "Deficit",
     "cashFlowNode": "Cash Flow",
     "flowChartAria": "Cashflow diagram: income sources flowing through to expenses",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "Category",
     "amount": "Amount",
     "investments": "Investments",

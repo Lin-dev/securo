@@ -864,6 +864,7 @@
     "drillDownShownTotal": "दिखाया गया कुल",
     "drillDownEmpty": "कोई लेन-देन नहीं मिला",
     "drillDownClose": "बंद करें",
+    "viewInTransactions": "View in Transactions",
     "accrualNote": "क्रेडिट-कार्ड लेन-देन बिल की देय तिथि के अनुसार समूहित होते हैं (प्रोद्भवन मोड)।",
     "savingsRate": "बचत दर",
     "savingsRateCaption": "इस महीने की आय का बचाया गया हिस्सा",
@@ -1192,7 +1193,9 @@
     "suggestionBadgeTooltip": "एक भुगतान इसे चुका सकता है। जवाब देने के लिए कतार खोलें।",
     "clearGroupFilter": "समूह फ़िल्टर हटाएँ",
     "summaryScopeChipLabel": "Summary",
-    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all."
+    "summaryFilterHint": "Show only the transactions behind this figure. Click again to show all.",
+    "wealthPnlOnlyChipLabel": "Wealth P&L only",
+    "clearWealthPnlOnlyFilter": "Clear P&L-only filter"
   },
   "accounts": {
     "title": "खाते",
@@ -2334,6 +2337,7 @@
     "deficit": "घाटा",
     "cashFlowNode": "नकदी प्रवाह",
     "flowChartAria": "नकदी प्रवाह आरेख: आय के स्रोत खर्च की ओर बहते हुए",
+    "sankeyNodeAriaLabel": "{{label}}: {{amount}}",
     "category": "श्रेणी",
     "amount": "राशि",
     "investments": "निवेश",
