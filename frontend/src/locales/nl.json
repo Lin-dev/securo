@@ -1412,6 +1412,45 @@
     "confirmDeleteDescription": "Het budget voor \"{{name}}\" wordt permanent verwijderd. Bestaande transacties worden niet beïnvloed. Deze actie kan niet ongedaan worden gemaakt.",
     "confirmDeleteRecurringDescription": "Het terugkerende budget voor \"{{name}}\" wordt permanent verwijderd. Deze definitie geldt niet meer voor latere maanden. Bestaande transacties worden niet beïnvloed. Deze actie kan niet ongedaan worden gemaakt."
   },
+  "budgetsPace": {
+    "suggestions": {
+      "title_one": "Budgets from your last full month of spending",
+      "title_other": "Budgets from your last {{count}} full months of spending",
+      "expand": "Show suggestions",
+      "collapse": "Hide suggestions",
+      "checkboxLabel": "Suggest a budget for {{category}}",
+      "median": "{{amount}}/mo median",
+      "existingBudget": "Already budgeted {{amount}}",
+      "totals": "{{total}} suggested in total, vs a typical month of {{typical}}",
+      "totalsNote": "A sum of medians isn't the typical month.",
+      "createButton_one": "Create {{count}} budget",
+      "createButton_other": "Create {{count}} budgets",
+      "resultToast": "{{created}} created, {{skipped}} skipped"
+    },
+    "status": {
+      "under": "Under pace",
+      "on_pace": "On pace",
+      "over": "Over pace",
+      "no_budget": "No budget"
+    },
+    "marker": "Expected by now",
+    "projected": "Projected: {{amount}}",
+    "lastMonth": "Last month: {{amount}}",
+    "leftToSpend": "{{amount}} left to spend",
+    "leftPerDay": "{{amount}}/day left",
+    "row": {
+      "viewTransactions": "View transactions for {{category}}"
+    },
+    "cap": {
+      "title": "Monthly spending cap",
+      "prompt": "Set a monthly cap",
+      "setAction": "Set cap",
+      "inputLabel": "Monthly spending cap amount",
+      "clear": "Clear cap",
+      "saved": "Spending cap updated",
+      "cleared": "Spending cap cleared"
+    }
+  },
   "goals": {
     "title": "Doelen",
     "add": "Doel toevoegen",

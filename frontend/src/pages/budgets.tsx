@@ -1,9 +1,10 @@
 import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
 import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { monthLabel } from '@/lib/month-utils'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { categories as categoriesApi, categoryGroups as groupsApi, budgets as budgetsApi } from '@/lib/api'
+import { categories as categoriesApi, categoryGroups as groupsApi, budgets as budgetsApi, wealth } from '@/lib/api'
 import { extractApiError } from '@/lib/api-errors'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -18,25 +19,26 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import type { Budget } from '@/types'
-import { Pencil, Trash2, Plus, Repeat, CalendarIcon } from 'lucide-react'
+import { Plus, CalendarIcon } from 'lucide-react'
 import { format } from 'date-fns'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { MonthPicker } from '@/components/ui/monthpicker'
 import { PageHeader } from '@/components/page-header'
 import { CategoryIcon } from '@/components/category-icon'
-import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { resolveDateFnsLocale } from '@/lib/date-fns-locale'
 import { findCategoryReference } from '@/lib/category-reference-utils'
-import { formatCurrency } from '@/lib/format'
+import { monthWindow } from '@/lib/chart-period'
+import { transactionsUrl } from '@/lib/drilldown'
+import { SuggestionsPanel } from '@/components/budgets/suggestions-panel'
+import { SpendingCapCard } from '@/components/budgets/spending-cap-card'
+import { BudgetRow } from '@/components/budgets/budget-row'
 
 function currentMonth() {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 }
-
-const TH = 'text-xs font-medium text-muted-foreground py-3'
 
 function SectionCard({ children }: { children: React.ReactNode }) {
   return (
@@ -56,9 +58,10 @@ function SectionHeader({ title, action }: { title: string; action?: React.ReactN
 
 export default function BudgetsPage() {
   const { t, i18n } = useTranslation()
-  const { mask } = usePrivacyMode()
+  const navigate = useNavigate()
   const { user } = useAuth()
-  const { canWrite } = useWorkspace()
+  const { canWrite, hasModule } = useWorkspace()
+  const wealthEnabled = hasModule('wealth')
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
   const locale = useDisplayLocale()
   const queryClient = useQueryClient()
@@ -69,11 +72,34 @@ export default function BudgetsPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Budget | null>(null)
   const [deletingBudget, setDeletingBudget] = useState<Budget | null>(null)
+  // `null` means "no explicit choice yet": the panel defaults open until the
+  // person has budgets, then defaults collapsed (plan S7). Once they toggle
+  // it themselves, that choice wins regardless of how many budgets exist.
+  const [suggestionsExpandedOverride, setSuggestionsExpandedOverride] = useState<boolean | null>(null)
 
   const { data: budgetsList } = useQuery({
     queryKey: ['budgets', selectedMonth],
     queryFn: () => budgetsApi.list(monthParam),
   })
+
+  const { data: comparisonList } = useQuery({
+    queryKey: ['budgets', 'comparison', selectedMonth],
+    queryFn: () => budgetsApi.comparison(monthParam),
+  })
+
+  const { data: suggestionsData } = useQuery({
+    queryKey: ['wealth', 'budget-suggestions'],
+    queryFn: wealth.budgetSuggestions,
+    enabled: wealthEnabled,
+  })
+
+  const { data: paceData, isLoading: paceLoading } = useQuery({
+    queryKey: ['wealth', 'budget-pace'],
+    queryFn: wealth.budgetPace,
+    enabled: wealthEnabled,
+  })
+
+  const suggestionsExpanded = suggestionsExpandedOverride ?? !(budgetsList && budgetsList.length > 0)
 
   const { data: categoriesList } = useQuery({
     queryKey: ['categories'],
@@ -127,17 +153,31 @@ export default function BudgetsPage() {
     },
   })
 
+  const applySuggestionsMutation = useMutation({
+    mutationFn: (categoryIds: string[]) => wealth.applyBudgetSuggestions({ category_ids: categoryIds }),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['budgets'] })
+      queryClient.invalidateQueries({ queryKey: ['wealth'] })
+      toast.success(t('budgetsPace.suggestions.resultToast', { created: result.created, skipped: result.skipped }))
+    },
+    onError: (err: unknown) => toast.error(extractApiError(err, t('common.error'))),
+  })
+
+  const capMutation = useMutation({
+    mutationFn: (body: { spending_cap?: number; clear_spending_cap?: boolean }) => wealth.updateSettings(body),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['wealth'] })
+      toast.success(t(variables.clear_spending_cap ? 'budgetsPace.cap.cleared' : 'budgetsPace.cap.saved'))
+    },
+    onError: (err: unknown) => toast.error(extractApiError(err, t('common.error'))),
+  })
+
   const displayCategories = allCategoriesList ?? categoriesList ?? []
 
-  const getCategoryDisplay = (categoryId: string) => {
-    const category = findCategoryReference(displayCategories, categoryId)
-    if (!category) return <span>{categoryId}</span>
-    return (
-      <span className="flex items-center gap-2">
-        <CategoryIcon icon={category.icon} color={category.color} size="sm" />
-        <span>{category.name}</span>
-      </span>
-    )
+  const comparisonByCategory = new Map((comparisonList ?? []).map((c) => [c.category_id, c]))
+
+  function goToCategory(categoryId: string) {
+    navigate(transactionsUrl({ ...monthWindow(monthParam), categoryId }))
   }
 
   const uiLocale = i18n.resolvedLanguage ?? i18n.language
@@ -192,6 +232,18 @@ export default function BudgetsPage() {
         }
       />
 
+      {wealthEnabled && suggestionsData && suggestionsData.suggestions.length > 0 && (
+        <SuggestionsPanel
+          data={suggestionsData}
+          currency={userCurrency}
+          locale={locale}
+          expanded={suggestionsExpanded}
+          onToggleExpanded={() => setSuggestionsExpandedOverride(!suggestionsExpanded)}
+          onCreate={(categoryIds) => applySuggestionsMutation.mutate(categoryIds)}
+          isPending={applySuggestionsMutation.isPending}
+        />
+      )}
+
       <SectionCard>
         <SectionHeader
           title={t('budgets.title')}
@@ -204,59 +256,45 @@ export default function BudgetsPage() {
           }
         />
         {budgetsList && budgetsList.length > 0 ? (
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-border">
-                <th className={`${TH} pl-4 sm:pl-5 text-left`}>{t('budgets.category')}</th>
-                <th className={`${TH} text-left w-36`}>{t('budgets.amount')}</th>
-                {canWrite && <th className={`${TH} pr-4 sm:pr-5 text-right w-24`}>{t('budgets.actions')}</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {budgetsList.map((budget) => (
-                <tr key={budget.id} className="border-b border-border last:border-0 hover:bg-muted transition-colors">
-                  <td className="py-3 pl-4 sm:pl-5 text-sm font-medium text-foreground">
-                    <span className="flex items-center gap-1.5">
-                      {getCategoryDisplay(budget.category_id)}
-                      {budget.is_recurring && (
-                        <span title={t('budgets.recurringLabel')} className="text-muted-foreground">
-                          <Repeat size={12} />
-                        </span>
-                      )}
-                    </span>
-                  </td>
-                  <td className="py-3 text-sm font-semibold tabular-nums text-foreground">{mask(formatCurrency(budget.amount, userCurrency, locale))}</td>
-                  {canWrite && (
-                    <td className="py-3 pr-4 sm:pr-5">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/5 transition-colors"
-                          onClick={() => { setEditing(budget); setDialogOpen(true) }}
-                          aria-label={t('common.edit')}
-                          title={t('common.edit')}
-                        >
-                          <Pencil size={13} />
-                        </button>
-                        <button
-                          className="p-1.5 rounded-md text-muted-foreground hover:text-rose-500 hover:bg-rose-50 transition-colors"
-                          onClick={() => setDeletingBudget(budget)}
-                          disabled={deleteMutation.isPending}
-                          aria-label={t('common.delete')}
-                          title={t('common.delete')}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div>
+            {budgetsList.map((budget) => {
+              const category = findCategoryReference(displayCategories, budget.category_id)
+              return (
+                <BudgetRow
+                  key={budget.id}
+                  budget={budget}
+                  comparison={comparisonByCategory.get(budget.category_id)}
+                  categoryName={category?.name ?? budget.category_id}
+                  categoryIcon={<CategoryIcon icon={category?.icon} color={category?.color} size="sm" />}
+                  currency={userCurrency}
+                  locale={locale}
+                  canWrite={canWrite}
+                  onEdit={() => { setEditing(budget); setDialogOpen(true) }}
+                  onDelete={() => setDeletingBudget(budget)}
+                  onNavigate={() => goToCategory(budget.category_id)}
+                />
+              )
+            })}
+          </div>
         ) : (
           <p className="text-sm text-muted-foreground text-center py-10">{t('budgets.empty')}</p>
         )}
       </SectionCard>
+
+      {wealthEnabled && (
+        <SpendingCapCard
+          pace={paceData}
+          isLoading={paceLoading}
+          currency={userCurrency}
+          locale={locale}
+          typicalMonthlySpending={
+            suggestionsData?.typical_monthly_spending != null ? Number(suggestionsData.typical_monthly_spending) : null
+          }
+          onSetCap={(amount) => capMutation.mutate({ spending_cap: amount })}
+          onClearCap={() => capMutation.mutate({ clear_spending_cap: true })}
+          isSaving={capMutation.isPending}
+        />
+      )}
 
       <Dialog open={dialogOpen} onOpenChange={() => { setDialogOpen(false); setEditing(null) }}>
         <DialogContent>
