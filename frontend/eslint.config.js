@@ -43,4 +43,17 @@ export default defineConfig([
       ],
     },
   },
+  {
+    // Standalone Node CLI scripts (i18n sync tool, git merge driver, their
+    // tests) run outside the browser bundle, so they need Node globals
+    // instead of the app's browser ones -- and their own config block so
+    // eslint:recommended actually applies to them at all.
+    files: ['scripts/**/*.mjs'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: 'module',
+      globals: globals.node,
+    },
+  },
 ])
