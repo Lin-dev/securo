@@ -211,19 +211,28 @@ export function NetWorthTab() {
               }
             />
             <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
-            {activeBuckets.map((bucket, i) => (
-              <Area
-                key={bucket}
-                type="monotone"
-                dataKey={bucket}
-                stackId="networth"
-                name={t(`wealthSettings.buckets.${bucket}`)}
-                stroke={theme.series[i % theme.series.length]}
-                fill={theme.series[i % theme.series.length]}
-                fillOpacity={0.55}
-                isAnimationActive={false}
-              />
-            ))}
+            {activeBuckets.map((bucket, i) => {
+              // The kit ships 8 Okabe-Ito series colours (theme.series) for
+              // P3's 9 buckets, so one pair must share. Clamping (rather than
+              // wrapping with `%`) makes the 9th bucket (other_debt) land on
+              // the same colour as the 8th (card_debt) -- both debt, both
+              // already set apart by sitting below the zero line -- instead
+              // of silently colliding with `cash` at index 0.
+              const color = theme.series[Math.min(i, theme.series.length - 1)]
+              return (
+                <Area
+                  key={bucket}
+                  type="monotone"
+                  dataKey={bucket}
+                  stackId="networth"
+                  name={t(`wealthSettings.buckets.${bucket}`)}
+                  stroke={color}
+                  fill={color}
+                  fillOpacity={0.55}
+                  isAnimationActive={false}
+                />
+              )
+            })}
             <Line
               type="monotone"
               dataKey={totalActualKey}
