@@ -20,7 +20,7 @@ import app.services.wealth.classify, app.services.wealth.coverage, app.services.
 import app.services.wealth.patterns, app.services.wealth.policy, app.services.wealth.spending
 import app.services.wealth.buckets, app.services.wealth.figures, app.services.wealth.preferences
 import app.services.wealth.projection, app.services.wealth.settings, app.services.wealth.valuation, app.api.wealth
-import app.services.wealth.pace, app.services.wealth.budgets, app.services.wealth.levers
+import app.services.wealth.pace, app.services.wealth.budgets, app.services.wealth.levers, app.services.wealth.cashflow
 import app.providers.plaid, app.providers.simplefin, app.providers.enable_banking
 allowed = ("app.agents", "app.agents.config", "app.agents.models")
 leaked = sorted(
