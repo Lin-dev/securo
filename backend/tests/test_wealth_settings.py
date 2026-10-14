@@ -12,12 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.workspace_context import WorkspaceContext
 from app.models.account import Account
+from app.models.bank_connection import BankConnection
 from app.models.goal import Goal
 from app.models.user import User
 from app.models.workspace import WorkspaceMember
 from app.schemas.wealth import AccountAnnotation, ProjectionSettings, WealthSettingsUpdate, WealthSettingsValues
 from app.services.wealth import settings as settings_service
-from app.services.wealth.buckets import fallback_key
+from app.services.wealth.buckets import AccountFacts, fallback_key
 from app.services.wealth.figures import account_facts_from
 from app.services.wealth.preferences import load_preferences_for_update
 
@@ -115,6 +116,46 @@ async def test_fallback_key_is_written_by_the_server(session, test_user, test_wo
     expected = fallback_key(account_facts_from(account))
     assert result.values.accounts[str(account.id)].fallback_key == expected
     assert result.values.accounts[str(account.id)].bucket == "crypto"
+
+
+async def test_fallback_key_falls_back_to_the_connections_institution_name(session, test_user, test_workspace):
+    """An account with no `institution` row of its own (common for SimpleFIN/manual
+    links) still gets a real fallback key, read from its connection's
+    `institution_name` — a lazy load in async SQLAlchemy that must be eager-loaded,
+    both here (PUT) and in `read_settings`'s account rows."""
+    conn = BankConnection(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id, provider="test",
+        external_id="ext-1", institution_name="Totally Real Bank",
+    )
+    session.add(conn)
+    await session.flush()
+    account = await _account(
+        session, test_user.id, test_workspace.id, "Checking", "checking", connection_id=conn.id,
+    )
+    key = str(account.id)
+    ctx = await _ctx(session, test_user, test_workspace)
+    # Force a real lazy load below, not a free identity-map hit: both `conn` and
+    # `account` are expired out of the session's local cache first.
+    session.expunge(conn)
+    session.expire(account)
+
+    result = await settings_service.update_settings(
+        session, ctx, WealthSettingsUpdate(accounts={key: AccountAnnotation(bucket="cash")})
+    )
+
+    expected = fallback_key(AccountFacts(
+        id=key, name=account.name, type=account.type, balance=0.0,
+        institution="Totally Real Bank", masked_number=account.masked_number,
+    ))
+    stored_fallback_key = result.values.accounts[key].fallback_key
+    assert stored_fallback_key == expected
+    assert stored_fallback_key is not None
+    assert "totally real bank" in stored_fallback_key.lower()
+
+    # The same institution fallback applies to `read_settings`'s account rows.
+    read = await settings_service.read_settings(session, ctx)
+    row = next(r for r in read.accounts if r.account_id == account.id)
+    assert row.institution == "Totally Real Bank"
 
 
 async def test_account_override_field_level_merge_keeps_untouched_fields(session, test_user, test_workspace):

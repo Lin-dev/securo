@@ -196,7 +196,21 @@ async def update_settings(
             merged = _merge_annotation(current.accounts.get(key, AccountAnnotation()), annotation)
             account_id = _parse_uuid(key)
             if account_id is not None:
-                account = await session.get(Account, account_id)
+                # `account.institution` is eager (model-level selectin); `connection`
+                # is not, and `account_facts_from` falls back to reading it when
+                # `institution` is None — a lazy load that raises under async
+                # SQLAlchemy unless it is eager-loaded here too. A plain `select()`
+                # (not `session.get()`) so the eager load always runs even when the
+                # account is already in this session's identity map, where `get()`
+                # would silently skip the options and return the cached, unloaded
+                # instance.
+                account = (
+                    await session.execute(
+                        select(Account)
+                        .where(Account.id == account_id)
+                        .options(selectinload(Account.connection))
+                    )
+                ).scalar_one_or_none()
                 if account is not None and account.workspace_id == ctx.id:
                     merged = merged.model_copy(
                         update={"fallback_key": fallback_key(account_facts_from(account))}
