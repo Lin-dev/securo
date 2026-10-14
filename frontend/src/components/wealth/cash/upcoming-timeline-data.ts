@@ -23,13 +23,11 @@ export function groupUpcomingByDate(items: WealthUpcomingCharge[]): UpcomingGrou
 }
 
 /**
- * A card purchase reaches cash only through the card's bill (plan B5b), so
- * the server's `total` already excludes it -- this only decides the "on
- * card" marker shown next to the item. The contract gives no account-type
- * field on the charge itself, just its display name, so this stays a
- * display-only heuristic (never something the total depends on) and never
- * the only signal: the kind badge and the account name are shown regardless.
+ * A card purchase reaches cash only through the card's bill (plan B5b). The
+ * server says so on every item (`hits_cash`), so the "on card" marker reads
+ * that flag instead of guessing from the account's name. A card bill always
+ * hits cash, so it is never "on card".
  */
-export function isOnCardAccount(item: Pick<WealthUpcomingCharge, 'kind' | 'account'>): boolean {
-  return item.kind === 'recurring' && !!item.account && /card/i.test(item.account)
+export function isOnCardAccount(item: Pick<WealthUpcomingCharge, 'kind' | 'hits_cash'>): boolean {
+  return item.kind !== 'card_bill' && !item.hits_cash
 }

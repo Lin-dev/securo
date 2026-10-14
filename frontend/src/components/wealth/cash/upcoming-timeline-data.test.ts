@@ -13,6 +13,7 @@ function charge(overrides: Partial<WealthUpcomingCharge> = {}): WealthUpcomingCh
     account: 'Card',
     category: 'Subscriptions',
     recurring_id: 'rec-1',
+    hits_cash: false,
     ...overrides,
   }
 }
@@ -38,19 +39,16 @@ describe('groupUpcomingByDate', () => {
 })
 
 describe('isOnCardAccount', () => {
-  it('is true for a recurring charge on an account named with "card"', () => {
-    expect(isOnCardAccount(charge({ kind: 'recurring', account: 'Card' }))).toBe(true)
+  it('is true for a charge that does not hit cash (a card purchase), whatever the account is called', () => {
+    expect(isOnCardAccount(charge({ kind: 'recurring', account: 'nathaniel', hits_cash: false }))).toBe(true)
+    expect(isOnCardAccount(charge({ kind: 'pending', account: 'Amazon Prime Rewards Visa Signature', hits_cash: false }))).toBe(true)
   })
 
-  it('is false for a recurring charge on a non-card account', () => {
-    expect(isOnCardAccount(charge({ kind: 'recurring', account: 'Checking' }))).toBe(false)
+  it('is false for a charge that hits cash', () => {
+    expect(isOnCardAccount(charge({ kind: 'recurring', account: 'Checking', hits_cash: true }))).toBe(false)
   })
 
-  it('is false for a card bill, even on a card account', () => {
-    expect(isOnCardAccount(charge({ kind: 'card_bill', account: 'Card' }))).toBe(false)
-  })
-
-  it('is false when the account is null', () => {
-    expect(isOnCardAccount(charge({ kind: 'recurring', account: null }))).toBe(false)
+  it('is false for a card bill', () => {
+    expect(isOnCardAccount(charge({ kind: 'card_bill', account: 'Card', hits_cash: true }))).toBe(false)
   })
 })
