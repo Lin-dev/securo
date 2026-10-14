@@ -85,3 +85,16 @@ def is_income_like(cat: NamedCategory) -> bool:
     if group and (group in income_group_names() or INCOME_NAME_RE.search(group)):
         return True
     return bool(INCOME_NAME_RE.search(cat.name or ""))
+
+
+# A refund or statement credit is money back, not income, even when the category
+# tree files it under an Income group (e.g. "Refunds & credits"). The wealth figures
+# leave such categories out of the default income list; their credits then reduce
+# total expenses instead (plan P1, R1-gate refinement).
+REFUND_LIKE_RE = re.compile(r"\brefunds?\b|\bcredits?\b|cash ?back|\brebates?\b", re.I)
+
+
+def is_default_income_category(cat: NamedCategory) -> bool:
+    """The wealth figures' default income list: income-like, and not a refund category."""
+    return is_income_like(cat) and not REFUND_LIKE_RE.search(cat.name or "")
+

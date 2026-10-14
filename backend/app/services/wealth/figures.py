@@ -35,7 +35,7 @@ from app.services._query_filters import (
 )
 from app.services.report_service import investment_lane_rows
 from app.services.wealth.buckets import INVESTMENT_BUCKETS, AccountFacts, choose_bucket
-from app.services.wealth.classify import is_income_like
+from app.services.wealth.classify import is_default_income_category
 from app.services.wealth.coverage import coverage_window
 from app.services.wealth.spending import month_end
 
@@ -122,7 +122,7 @@ async def account_bucket_map(
 async def effective_income_category_ids(
     session: AsyncSession, workspace_id: uuid.UUID, settings: WealthSettingsValues
 ) -> frozenset[uuid.UUID]:
-    """`settings.income_category_ids`, or the default list from `is_income_like`."""
+    """`settings.income_category_ids`, or the default list (`is_default_income_category`)."""
     if settings.income_category_ids is not None:
         return frozenset(settings.income_category_ids)
     rows = (
@@ -133,7 +133,7 @@ async def effective_income_category_ids(
         )
     ).all()
     return frozenset(
-        cat_id for cat_id, name, group_name in rows if is_income_like(_NamedCat(name or "", group_name))
+        cat_id for cat_id, name, group_name in rows if is_default_income_category(_NamedCat(name or "", group_name))
     )
 
 
@@ -236,10 +236,18 @@ async def _pnl_totals(
         else:
             debit_by_category[category_id] = debit_by_category.get(category_id, 0.0) + amount
 
-    expenses = sum(
+    netted = sum(
         max(0.0, debit_total - refund_by_category.get(cat_id, 0.0))
         for cat_id, debit_total in debit_by_category.items()
     )
+    # Refunds beyond their own category's spending (a dedicated "Refunds & credits"
+    # category has no purchases to net against) reduce total spending instead of
+    # disappearing; the total never goes below zero.
+    leftover = sum(
+        max(0.0, refund_total - debit_by_category.get(cat_id, 0.0))
+        for cat_id, refund_total in refund_by_category.items()
+    )
+    expenses = max(0.0, netted - leftover)
     return income, expenses, unclassified_credits
 
 

@@ -37,7 +37,7 @@ from app.schemas.wealth import (
     WealthSettingsValues,
 )
 from app.services.wealth.buckets import choose_bucket, fallback_key
-from app.services.wealth.classify import is_income_like
+from app.services.wealth.classify import is_default_income_category
 from app.services.wealth.figures import account_facts_from, detect_one_offs, effective_income_category_ids
 from app.services.wealth.preferences import load_preferences_for_update
 
@@ -121,7 +121,7 @@ async def _income_category_rows(
     return [
         IncomeCategoryRow(
             id=cat.id, name=cat.name, group_name=group_name,
-            is_default=is_income_like(_NamedCat(cat.name, group_name)),
+            is_default=is_default_income_category(_NamedCat(cat.name, group_name)),
             selected=cat.id in effective,
         )
         for cat, group_name in rows
