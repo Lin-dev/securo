@@ -1601,6 +1601,37 @@
       "toggleLabel": "Count \"{{description}}\" as a one-off"
     }
   },
+  "wealthNetworth": {
+    "label": "Net worth",
+    "liquidLabel": "Liquid net worth",
+    "titleEmpty": "{{label}}: no data for this period.",
+    "title": {
+      "rose": "{{label}} rose {{amount}} since {{date}}.",
+      "fell": "{{label}} fell {{amount}} since {{date}}.",
+      "flat": "{{label}} is flat since {{date}}."
+    },
+    "legend": {
+      "total": "Total net worth",
+      "liquidTotal": "Liquid net worth",
+      "estimated": "Estimated"
+    },
+    "table": {
+      "date": "Date",
+      "total": "Total",
+      "liquid": "Liquid"
+    },
+    "monthsLabel": "Months",
+    "monthsOption": "{{count}} months",
+    "estimatedToggleLabel": "Include estimated history",
+    "liquidToggleLabel": "Liquid only",
+    "liquidHelp": "Cash, taxable and crypto balances, net of card debt.",
+    "flags": {
+      "estimatedSince": "Values before {{date}} are estimated from the ledger, from before your first holdings sync.",
+      "estimatedAll": "Values are estimated from the ledger, because no holdings sync has completed yet.",
+      "cashFlat": "Some holdings accounts' cash is held at its last-synced value until the next sync.",
+      "noHoldings": "One or more investment accounts have no holdings data yet, so their market moves aren't reflected."
+    }
+  },
   "recurring": {
     "title": "Transacciones recurrentes",
     "add": "Agregar recurrente",
