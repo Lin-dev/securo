@@ -61,6 +61,63 @@ _ASSET_TYPE_COLORS: dict[str, str] = {
 }
 
 
+async def investment_lane_rows(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    report_date,
+    start: date,
+    end: date,
+    acct_filter: Optional[list] = None,
+):
+    """Rows behind the money map's investment lanes: every posted, non-opening-balance
+    row in a `treat_as_transfer` category, grouped by category/account/direction/pairing
+    so the caller can classify each into a lane (investments, direct_contributions,
+    transfers_out, transfers_in — see `get_income_expenses_report`).
+
+    Extracted so `wealth.figures` can sum the exact same rows for P1's `invested` and
+    `direct contributions` without re-deriving the filter; this function's result is
+    exactly what `get_income_expenses_report` fed into its `_lane` loop before the
+    extraction, so its behaviour (and tests) are unchanged.
+    """
+    amount_expr = func.coalesce(Transaction.amount_primary, Transaction.amount)
+    unpaired_col = Transaction.transfer_pair_id.is_(None).label("unpaired")
+    result = await session.execute(
+        select(
+            Category.id,
+            Category.name,
+            Category.color,
+            Account.id,
+            Account.name,
+            Account.type,
+            Transaction.type,
+            unpaired_col,
+            func.sum(amount_expr),
+        )
+        .select_from(Transaction)
+        .join(Account, Transaction.account_id == Account.id)
+        .join(Category, Transaction.category_id == Category.id)
+        .where(
+            Transaction.workspace_id == workspace_id,
+            Account.is_closed == False,
+            report_date >= start,
+            report_date <= end,
+            Transaction.source != "opening_balance",
+            Transaction.status == "posted",
+            Transaction.is_ignored.is_(False),
+            Transaction.exclude_from_pnl.is_(False),
+            Category.treat_as_transfer.is_(True),
+            Category.is_ignored.is_(False),
+            *(acct_filter or []),
+        )
+        .group_by(
+            Category.id, Category.name, Category.color,
+            Account.id, Account.name, Account.type,
+            Transaction.type, unpaired_col,
+        )
+    )
+    return result.all()
+
+
 def _report_start_date(
     today: date,
     months: int,
@@ -886,47 +943,15 @@ async def get_income_expenses_report(
     # every contribution once it was invested. Mirrors the `invested` rule in
     # the transactions summary so the two figures agree.
     investing_name = INVESTMENT_CONTRIBUTION_CATEGORY.lower()
-    unpaired_col = Transaction.transfer_pair_id.is_(None).label("unpaired")
-    flow_result = await session.execute(
-        select(
-            Category.id,
-            Category.name,
-            Category.color,
-            Account.id,
-            Account.name,
-            Account.type,
-            Transaction.type,
-            unpaired_col,
-            func.sum(amount_expr),
-        )
-        .select_from(Transaction)
-        .join(Account, Transaction.account_id == Account.id)
-        .join(Category, Transaction.category_id == Category.id)
-        .where(
-            Transaction.workspace_id == workspace_id,
-            Account.is_closed == False,
-            report_date >= start,
-            report_date <= axis_end,
-            Transaction.source != "opening_balance",
-            Transaction.status == "posted",
-            Transaction.is_ignored.is_(False),
-            Transaction.exclude_from_pnl.is_(False),
-            Category.treat_as_transfer.is_(True),
-            Category.is_ignored.is_(False),
-            *acct_filter,
-        )
-        .group_by(
-            Category.id, Category.name, Category.color,
-            Account.id, Account.name, Account.type,
-            Transaction.type, unpaired_col,
-        )
+    flow_rows = await investment_lane_rows(
+        session, workspace_id, report_date, start, axis_end, acct_filter
     )
 
     def _lane(key: tuple[str, str], label: str, color: str, amount: float) -> None:
         entry = comp_map.setdefault(key, {"label": label, "color": color, "value": 0.0})
         entry["value"] += amount
 
-    for row in flow_result.all():
+    for row in flow_rows:
         cat_id, cat_name, cat_color, acct_id, acct_name, acct_type, txn_type, unpaired, total_amount = row
         amount = abs(float(total_amount or 0))
         if amount <= 0:
