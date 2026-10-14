@@ -101,6 +101,15 @@ import type {
   ReconciliationHistoryEvent,
 } from '@/types'
 import type { SummaryScope } from '@/lib/summary-scope'
+import type {
+  WealthLevers,
+  WealthNetWorthHistory,
+  WealthProjection,
+  WealthSavingsRateSeries,
+  WealthSettingsRead,
+  WealthSettingsUpdate,
+  WealthSummary,
+} from '@/types/wealth'
 
 const api = axios.create({
   baseURL: '/api',
@@ -2295,4 +2304,37 @@ export const publicInvoices = {
     return data
   },
   pdfUrl: (token: string): string => `/api/public/invoices/${token}/pdf`,
+}
+
+// Wealth (fork): the road to the user's net-worth milestone. Query keys start
+// with ['wealth'] so invalidateFinancialQueries refreshes every view at once.
+export const wealth = {
+  settings: async (): Promise<WealthSettingsRead> => {
+    const { data } = await api.get('/wealth/settings')
+    return data
+  },
+  updateSettings: async (body: WealthSettingsUpdate): Promise<WealthSettingsRead> => {
+    const { data } = await api.put('/wealth/settings', body)
+    return data
+  },
+  summary: async (): Promise<WealthSummary> => {
+    const { data } = await api.get('/wealth/summary')
+    return data
+  },
+  netWorthHistory: async (months = 12): Promise<WealthNetWorthHistory> => {
+    const { data } = await api.get('/wealth/net-worth-history', { params: { months } })
+    return data
+  },
+  savingsRate: async (months = 12): Promise<WealthSavingsRateSeries> => {
+    const { data } = await api.get('/wealth/savings-rate', { params: { months } })
+    return data
+  },
+  projection: async (): Promise<WealthProjection> => {
+    const { data } = await api.get('/wealth/projection')
+    return data
+  },
+  levers: async (): Promise<WealthLevers> => {
+    const { data } = await api.get('/wealth/levers')
+    return data
+  },
 }
