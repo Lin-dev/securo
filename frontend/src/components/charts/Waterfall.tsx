@@ -15,6 +15,7 @@ import {
 
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useChartTheme } from '@/hooks/use-chart-theme'
+import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { formatMoney } from '@/lib/chart-format'
 import { MaskedAxisTick } from '@/components/charts/MaskedAxisTick'
 
@@ -71,10 +72,11 @@ interface WaterfallTooltipProps {
   active?: boolean
   payload?: Array<{ payload: WaterfallRow }>
   currency: string
+  locale: string
   mask: (value: string) => string
 }
 
-function WaterfallTooltip({ active, payload, currency, mask }: WaterfallTooltipProps) {
+function WaterfallTooltip({ active, payload, currency, locale, mask }: WaterfallTooltipProps) {
   if (!active || !payload || payload.length === 0) return null
   const row = payload[0].payload
   return (
@@ -83,7 +85,7 @@ function WaterfallTooltip({ active, payload, currency, mask }: WaterfallTooltipP
       style={{ background: 'var(--card)', color: 'var(--foreground)', borderColor: 'var(--border)' }}
     >
       <p className="mb-0.5 font-medium text-foreground">{row.label}</p>
-      <p className="tabular-nums">{mask(formatMoney(row.value, currency, { signed: true }))}</p>
+      <p className="tabular-nums">{mask(formatMoney(row.value, currency, { signed: true, locale }))}</p>
     </div>
   )
 }
@@ -98,6 +100,7 @@ export function Waterfall({ steps, currency = 'USD', height = 260, totalLabel }:
   const { t } = useTranslation()
   const { mask } = usePrivacyMode()
   const theme = useChartTheme()
+  const locale = useDisplayLocale()
 
   const resolvedTotalLabel = totalLabel ?? t('charts.total')
   const rows = useMemo(() => buildRows(steps, resolvedTotalLabel), [steps, resolvedTotalLabel])
@@ -119,7 +122,7 @@ export function Waterfall({ steps, currency = 'USD', height = 260, totalLabel }:
         />
         <YAxis tick={<MaskedAxisTick currency={currency} />} axisLine={false} tickLine={false} width={56} />
         <ReferenceLine y={0} stroke={theme.axis} />
-        <Tooltip content={<WaterfallTooltip currency={currency} mask={mask} />} />
+        <Tooltip content={<WaterfallTooltip currency={currency} locale={locale} mask={mask} />} />
         <Bar dataKey="base" stackId="waterfall" fill="transparent" isAnimationActive={false} />
         <Bar dataKey="delta" stackId="waterfall" isAnimationActive={false} radius={2}>
           {rows.map((row, i) => (
@@ -130,7 +133,7 @@ export function Waterfall({ steps, currency = 'USD', height = 260, totalLabel }:
             position="top"
             fontSize={11}
             fill={theme.axis}
-            formatter={(value: unknown) => mask(formatMoney(Number(value), currency, { signed: true }))}
+            formatter={(value: unknown) => mask(formatMoney(Number(value), currency, { signed: true, locale }))}
           />
         </Bar>
       </BarChart>

@@ -1,11 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { screen } from '@testing-library/react'
+
+const displayLocale = vi.hoisted(() => ({ value: 'en-US' }))
+vi.mock('@/hooks/use-display-locale', () => ({ useDisplayLocale: () => displayLocale.value }))
 
 import { BulletBar } from '@/components/charts/BulletBar'
 import { renderWithProviders } from '@/test/utils'
 
 afterEach(() => {
   localStorage.clear()
+  displayLocale.value = 'en-US'
 })
 
 describe('BulletBar', () => {

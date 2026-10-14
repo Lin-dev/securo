@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+
+const displayLocale = vi.hoisted(() => ({ value: 'en-US' }))
+vi.mock('@/hooks/use-display-locale', () => ({ useDisplayLocale: () => displayLocale.value }))
 
 import { ChartTooltip } from '@/components/charts/ChartTooltip'
 
 afterEach(() => {
   localStorage.clear()
+  displayLocale.value = 'en-US'
 })
 
 describe('ChartTooltip', () => {
@@ -66,6 +70,20 @@ describe('ChartTooltip', () => {
       />,
     )
     expect(screen.getByText('Month: 2026-10')).toBeInTheDocument()
+  })
+
+  it('formats with the display locale\'s separators, not a hard-coded en-US', () => {
+    displayLocale.value = 'pt-BR'
+
+    render(
+      <ChartTooltip
+        active
+        currency="BRL"
+        payload={[{ name: 'Base', value: 1234.5, dataKey: 'base' }]}
+      />,
+    )
+
+    expect(screen.getByText('R$ 1.234,50')).toBeInTheDocument()
   })
 
   it('masks every value while privacy mode is on', () => {

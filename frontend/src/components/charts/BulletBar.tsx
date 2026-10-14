@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next'
 
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useChartTheme } from '@/hooks/use-chart-theme'
+import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { formatMoney } from '@/lib/chart-format'
 
 export interface BulletBarBand {
@@ -44,12 +45,13 @@ export function BulletBar({
   const { t } = useTranslation()
   const { mask } = usePrivacyMode()
   const theme = useChartTheme()
+  const locale = useDisplayLocale()
 
   const scaleMax = Math.max(value, target, marker ?? 0, ...bands.map((b) => b.limit), 1)
   const toPct = (n: number) => `${Math.min(100, Math.max(0, (n / scaleMax) * 100))}%`
 
-  const maskedValue = mask(formatMoney(value, currency))
-  const maskedTarget = mask(formatMoney(target, currency))
+  const maskedValue = mask(formatMoney(value, currency, { locale }))
+  const maskedTarget = mask(formatMoney(target, currency, { locale }))
   const ariaLabel = t('charts.bulletBarLabel', { value: maskedValue, target: maskedTarget })
 
   const bandRects = bands.reduce<Array<BulletBarBand & { left: string; width: string }>>(
@@ -101,7 +103,7 @@ export function BulletBar({
         <span>{maskedValue}</span>
         {marker != null && (
           <span>
-            {markerLabel ?? t('charts.marker')}: {mask(formatMoney(marker, currency))}
+            {markerLabel ?? t('charts.marker')}: {mask(formatMoney(marker, currency, { locale }))}
           </span>
         )}
         <span>

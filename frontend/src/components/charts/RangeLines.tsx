@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 
 import { useChartTheme } from '@/hooks/use-chart-theme'
+import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { formatMonth } from '@/lib/chart-format'
 import { ChartTooltip } from '@/components/charts/ChartTooltip'
 import { MaskedAxisTick } from '@/components/charts/MaskedAxisTick'
@@ -76,6 +77,7 @@ export function RangeLines({
 }: RangeLinesProps) {
   const { t } = useTranslation()
   const theme = useChartTheme()
+  const locale = useDisplayLocale()
   const data = useMemo(() => mergeByDate(low, base, high, actual), [low, base, high, actual])
 
   return (
@@ -84,7 +86,7 @@ export function RangeLines({
         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme.grid} strokeOpacity={0.6} />
         <XAxis
           dataKey="date"
-          tickFormatter={(value: string) => formatMonth(value)}
+          tickFormatter={(value: string) => formatMonth(value, locale)}
           tick={{ fontSize: 10, fill: theme.axis }}
           axisLine={false}
           tickLine={false}
@@ -99,7 +101,7 @@ export function RangeLines({
           content={
             <ChartTooltip
               currency={currency}
-              labelFormatter={(value) => formatMonth(String(value))}
+              labelFormatter={(value) => formatMonth(String(value), locale)}
             />
           }
         />

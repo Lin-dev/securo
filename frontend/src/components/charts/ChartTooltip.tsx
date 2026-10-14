@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
+import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { formatMoney, formatPct } from '@/lib/chart-format'
 
 export type ChartTooltipValueType = 'money' | 'percent'
@@ -45,6 +46,7 @@ export function ChartTooltip({
   labelFormatter,
 }: ChartTooltipProps) {
   const { mask } = usePrivacyMode()
+  const locale = useDisplayLocale()
 
   if (!active || !payload || payload.length === 0) return null
 
@@ -69,8 +71,8 @@ export function ChartTooltip({
           const numericValue = typeof entry.value === 'number' ? entry.value : Number(entry.value)
           const formatted = Number.isFinite(numericValue)
             ? type === 'percent'
-              ? formatPct(numericValue, digits)
-              : formatMoney(numericValue, currency, { compact, signed: false })
+              ? formatPct(numericValue, digits, locale)
+              : formatMoney(numericValue, currency, { compact, signed: false, locale })
             : String(entry.value ?? '—')
 
           return (

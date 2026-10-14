@@ -1,6 +1,7 @@
 import type { SVGProps } from 'react'
 
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
+import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { formatMoney, formatPct } from '@/lib/chart-format'
 
 export interface MaskedAxisTickPayload {
@@ -42,13 +43,14 @@ export function MaskedAxisTick({
   fontSize = 10,
 }: MaskedAxisTickProps) {
   const { mask } = usePrivacyMode()
+  const locale = useDisplayLocale()
 
   const raw = payload?.value
   const numericValue = typeof raw === 'number' ? raw : Number(raw)
   const formatted = Number.isFinite(numericValue)
     ? valueType === 'percent'
-      ? formatPct(numericValue, digits)
-      : formatMoney(numericValue, currency, { compact })
+      ? formatPct(numericValue, digits, locale)
+      : formatMoney(numericValue, currency, { compact, locale })
     : String(raw ?? '')
 
   return (

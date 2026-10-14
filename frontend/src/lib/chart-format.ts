@@ -76,14 +76,23 @@ export function formatMoney(
  *
  * @param fraction The ratio (0.5, not 50).
  * @param digits   Fraction digits to show. Defaults to 1, matching the rest of the app.
+ * @param locale   BCP-47 locale for the percent sign's placement and separators.
  */
-export function formatPct(fraction: number | null | undefined, digits = 1): string {
+export function formatPct(fraction: number | null | undefined, digits = 1, locale = 'en-US'): string {
   if (fraction == null || !Number.isFinite(fraction)) return '—'
-  return new Intl.NumberFormat('en-US', {
-    style: 'percent',
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(fraction)
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'percent',
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(fraction)
+  } catch {
+    return new Intl.NumberFormat('en-US', {
+      style: 'percent',
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(fraction)
+  }
 }
 
 /**

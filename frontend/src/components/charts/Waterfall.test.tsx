@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { within } from '@testing-library/react'
+
+vi.mock('@/hooks/use-display-locale', () => ({ useDisplayLocale: () => 'en-US' }))
 
 import { Waterfall } from '@/components/charts/Waterfall'
 import { renderWithProviders, t } from '@/test/utils'

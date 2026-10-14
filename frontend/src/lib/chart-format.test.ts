@@ -52,6 +52,10 @@ describe('formatPct', () => {
     expect(formatPct(undefined)).toBe('—')
     expect(formatPct(NaN)).toBe('—')
   })
+
+  it('uses a comma decimal separator for a non-US locale', () => {
+    expect(formatPct(0.164, 1, 'pt-BR')).toBe('16,4%')
+  })
 })
 
 describe('formatMonth', () => {
@@ -65,6 +69,10 @@ describe('formatMonth', () => {
 
   it('returns the input unchanged when it cannot be parsed', () => {
     expect(formatMonth('not-a-date')).toBe('not-a-date')
+  })
+
+  it('formats in the given locale', () => {
+    expect(formatMonth('2026-10-01', 'pt-BR')).toBe('out. de 2026')
   })
 })
 

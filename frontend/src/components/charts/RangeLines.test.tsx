@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { within } from '@testing-library/react'
+
+vi.mock('@/hooks/use-display-locale', () => ({ useDisplayLocale: () => 'en-US' }))
 
 import { RangeLines } from '@/components/charts/RangeLines'
 import { renderWithProviders, t } from '@/test/utils'

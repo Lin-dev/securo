@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+
+const displayLocale = vi.hoisted(() => ({ value: 'en-US' }))
+vi.mock('@/hooks/use-display-locale', () => ({ useDisplayLocale: () => displayLocale.value }))
 
 import { MaskedAxisTick } from '@/components/charts/MaskedAxisTick'
 
 afterEach(() => {
   localStorage.clear()
+  displayLocale.value = 'en-US'
 })
 
 function renderTick(props: Parameters<typeof MaskedAxisTick>[0]) {
@@ -29,6 +33,12 @@ describe('MaskedAxisTick', () => {
   it('renders a non-numeric payload value as-is', () => {
     renderTick({ payload: { value: 'Oct' } })
     expect(screen.getByText('Oct')).toBeInTheDocument()
+  })
+
+  it('formats with the display locale, not a hard-coded en-US', () => {
+    displayLocale.value = 'pt-BR'
+    renderTick({ payload: { value: 1234 }, currency: 'BRL' })
+    expect(screen.getByText('R$ 1,2 mil')).toBeInTheDocument()
   })
 
   it('masks the value while privacy mode is on', () => {
