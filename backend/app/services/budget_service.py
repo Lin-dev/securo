@@ -26,6 +26,7 @@ from app.services.dashboard_service import (
 )
 from app.services.fx_rate_service import convert
 from app.core.config import get_settings
+from app.services.wealth.pace import compute_pace, recurring_debit_totals
 
 
 def _primary_amount_expr():
@@ -237,6 +238,15 @@ async def get_budget_vs_actual(
         month_end = month.replace(year=month.year + 1, month=1, day=1)
     else:
         month_end = month.replace(month=month.month + 1, day=1)
+
+    # Fork R2 pace (plan B5a): filled only for the current month, per row with
+    # a budget — `get_budget_vs_actual` already clips `actual_amount` to
+    # "month to date" for the current month (the `report_date <= app_today()`
+    # filter below), so it doubles as `spent` for the pace formula.
+    today = app_today()
+    is_current_month = month_start == today.replace(day=1)
+    days_in_month = (month_end - month_start).days
+    days_elapsed = today.day
 
     # Previous month range
     if month_start.month == 1:
@@ -467,6 +477,23 @@ async def get_budget_vs_actual(
         if budget_amount and budget_amount > 0:
             percentage = round(float(projected / budget_amount * 100), 1)
 
+        expected_to_date = projected_month_end = left_to_spend = left_per_day = None
+        pace_status = None
+        row_days_elapsed = row_days_in_month = None
+        if is_current_month and budget_amount and budget_amount > 0:
+            r_to_date, r_month = await recurring_debit_totals(session, workspace_id, month_start, today, category_id=category.id)
+            pace = compute_pace(
+                budget=budget_amount, spent=actual, r_to_date=r_to_date, r_month=r_month,
+                days_elapsed=days_elapsed, days_in_month=days_in_month,
+            )
+            expected_to_date = pace.expected_to_date
+            projected_month_end = pace.projected_month_end
+            pace_status = pace.status
+            left_to_spend = pace.left_to_spend
+            left_per_day = pace.left_per_day
+            row_days_elapsed = days_elapsed
+            row_days_in_month = days_in_month
+
         comparisons.append(BudgetVsActual(
             category_id=category.id,
             category_name=category.name,
@@ -481,6 +508,13 @@ async def get_budget_vs_actual(
             projected_prev_month_amount=projected_prev,
             percentage_used=percentage,
             is_recurring=is_recurring,
+            expected_to_date=expected_to_date,
+            projected_month_end=projected_month_end,
+            pace_status=pace_status,
+            left_to_spend=left_to_spend,
+            left_per_day=left_per_day,
+            days_elapsed=row_days_elapsed,
+            days_in_month=row_days_in_month,
         ))
 
     return sorted(comparisons, key=lambda x: float(x.actual_amount), reverse=True)
