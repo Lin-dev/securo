@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
 import {
   sankey as d3Sankey,
   sankeyLinkHorizontal,
@@ -8,16 +9,22 @@ import {
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import type { ReportCompositionItem } from '@/types'
 import {
+  accountIdFromKey,
   buildMoneyMap,
+  categoryIdFromKey,
   EXPENSE_COLOR,
   INVEST_COLOR,
+  laneIds,
   LEFT_SIDES,
   RIGHT_SIDES,
   SURPLUS_COLOR,
   TRANSFER_COLOR,
   type MoneyMapLink as SankeyLinkDatum,
   type MoneyMapNode as SankeyNodeDatum,
+  type MoneyMapSide,
 } from '@/lib/money-map-utils'
+import { resolveChartClick, type ChartClickResolution } from '@/lib/drilldown'
+import { TransactionDrillDown, type DrillDownFilter } from '@/components/transaction-drill-down'
 
 // Colours, lane rules and node/link construction live in money-map-utils so
 // they can be unit-tested; this file is the SVG.
@@ -53,14 +60,37 @@ interface CashflowSankeyProps {
   composition: ReportCompositionItem[]
   currency: string
   locale: string
+  /** The report's own [window_from, window_to] (plan B5c's `meta`), so a
+   * click lands on exactly the rows the chart drew from -- not a window
+   * re-derived from whatever range control is showing. */
+  window: { from: string; to: string }
 }
 
-export function CashflowSankey({ composition, currency, locale }: CashflowSankeyProps) {
+// Which lane a side's rows fall under for the P1 filter: income/transfer_in
+// rows are always credits, expense/investment/transfer_out rows are always
+// debits (see report_service.py's Money Map lanes) -- `contribution` has no
+// single type of its own (see `handleNodeActivate`).
+const CREDIT_SIDES: ReadonlySet<MoneyMapSide> = new Set(['income', 'transfer_in'])
+const DEBIT_SIDES: ReadonlySet<MoneyMapSide> = new Set(['expense', 'investment', 'transfer_out'])
+function typeForSide(side: MoneyMapSide): 'credit' | 'debit' | undefined {
+  if (CREDIT_SIDES.has(side)) return 'credit'
+  if (DEBIT_SIDES.has(side)) return 'debit'
+  return undefined
+}
+
+type Lane = 'income' | 'expenses' | 'investments' | 'transfers'
+
+export function CashflowSankey({ composition, currency, locale, window }: CashflowSankeyProps) {
   const { t } = useTranslation()
   const { privacyMode, MASK } = usePrivacyMode()
+  const navigate = useNavigate()
   const containerRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
   const [hover, setHover] = useState<Hover | null>(null)
+  // The drill-down this chart owns (plan S5): every node/lane click opens it
+  // here, scoped to `window`, rather than threading click state up into the
+  // Reports page (left to S6, which wires its OWN charts' clicks).
+  const [drillFilter, setDrillFilter] = useState<DrillDownFilter | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
@@ -72,7 +102,7 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
     return () => observer.disconnect()
   }, [])
 
-  const { nodes: rawNodes, links: rawLinks, hasData } = useMemo(
+  const { nodes: rawNodes, links: rawLinks, hasData, totals } = useMemo(
     () => buildMoneyMap(composition, {
       other: t('reports.other'),
       uncategorized: t('reports.uncategorized'),
@@ -164,8 +194,101 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
   // Percentages are relative to total cash-flow throughput — the centre node's
   // value (d3-sankey sets it to the larger of its in/out sums).
   const total = layout?.nodes.find((n) => n.id === 'center')?.value ?? 0
+  // Any income-side node sits in the income column (every income row links
+  // straight into `center`, one hop, same as every other left-side node --
+  // they all share a column under `sankeyJustify`); its x0 anchors the
+  // income lane's own header below.
+  const incomeNode = layout?.nodes.find((n) => n.side === 'income')
   const fmtAmount = (v: number) =>
     privacyMode ? MASK : formatMoney(v, currency, locale, true)
+  const nodeAriaLabel = (label: string, value: number) =>
+    t('reports.sankeyNodeAriaLabel', { label, amount: fmtAmount(value) })
+
+  // Turn a resolved chart click into either a Transactions navigation or a
+  // local drill-down (plan S5). `exact` on a `'lane'` result only affects
+  // bookkeeping upstream (`resolveChartClick`'s own doc comment) -- here it
+  // just becomes the filter the shared slide-over already knows how to show.
+  const openResolution = (result: ChartClickResolution, title: string) => {
+    if (result.kind === 'url') {
+      navigate(result.url)
+      return
+    }
+    setDrillFilter({
+      title,
+      category_id: result.kind === 'single' ? result.categoryId : undefined,
+      account_id: result.kind === 'single' ? result.accountId : undefined,
+      type: result.type,
+      wealthPnlOnly: result.wealthPnlOnly,
+      from: result.from,
+      to: result.to,
+    })
+  }
+
+  // A category/account node, or "Other" (its `foldedIds`). `contributions`
+  // is synthetic -- the backend folds every direct-contribution account into
+  // one literal `direct_contributions` token (`report_service.py`), so no
+  // account id survives to drill into; its best-effort view is the window,
+  // typed as a credit, same as the `investments` lane's own fallback below.
+  const handleNodeActivate = (node: SankeyNodeDatum) => {
+    if (node.id === 'center' || node.id === 'surplus' || node.id === 'deficit') return
+    if (node.id === 'contributions') {
+      openResolution(
+        { kind: 'lane', exact: false, type: 'credit', from: window.from, to: window.to },
+        node.name,
+      )
+      return
+    }
+    const categoryIds = node.foldedIds
+      ? node.foldedIds.flatMap((key) => {
+          const id = categoryIdFromKey(key)
+          return id ? [id] : []
+        })
+      : node.categoryId ? [node.categoryId] : []
+    const accountIds = node.foldedIds
+      ? node.foldedIds.flatMap((key) => {
+          const id = accountIdFromKey(key)
+          return id ? [id] : []
+        })
+      : node.accountId ? [node.accountId] : []
+    const wealthPnlOnly = node.side === 'income' || node.side === 'expense'
+    openResolution(
+      resolveChartClick({ categoryIds, accountIds, window, type: typeForSide(node.side), wealthPnlOnly }),
+      node.name,
+    )
+  }
+
+  // A whole lane (plan S5): income/expenses are exact under the P1 filter
+  // (every row IS that `type`); investments/transfers have no such shortcut,
+  // so they fall back to the lane's own real category ids when there are
+  // any, or to the window alone when the lane is entirely account-keyed or
+  // uncategorized rows that collapse() happens not to have folded (a rare
+  // edge case, documented rather than silently wrong).
+  const handleLaneActivate = (lane: Lane) => {
+    const label = t(`reports.${lane}`)
+    if (lane === 'income') {
+      openResolution(
+        { kind: 'lane', exact: true, type: 'credit', wealthPnlOnly: true, from: window.from, to: window.to },
+        label,
+      )
+      return
+    }
+    if (lane === 'expenses') {
+      openResolution(
+        { kind: 'lane', exact: true, type: 'debit', wealthPnlOnly: true, from: window.from, to: window.to },
+        label,
+      )
+      return
+    }
+    const groups = lane === 'investments' ? ['investments'] : ['transfers_in', 'transfers_out']
+    const { categoryIds, accountIds } = laneIds(composition, groups)
+    openResolution(
+      resolveChartClick({
+        categoryIds, accountIds, window,
+        type: lane === 'investments' ? 'debit' : undefined,
+      }),
+      label,
+    )
+  }
 
   // The centre bar's outflow split: spent (red), invested (blue), moved out
   // (violet), kept (green). Links attach top→bottom in node order (expenses,
@@ -263,11 +386,15 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
                 const redH = nodeHeight * (expenseOut / out)
                 const blueH = nodeHeight * (investOut / out)
                 const violetH = nodeHeight * (transferOut / out)
-                const segments = [
-                  { h: redH, fill: EXPENSE_COLOR, hover: { kind: 'expenses' } as Hover, title: t('reports.expenses'), val: expenseOut },
-                  { h: blueH, fill: INVEST_COLOR, hover: { kind: 'investments' } as Hover, title: t('reports.investments'), val: investOut },
-                  { h: violetH, fill: TRANSFER_COLOR, hover: { kind: 'transfers' } as Hover, title: t('reports.transfersOut'), val: transferOut },
-                  { h: Math.max(0, nodeHeight - redH - blueH - violetH), fill: SURPLUS_COLOR, hover: { kind: 'surplus' } as Hover, title: t('reports.surplus'), val: surplusOut },
+                // Only expenses/investments/transfers are a lane a click can
+                // open (plan S5); surplus is leftover cash, not a set of
+                // transactions, so it keeps the hover isolation but stays
+                // out of the tab order.
+                const segments: Array<{ h: number; fill: string; hover: Hover; title: string; val: number; lane?: Lane }> = [
+                  { h: redH, fill: EXPENSE_COLOR, hover: { kind: 'expenses' }, title: t('reports.expenses'), val: expenseOut, lane: 'expenses' },
+                  { h: blueH, fill: INVEST_COLOR, hover: { kind: 'investments' }, title: t('reports.investments'), val: investOut, lane: 'investments' },
+                  { h: violetH, fill: TRANSFER_COLOR, hover: { kind: 'transfers' }, title: t('reports.transfersOut'), val: transferOut, lane: 'transfers' },
+                  { h: Math.max(0, nodeHeight - redH - blueH - violetH), fill: SURPLUS_COLOR, hover: { kind: 'surplus' }, title: t('reports.surplus'), val: surplusOut },
                 ]
                 let segY = y0
                 return (
@@ -280,8 +407,19 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
                           key={si}
                           x={x0} y={yy} width={nodeWidthPx} height={Math.max(1, seg.h)}
                           fill={seg.fill} rx={4}
-                          style={{ cursor: 'pointer' }}
+                          strokeWidth={seg.lane ? 2 : undefined}
+                          role={seg.lane ? 'button' : undefined}
+                          tabIndex={seg.lane ? 0 : undefined}
+                          aria-label={seg.lane ? nodeAriaLabel(seg.title, seg.val) : undefined}
+                          className={seg.lane ? 'cursor-pointer focus:outline-none focus-visible:stroke-foreground' : undefined}
                           onMouseEnter={() => setHover(seg.hover)}
+                          onClick={seg.lane ? () => handleLaneActivate(seg.lane!) : undefined}
+                          onKeyDown={seg.lane ? (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              handleLaneActivate(seg.lane!)
+                            }
+                          } : undefined}
                         >
                           <title>{seg.title}: {fmtAmount(seg.val)}</title>
                         </rect>
@@ -300,11 +438,26 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
               const onLeft = x0 < width / 2
               const labelX = onLeft ? x1 + 8 : x0 - 8
               const ly = labelY.get(i) ?? (y0 + y1) / 2
+              // Surplus/deficit are derived balances, not a set of rows --
+              // nothing to drill into, so they skip the tab order entirely.
+              const interactive = node.id !== 'surplus' && node.id !== 'deficit'
+              const activate = () => handleNodeActivate(node)
               return (
                 <g
                   key={i}
+                  role={interactive ? 'button' : undefined}
+                  tabIndex={interactive ? 0 : undefined}
+                  aria-label={interactive ? nodeAriaLabel(node.name, node.value ?? 0) : undefined}
+                  className={interactive ? 'cursor-pointer focus:outline-none focus-visible:opacity-80' : undefined}
                   style={{ transition: 'opacity 0.2s ease', opacity: dimmed ? 0.35 : 1 }}
                   onMouseEnter={() => setHover({ kind: 'node', index: i })}
+                  onClick={interactive ? activate : undefined}
+                  onKeyDown={interactive ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      activate()
+                    }
+                  } : undefined}
                 >
                   <rect x={x0} y={y0} width={Math.max(1, x1 - x0)} height={nodeHeight} fill={node.color} rx={3}>
                     <title>{node.name}: {fmtAmount(node.value ?? 0)}</title>
@@ -331,6 +484,45 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
               )
             })}
           </g>
+
+          {/* The hub's stacked bar already gives expenses/investments/
+              transfers a clickable "whole lane" target (the segments
+              above); income has no equivalent bar (the hub only stacks
+              OUTFLOWS), so it gets its own small header over its column,
+              in the same top gutter the hub's own label sits in. */}
+          {incomeNode && (
+            <g
+              role="button"
+              tabIndex={0}
+              aria-label={nodeAriaLabel(t('reports.income'), totals.income)}
+              className="cursor-pointer focus:outline-none focus-visible:opacity-70"
+              onClick={() => handleLaneActivate('income')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  handleLaneActivate('income')
+                }
+              }}
+            >
+              <text
+                x={incomeNode.x0 ?? 8}
+                y={10}
+                textAnchor="start"
+                className="fill-foreground"
+                style={{ fontSize: 11, fontWeight: 600 }}
+              >
+                {t('reports.income')}
+                <tspan
+                  x={incomeNode.x0 ?? 8}
+                  dy={13}
+                  className="fill-muted-foreground"
+                  style={{ fontSize: 10, fontFamily: 'var(--font-mono, monospace)', fontWeight: 400 }}
+                >
+                  {fmtAmount(totals.income)}
+                </tspan>
+              </text>
+            </g>
+          )}
         </svg>
       )}
 
@@ -358,6 +550,8 @@ export function CashflowSankey({ composition, currency, locale }: CashflowSankey
             })}
         </tbody>
       </table>
+
+      <TransactionDrillDown filter={drillFilter} onClose={() => setDrillFilter(null)} />
     </div>
   )
 }

@@ -751,7 +751,12 @@ export default function ReportsPage() {
             {isLoading ? (
               <div className="px-2"><Skeleton className="h-[360px] w-full" /></div>
             ) : (
-              <CashflowSankey composition={composition} currency={userCurrency} locale={locale} />
+              <CashflowSankey
+                composition={composition}
+                currency={userCurrency}
+                locale={locale}
+                window={{ from: meta?.window_from ?? '', to: meta?.window_to ?? '' }}
+              />
             )}
           </div>
           <p className="px-5 pb-5 text-[11px] leading-relaxed text-muted-foreground">
