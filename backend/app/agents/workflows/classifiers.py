@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Literal, Optional
 
-from app.services.category_group_service import DEFAULT_GROUPS_I18N
 from app.services.rule_engine import _normalize, evaluate_conditions
+from app.services.wealth.classify import INCOME_NAME_RE, income_group_names, is_income_like  # noqa: F401  (re-exported)
 
 Source = Literal["transfer", "card_payment", "rule", "llm", "budget"]
 Status = Literal["propose", "review", "unknown", "covered", "skipped"]
@@ -34,7 +34,6 @@ CARD_PAYMENT_RE = re.compile(
 )
 CARD_WORDS_RE = re.compile(r"\b(?:CARD|CARTAO|VISA|MASTERCARD|AMEX|AMERICAN EXPRESS|DISCOVER)\b")
 REFUND_RE = re.compile(r"refund|reembolso|estorno|cashback|\bcredits?\b", re.I)
-INCOME_NAME_RE = re.compile(r"income|salary|wages|renda|sal[aá]rio|receita|ingresos|revenu", re.I)
 INTERNAL_TRANSFER_RE = r"internal transfer|transfer|transferencia|transferência"
 CARD_PAYMENT_CATEGORY_RE = r"card payment|credit card|pagamento de cart|fatura"
 
@@ -125,18 +124,6 @@ class Decision:
 
 
 # --- category helpers --------------------------------------------------------------
-
-
-def income_group_names() -> set[str]:
-    entry = DEFAULT_GROUPS_I18N.get("income", {})
-    return {str(v).lower() for k, v in entry.items() if k not in {"icon", "color", "position"}}
-
-
-def is_income_like(cat: CategoryFacts) -> bool:
-    group = (cat.group_name or "").strip().lower()
-    if group and (group in income_group_names() or INCOME_NAME_RE.search(group)):
-        return True
-    return bool(INCOME_NAME_RE.search(cat.name or ""))
 
 
 def find_transfer_category(cats: list[CategoryFacts], pattern: str) -> Optional[CategoryFacts]:

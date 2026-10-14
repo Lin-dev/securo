@@ -11,7 +11,8 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.prompts import ADVISOR_VOICE, FINANCE_ANALYST_PROMPT, finance_analyst_prompt
-from app.agents.runtime import advice, guided
+from app.agents.runtime import guided
+from app.services.wealth import policy as advice
 from app.agents.runtime.grounding import ungrounded
 from app.agents.runtime.guided import Prepared, RouteDecision, answer
 from tests.test_agents_executor import _ScriptedProvider

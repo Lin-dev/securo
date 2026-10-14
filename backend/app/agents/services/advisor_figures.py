@@ -27,8 +27,15 @@ from app.models.category import Category
 from app.models.payee import Payee
 from app.models.transaction import Transaction
 from app.services._query_filters import counts_as_pnl, is_split_parent
+from app.services.wealth.classify import ASSET_CLASS_LABELS, BROAD_TICKERS, classify_asset_class  # noqa: F401  (re-exported)
+from app.services.wealth.merchant import detect_recurring
+from app.services.wealth.patterns import CRYPTO_RE, ESSENTIAL_RE, RETIREMENT_RE
+from app.services.wealth.patterns import INTEREST_RE as _INTEREST_RE
+from app.services.wealth.patterns import NON_CATEGORY_RE as _NON_CATEGORY_RE
+from app.services.wealth.spending import category_spikes
+from app.services.wealth.spending import month_end as _month_end
+from app.services.wealth.spending import month_start as _month_start
 
-RETIREMENT_RE = re.compile(r"401\s*\(?k\)?|401k|403\s*\(?b\)?|\b457\b|\bIRA\b|\bRoth\b|Retirement|Pension|Previd|Aposentad", re.IGNORECASE)
 
 # words that pick account types; "retirement" is a name test on investment accounts
 _TYPE_WORDS: dict[str, frozenset[str]] = {
@@ -213,130 +220,7 @@ async def merchant_rows(
 
 # --- asset classes (plan decision 3, with D2) -----------------------------------------
 
-BROAD_TICKERS = frozenset({"VTI", "VOO", "SPY", "IVV", "VT", "VXUS", "ITOT", "SCHB", "FXAIX", "FSKAX", "FZROX",
-                           "VTSAX", "VFIAX", "SWTSX", "SWPPX"})
-_BROAD_NAME_RE = re.compile(r"\b(total (stock )?market|s&p 500|target (date|retirement)|total world|all.?world|total international)\b", re.IGNORECASE)
-_INDEX_RE = re.compile(r"\bindex\b", re.IGNORECASE)
-_SECTOR_RE = re.compile(r"\b(technology|health|energy|financial|real estate|utilities|semiconductor|dividend|growth|value)\b", re.IGNORECASE)
-CRYPTO_RE = re.compile(r"crypto|bitcoin|coinbase|ethereum", re.IGNORECASE)
-_CRYPTO_TICKERS = frozenset({"BTC", "ETH", "SOL", "DOGE", "ADA", "XRP", "LTC"})
-_CRYPTO_NAME_RE = re.compile(r"bitcoin|ethereum", re.IGNORECASE)
-_CASH_NAME_RE = re.compile(r"\b(cash|money market|sweep)\b", re.IGNORECASE)
-_CASH_TICKERS = frozenset({"SPAXX", "FDRXX", "VMFXX", "SWVXX", "SPRXX", "FZFXX"})
-_BOND_RE = re.compile(r"\b(bond|treasury|fixed income)\b", re.IGNORECASE)
-_BOND_TICKERS = frozenset({"BND", "AGG", "BNDX"})
-_FUND_RE = re.compile(r"\b(fund|etf|trust|portfolio)\b", re.IGNORECASE)
-# SimpleFIN names positions "189.745 shares of PLTR": nothing to read beyond the ticker
-_SHARES_OF_RE = re.compile(r"^\s*[\d.,]+\s+shares?\s+of\s+\S+\s*$", re.IGNORECASE)
-
-ASSET_CLASS_LABELS = {
-    "broad": "Broad index funds", "fund_other": "Other funds (sector, dividend, factor)", "stock": "Single stocks",
-    "crypto": "Crypto", "cash": "Cash and money market", "bond": "Bonds", "other": "Other", "unknown": "Not classified",
-    "unreported": "Accounts that report no positions",
-}
-
-
-def classify_asset_class(name: str, ticker: Optional[str], security_type: Optional[str], account_label: str = "") -> str:
-    """broad | fund_other | stock | crypto | cash | bond | other | unknown, in the plan's order:
-    the provider's security type, then broad funds, crypto, cash, bonds, other funds, stocks."""
-    st = (security_type or "").strip().lower().replace("_", " ")
-    t = (ticker or "").strip().upper()
-    n = "" if _SHARES_OF_RE.match(name or "") else (name or "")
-    broad = t in BROAD_TICKERS or bool(_BROAD_NAME_RE.search(n)) or (bool(_INDEX_RE.search(n)) and not _SECTOR_RE.search(n))
-    if st:
-        if st in ("etf", "mutual fund"):
-            return "broad" if broad else "fund_other"
-        if st == "equity":
-            return "stock"
-        if st in ("cryptocurrency", "crypto"):
-            return "crypto"
-        if st in ("cash", "money market"):
-            return "cash"
-        if st == "fixed income":
-            return "bond"
-        if st in ("derivative", "other"):
-            return "other"
-    if broad:
-        return "broad"
-    if CRYPTO_RE.search(account_label or "") or t in _CRYPTO_TICKERS or _CRYPTO_NAME_RE.search(n):
-        return "crypto"
-    if _CASH_NAME_RE.search(n) or t in _CASH_TICKERS:
-        return "cash"
-    if _BOND_RE.search(n) or t in _BOND_TICKERS:
-        return "bond"
-    if _FUND_RE.search(n):
-        return "fund_other"
-    return "stock" if t else "unknown"
-
-
 # --- spending patterns ------------------------------------------------------------------
-
-_INTEREST_RE = re.compile(r"interest charge|finance charge|purchase interest", re.IGNORECASE)
-ESSENTIAL_RE = re.compile(
-    r"\b(rent|mortgages?|housing|utilit(?:y|ies)|insurance|tax(?:es)?|health(?:care)?|medical|childcare|loans?|debts?)\b",
-    re.IGNORECASE,
-)
-_NON_CATEGORY_RE = re.compile(r"^\s*(uncategori[sz]ed|other\b.*)$", re.IGNORECASE)
-
-
-def _month_start(d: date, back: int) -> date:
-    y, m = d.year, d.month - back
-    while m <= 0:
-        m += 12
-        y -= 1
-    return date(y, m, 1)
-
-
-def _month_end(d: date) -> date:
-    import calendar
-
-    return date(d.year, d.month, calendar.monthrange(d.year, d.month)[1])
-
-
-def category_spikes(month_cats: dict[date, dict[str, float]], month: date) -> Optional[list[dict[str, Any]]]:
-    """Categories in `month` above 1.5x their usual level and at least 200 over it. The usual
-    level is the mean of up to 6 complete months before, inside the data coverage; fewer than
-    3 such months means too little history (None), never a guess."""
-    from app.agents.runtime import advice
-
-    base_months = [bm for bm in (_month_start(month, k) for k in range(1, 7)) if bm in month_cats]
-    if len(base_months) < 3 or month not in month_cats:
-        return None
-    out = []
-    for cat, value in month_cats[month].items():
-        if _NON_CATEGORY_RE.match(cat or ""):
-            continue
-        series = [month_cats[bm].get(cat, 0.0) for bm in base_months]
-        if sum(1 for x in series if x > 0) < 3:
-            continue
-        baseline = sum(series) / len(series)
-        excess = value - baseline
-        if value > advice.SPIKE_RATIO * baseline and excess >= advice.SPIKE_MIN_EXCESS:
-            out.append({"category": cat, "amount": round(value, 2), "baseline": round(baseline, 2), "excess": round(excess, 2)})
-    return sorted(out, key=lambda s: s["excess"], reverse=True)
-
-
-def detect_recurring(rows: list[tuple[date, str, float]], today: date) -> list[dict[str, Any]]:
-    """Charges from the same merchant in at least 3 of the last 4 complete months, at most 2 a
-    month, each month within 15% (or 2.00) of the median. Figures only; no rule uses them."""
-    from mcp_server.tools._helpers import merchant_key
-
-    months = [_month_start(today, k) for k in range(1, 5)]
-    by_merchant: dict[str, dict[date, list[float]]] = defaultdict(lambda: defaultdict(list))
-    for when, desc, amount in rows:
-        ms = date(when.year, when.month, 1)
-        if ms in months:
-            by_merchant[merchant_key(desc or "")[:40] or "(blank)"][ms].append(amount)
-    out = []
-    for merchant, per_month in by_merchant.items():
-        if len(per_month) < 3 or any(len(v) > 2 for v in per_month.values()):
-            continue
-        totals = sorted(sum(v) for v in per_month.values())
-        median = totals[len(totals) // 2]
-        if all(abs(t - median) <= max(0.15 * median, 2.0) for t in totals):
-            out.append({"merchant": merchant, "monthly": round(median, 2), "months": len(per_month)})
-    return sorted(out, key=lambda r: r["monthly"], reverse=True)
-
 
 # --- the advisor's facts ---------------------------------------------------------------
 
@@ -360,7 +244,7 @@ async def advisor_facts(
     and the savings rate is the Money Map's over the same window."""
     from sqlalchemy import select as _select
 
-    from app.agents.runtime import advice
+    from app.services.wealth import policy as advice
     from app.agents.services import digest_service
     from app.models.account import Account
     from app.models.asset import Asset

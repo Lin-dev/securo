@@ -11,6 +11,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 
+from app.services.wealth.merchant import merchant_key  # noqa: F401,E402  (re-exported)
+
 
 def parse_date(v: Any) -> Optional[date]:
     if v is None or v == "":
@@ -70,28 +72,11 @@ async def resolve_workspace_id(session, ctx) -> uuid.UUID:
 # --- merchant grouping (fork addition, qc7) ---------------------------------
 
 # Card references, dates and ids: "#10234", "*2K3JD", "1234", "12/03", "07-11".
-_MERCHANT_NOISE = re.compile(r"[#*]|\b\d[\d/.\-:]*\b")
 _SPACES = re.compile(r"\s+")
 # Where the stable part of a provider description ends: a `#`/`*` marker or the
 # first whitespace-separated token that carries a digit before any marker
 # ("US*2K3JD" is cut at its `*`, not dropped whole).
 _PATTERN_CUT = re.compile(r"[#*]|\s+[^\s#*]*\d")
-
-
-def merchant_key(description: str) -> str:
-    """Grouping key for "the same merchant" across noisy descriptions.
-
-    Same normalization the rule engine matches with (upper case, accents
-    stripped), then card references, dates and ids dropped and spaces
-    collapsed. Not guaranteed to be a substring of the description — use
-    `suggest_pattern` for a value that a `contains` rule can carry.
-    """
-    from app.services.rule_engine import _normalize
-
-    s = _normalize(description or "")
-    s = _MERCHANT_NOISE.sub(" ", s)
-    s = _SPACES.sub(" ", s).strip()
-    return s[:60] or "(blank)"
 
 
 def suggest_pattern(description: str) -> str:

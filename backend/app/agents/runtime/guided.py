@@ -1442,7 +1442,7 @@ def _attach_advice(ctx: GuidedContext, pack: dict[str, Any], facts: dict[str, An
     """The code-written next move (and the caps an answer may quote), behind the advisor switch."""
     if not getattr(ctx.settings, "advisor_voice", True):
         return
-    from app.agents.runtime import advice
+    from app.services.wealth import policy as advice
 
     currency = str(pack.get("currency") or ctx.currency)
     move = advice.next_move(facts, ctx.user_message, lambda v: _money(v, currency))
@@ -1991,7 +1991,7 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
     move = prep.pack.get("next_move") if getattr(ctx.settings, "advisor_voice", True) else None
     move_line = ""
     if isinstance(move, dict) and move.get("text"):
-        from app.agents.runtime import advice
+        from app.services.wealth import policy as advice
         from app.agents.runtime.grounding import ungrounded
 
         offenders = ungrounded(str(move["text"]), advice.grounding_pack(move))
@@ -2016,7 +2016,7 @@ async def answer(ctx: GuidedContext, decision: RouteDecision, *, user_message: s
             logger.exception("guided narration crashed; using the fallback sentence")
             narration, usage_in, usage_out, used_fallback = prep.fallback_sentence, 0, 0, True
         if getattr(ctx.settings, "advisor_voice", True):
-            from app.agents.runtime import advice
+            from app.services.wealth import policy as advice
 
             # Securo writes the next move; a model-written one never reaches the user
             narration = advice.strip_model_next_move(narration) or prep.fallback_sentence

@@ -5,7 +5,8 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.runtime import advice, guided
+from app.agents.runtime import guided
+from app.services.wealth import policy as advice
 from app.agents.runtime.grounding import ungrounded
 from app.agents.runtime.guided import RouteDecision
 from app.agents.services.advisor_figures import category_spikes, classify_asset_class, detect_recurring
