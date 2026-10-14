@@ -41,24 +41,15 @@ export function AccountsCard({ rows, onSave, disabled }: AccountsCardProps) {
     return t(`wealthSettings.buckets.${bucket}`)
   }
 
-  // The backend merges `accounts` per account key (plan P6), replacing
-  // whatever was stored under that key — so every change resends the row's
-  // full effective annotation, never just the one field that changed, or an
-  // unrelated earlier override on the same account would be dropped.
+  // Field-level merge (plan P6): inside an account key, only the fields sent
+  // here are touched — a field left out keeps following the default, and a
+  // field sent as `null` clears just that field. So each control sends only
+  // the one field it changed, never the row's other effective values.
   function saveAccount(
     row: WealthAccountSettingRow,
     next: { bucket?: WealthBucket; liquid?: boolean; apr?: number | null },
   ) {
-    const bucket = next.bucket ?? row.bucket
-    onSave({
-      accounts: {
-        [row.override_key]: {
-          bucket,
-          liquid: next.liquid ?? row.liquid,
-          apr: bucket === 'card_debt' ? (next.apr !== undefined ? next.apr : row.apr) : null,
-        },
-      },
-    })
+    onSave({ accounts: { [row.override_key]: next } })
   }
 
   function removeOverride(row: WealthAccountSettingRow) {

@@ -93,7 +93,20 @@ describe('SettingsTab', () => {
 
     await waitFor(() =>
       expect(api.wealth.updateSettings).toHaveBeenCalledWith({
-        accounts: { 'acc-1': { bucket: 'taxable', liquid: true, apr: null } },
+        accounts: { 'acc-1': { bucket: 'taxable' } },
+      }),
+    )
+  })
+
+  it('toggling liquid sends only the liquid field', async () => {
+    const { user } = renderWithProviders(<SettingsTab />)
+    await screen.findByText('Checking')
+
+    await user.click(screen.getByRole('switch', { name: 'Liquid for Checking' }))
+
+    await waitFor(() =>
+      expect(api.wealth.updateSettings).toHaveBeenCalledWith({
+        accounts: { 'acc-1': { liquid: false } },
       }),
     )
   })
