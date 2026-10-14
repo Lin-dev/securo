@@ -49,6 +49,7 @@ _NamedCat = namedtuple("_NamedCat", ["name", "group_name"])
 # not something a user "sets").
 _SOURCE_FIELDS: tuple[str, ...] = (
     "goal_id", "projection", "buffer_months", "income_category_ids", "one_off_overrides", "accounts",
+    "spending_cap",
 )
 
 
@@ -173,6 +174,10 @@ async def update_settings(
         sparse["projection"] = body.projection.model_dump(mode="json")
     if body.buffer_months is not None:
         sparse["buffer_months"] = body.buffer_months
+    if body.clear_spending_cap:
+        sparse["spending_cap"] = None
+    elif body.spending_cap is not None:
+        sparse["spending_cap"] = body.spending_cap
     if body.reset_income_categories:
         sparse["income_category_ids"] = None
     elif body.income_category_ids is not None:

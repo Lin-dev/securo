@@ -24,7 +24,10 @@ from app.services.wealth.preferences import load_preferences_for_update
 
 pytestmark = pytest.mark.asyncio
 
-_SOURCE_FIELDS = ("goal_id", "projection", "buffer_months", "income_category_ids", "one_off_overrides", "accounts")
+_SOURCE_FIELDS = (
+    "goal_id", "projection", "buffer_months", "income_category_ids", "one_off_overrides", "accounts",
+    "spending_cap",
+)
 
 
 async def _ctx(session: AsyncSession, test_user: User, test_workspace) -> WorkspaceContext:
