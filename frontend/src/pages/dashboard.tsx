@@ -58,6 +58,7 @@ import { resolveDateFnsLocale } from '@/lib/date-fns-locale'
 import type { Rule, Transaction } from '@/types'
 import { formatCurrency } from '@/lib/format'
 import { shouldShowPendingBadge } from '@/lib/transaction-status'
+import { resolveClickedDay } from '@/components/dashboard/day-drilldown'
 
 function formatDate(dateStr: string, locale = 'pt-BR') {
   return new Date(dateStr + 'T00:00:00').toLocaleDateString(locale)
@@ -1052,13 +1053,15 @@ export default function DashboardPage() {
                     }
                   }}
                   onMouseLeave={() => setHoveredDay(null)}
-                  onClick={(_state) => {
-                    // Access activePayload from the underlying native event target chart state
-                    const chartState = _state as unknown as { activePayload?: Array<{ payload: { day: number } }> }
-                    const payload = chartState?.activePayload ?? []
-                    if (payload[0]) {
-                      const day = String(payload[0].payload.day).padStart(2, '0')
-                      const dateStr = `${selectedMonth}-${day}`
+                  onClick={(state) => {
+                    // recharts 3.7 removed `activePayload` from click state;
+                    // resolve the clicked day from `activeTooltipIndex`
+                    // (an index into this chart's own data array) instead —
+                    // the same field `onMouseMove` above already reads.
+                    const day = resolveClickedDay(state?.activeTooltipIndex, cumulativeData)
+                    if (day != null) {
+                      const dayStr = String(day).padStart(2, '0')
+                      const dateStr = `${selectedMonth}-${dayStr}`
                       setDrillDown({
                         title: t('dashboard.drillDownDay', { date: new Date(dateStr + 'T00:00:00').toLocaleDateString(dateLocale) }),
                         from: dateStr,
