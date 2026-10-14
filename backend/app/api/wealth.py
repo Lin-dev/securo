@@ -20,6 +20,7 @@ from app.schemas.wealth import (
     WealthSummary,
 )
 from app.services.module_service import ModuleId
+from app.services.wealth.settings import read_settings, update_settings
 
 router = APIRouter(prefix="/api/wealth", tags=["wealth"])
 
@@ -35,7 +36,7 @@ def _not_yet() -> HTTPException:
 async def get_settings(
     ctx: WorkspaceContext = Depends(read_ctx), session: AsyncSession = Depends(get_async_session)
 ) -> WealthSettingsRead:
-    raise _not_yet()
+    return await read_settings(session, ctx)
 
 
 @router.put("/settings", response_model=WealthSettingsRead)
@@ -44,7 +45,7 @@ async def put_settings(
     ctx: WorkspaceContext = Depends(write_ctx),
     session: AsyncSession = Depends(get_async_session),
 ) -> WealthSettingsRead:
-    raise _not_yet()
+    return await update_settings(session, ctx, body)
 
 
 @router.get("/summary", response_model=WealthSummary)
