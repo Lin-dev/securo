@@ -351,6 +351,8 @@ class UpcomingCharge(BaseModel):
     account: Optional[str]
     category: Optional[str]
     recurring_id: Optional[uuid.UUID]
+    # False for a card purchase: it reaches cash only through the card's bill.
+    hits_cash: bool = True
 
 
 class Upcoming(BaseModel):

@@ -172,8 +172,8 @@ export const wealthUpcomingFixture: WealthUpcoming = {
   currency: 'USD',
   days: 30,
   items: [
-    { date: '2026-10-20', description: 'Streaming service', amount: 15.49, kind: 'recurring', account: 'Card', category: 'Subscriptions', recurring_id: 'rec-1' },
-    { date: '2026-10-25', description: 'Card bill', amount: 1200, kind: 'card_bill', account: 'Checking', category: null, recurring_id: null },
+    { date: '2026-10-20', description: 'Streaming service', amount: 15.49, kind: 'recurring', account: 'Card', category: 'Subscriptions', recurring_id: 'rec-1', hits_cash: false },
+    { date: '2026-10-25', description: 'Card bill', amount: 1200, kind: 'card_bill', account: 'Checking', category: null, recurring_id: null, hits_cash: true },
   ],
   total: 1215.49,
 }

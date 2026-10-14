@@ -320,6 +320,8 @@ export interface WealthUpcomingCharge {
   account: string | null
   category: string | null
   recurring_id: string | null
+  /** False for a card purchase: it reaches cash only through the card's bill. */
+  hits_cash: boolean
 }
 
 export interface WealthUpcoming {

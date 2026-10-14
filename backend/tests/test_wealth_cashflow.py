@@ -145,6 +145,9 @@ async def test_card_subscription_is_listed_but_only_the_bill_counts_toward_cash(
 
     # Only the bill hits cash; the subscription (a card purchase) does not.
     assert result.total == pytest.approx(50.0)
+    # ... and each item says so, so the UI never has to guess from account names.
+    assert streaming[0].hits_cash is False
+    assert bills[0].hits_cash is True
 
 
 async def test_charge_posted_one_day_late_does_not_duplicate_its_projection(

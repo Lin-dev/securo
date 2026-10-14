@@ -426,6 +426,7 @@ async def upcoming(session: AsyncSession, ctx: WorkspaceContext, days: int) -> U
             UpcomingCharge(
                 date=it.date, description=it.description, amount=round(it.amount, 2), kind=it.kind,
                 account=it.account, category=it.category, recurring_id=it.recurring_id,
+                hits_cash=item_hits_cash(it.kind, buckets.get(it.account_id)),
             )
             for it in all_items
         ],
