@@ -49,6 +49,7 @@ from app.schemas.wealth import (
 from app.services.fx_rate_service import convert
 from app.services.module_service import ModuleId
 from app.services.wealth import budgets as budgets_service
+from app.services.wealth import cashflow as cashflow_service
 from app.services.wealth import levers as levers_service
 from app.services.wealth.buckets import INVESTMENT_BUCKETS
 from app.services.wealth.figures import TypicalFigures, monthly_figures, rolling_rate, typical_expense_by_category, typical_figures
@@ -325,7 +326,7 @@ async def get_upcoming(
     ctx: WorkspaceContext = Depends(read_ctx),
     session: AsyncSession = Depends(get_async_session),
 ) -> Upcoming:
-    raise _not_yet()
+    return await cashflow_service.upcoming(session, ctx, days)
 
 
 @router.get("/cash-forecast", response_model=CashForecast)
@@ -334,12 +335,13 @@ async def get_cash_forecast(
     ctx: WorkspaceContext = Depends(read_ctx),
     session: AsyncSession = Depends(get_async_session),
 ) -> CashForecast:
-    raise _not_yet()
+    settings = load_settings(ctx.user)
+    return await cashflow_service.cash_forecast(session, ctx, settings, days)
 
 
 @router.get("/subscriptions", response_model=SubscriptionAudit)
 async def get_subscriptions(
     ctx: WorkspaceContext = Depends(read_ctx), session: AsyncSession = Depends(get_async_session)
 ) -> SubscriptionAudit:
-    raise _not_yet()
+    return await cashflow_service.subscription_audit(session, ctx)
 
