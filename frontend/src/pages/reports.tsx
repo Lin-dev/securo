@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -26,10 +27,24 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import { DateRangePicker } from '@/components/ui/date-range-picker'
 import { PageHeader } from '@/components/page-header'
 import { CashflowSankey } from '@/components/reports/CashflowSankey'
-import { DEFICIT_COLOR, EXPENSE_COLOR, INCOME_COLOR, INVEST_COLOR, TRANSFER_COLOR } from '@/lib/money-map-utils'
+import { CategoriesCreepingUp } from '@/components/reports/CategoriesCreepingUp'
+import { TransactionDrillDown, type DrillDownFilter } from '@/components/transaction-drill-down'
+import { resolveChartClick, type ChartClickResolution } from '@/lib/drilldown'
+import { monthWindow, periodWindow, previousWindow } from '@/lib/chart-period'
+import {
+  accountIdFromKey,
+  categoryIdFromKey,
+  DEFICIT_COLOR,
+  EXPENSE_COLOR,
+  INCOME_COLOR,
+  INVEST_COLOR,
+  TRANSFER_COLOR,
+} from '@/lib/money-map-utils'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
+import { useEffectiveTimezone } from '@/hooks/use-timezone'
+import { todayInTimezone } from '@/lib/date-utils'
 import type { ReportResponse, CategoryTrendItem } from '@/types'
 import { formatCurrency } from '@/lib/format'
 import { localDateString } from '@/lib/date-utils'
@@ -61,6 +76,11 @@ function formatCompact(value: number, currency = 'USD', locale = 'en-US') {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(value)
+}
+
+/** A short, locale-aware date for the "Compare with previous period" label. */
+function formatPeriodDate(iso: string, locale: string): string {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(locale, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 
@@ -153,6 +173,17 @@ interface ReportTab {
   fallbackInterval: string
 }
 
+/**
+ * The active tab's key, derived from `?tab=` (plan S6): an unknown or
+ * disabled value falls back to the first enabled tab, so a reload or a
+ * shared link with a stale/future tab never lands on a blank page.
+ */
+function reportTabFromParam(value: string | null, tabs: readonly ReportTab[]): string {
+  const enabled = tabs.filter((tab) => tab.enabled)
+  const match = enabled.find((tab) => tab.key === value)
+  return (match ?? enabled[0] ?? tabs[0]).key
+}
+
 const REPORT_TABS: ReportTab[] = [
   {
     key: 'net_worth', labelKey: 'reports.netWorth', enabled: true,
@@ -182,6 +213,8 @@ export default function ReportsPage() {
   const { user } = useAuth()
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
   const locale = useDisplayLocale()
+  const navigate = useNavigate()
+  const timeZone = useEffectiveTimezone()
 
   const customDefaults = defaultCustomRange()
   const [rangeKey, setRangeKey] = useState('1y')
@@ -192,12 +225,22 @@ export default function ReportsPage() {
   // selection while the user compares views.
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
-  const [activeTab, setActiveTab] = useState('net_worth')
+  // The active tab lives in `?tab=` (plan S6), not local state, so a reload
+  // or a shared link lands on the same tab; an unknown or disabled value
+  // falls back to the first enabled tab (`reportTabFromParam`).
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = reportTabFromParam(searchParams.get('tab'), REPORT_TABS)
   const [compositionView, setCompositionView] = useState<string>('netWorth')
   const [sparklineView, setSparklineView] = useState<'byExpenses' | 'byIncome'>('byExpenses')
   const [sparklinePage, setSparklinePage] = useState(0)
   const [cashFlowBaseline, setCashFlowBaseline] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  // "Compare with previous period" (plan S6): income/expenses only.
+  const [comparePrevious, setComparePrevious] = useState(false)
+  // The drill-down slide-over every chart's click handler on this page
+  // shares (plan S6, mirroring CashflowSankey's own copy of the same
+  // pattern for the Money Map tab).
+  const [drillFilter, setDrillFilter] = useState<DrillDownFilter | null>(null)
   // Active Collection filter (issue #105): scope all report tabs to its
   // accounts; net worth also includes the collection's wallets' assets.
   const { activeAccountIds, activeWalletIds } = useCollectionFilter()
@@ -247,10 +290,14 @@ export default function ReportsPage() {
 
   const handleSelectTab = (key: string) => {
     const nextTab = REPORT_TABS.find((tab) => tab.key === key) ?? REPORT_TABS[0]
-    setActiveTab(key)
+    // Keep every other query param (plan S6: "keeping other params").
+    const params = new URLSearchParams(searchParams)
+    params.set('tab', nextTab.key)
+    setSearchParams(params, { replace: true })
     setCompositionView(key === 'net_worth' ? 'netWorth' : 'net')
     setSparklinePage(0)
     setSelectedDate(null)
+    setComparePrevious(false)
     // Clamp the range/interval preset to what the new tab supports.
     const stillValid =
       (rangeKey === CUSTOM_RANGE_KEY && nextTab.supportsCustomRange) ||
@@ -278,6 +325,159 @@ export default function ReportsPage() {
   const summary = data?.summary
   const trend = data?.trend ?? []
   const meta = data?.meta
+  // "Today" in the workspace's own timezone, never the browser's (plan S6):
+  // the "categories creeping up" list needs this to know which loaded month
+  // is the current, still-open one.
+  const currentMonth = todayInTimezone(timeZone).slice(0, 7)
+
+  // "Compare with previous period" (plan S6): the same report call, shifted
+  // back by the current window's own length, with explicit start_date/
+  // end_date so the backend returns exactly that calendar range rather than
+  // a `months`-aligned approximation of it. Income/expenses only -- the
+  // toggle itself is hidden on every other tab. Gated on the CURRENT query
+  // actually having resolved a concrete window: there's nothing to shift
+  // back from before that.
+  const previousReportWindow = meta?.window_from && meta?.window_to
+    ? previousWindow(meta.window_from, meta.window_to)
+    : null
+  const { data: previousData } = useQuery<ReportResponse>({
+    queryKey: ['reports', 'previous', activeTab, previousReportWindow?.from ?? null, previousReportWindow?.to ?? null, interval, activeAccountIds],
+    queryFn: () =>
+      reports.incomeExpenses(months, interval, acctIds, undefined, undefined, previousReportWindow!.from, previousReportWindow!.to),
+    enabled: comparePrevious && activeTab === 'income_expenses' && !!previousReportWindow,
+  })
+
+  // Every chart click on this page resolves through the same two helpers
+  // the Money Map's Sankey already uses (`resolveChartClick`/
+  // `transactionsUrl`), and shares one drill-down slide-over.
+  const openResolution = (result: ChartClickResolution, title: string) => {
+    if (result.kind === 'url') {
+      navigate(result.url)
+      return
+    }
+    setDrillFilter({
+      title,
+      category_id: result.kind === 'single' ? result.categoryId : undefined,
+      account_id: result.kind === 'single' ? result.accountId : undefined,
+      type: result.type,
+      wealthPnlOnly: result.wealthPnlOnly,
+      from: result.from,
+      to: result.to,
+    })
+  }
+
+  // Net worth (and the net-worth view of a Collection) is a BALANCE, not a
+  // flow: no set of transactions sums to a point on this line, so sending
+  // the click through the same drill-down used for income/expenses would
+  // imply a reconciliation that doesn't exist. Every net-worth click -- the
+  // trend point and a composition slice alike -- goes to the Accounts/
+  // Assets list instead (plan S6's own documented choice), never to
+  // Transactions. A single real account/asset id goes straight to its own
+  // page; several ids (an aggregated "Other" slice) or the whole chart go to
+  // the group's list.
+  const openNetWorthTarget = (ids: string[], group?: string) => {
+    if (ids.length === 1 && (group === 'accounts' || group === 'liabilities')) {
+      navigate(`/accounts/${ids[0]}`)
+      return
+    }
+    navigate(group === 'assets' ? '/assets' : '/accounts')
+  }
+
+  const groupFlowType = (group: string | undefined): 'credit' | 'debit' | undefined => {
+    if (group === 'income') return 'credit'
+    if (group === 'expenses') return 'debit'
+    return undefined
+  }
+
+  // A donut item's real ids: a single leaf's own `key`, or every real id
+  // folded into an aggregated "Other" slice's `children`.
+  const compositionItemIds = (item: { key?: string; children?: { key?: string }[] }): string[] => {
+    if (item.children && item.children.length > 0) {
+      return item.children.map((c) => c.key).filter((k): k is string => !!k)
+    }
+    return item.key ? [item.key] : []
+  }
+
+  // Income/expenses and cash flow composition slices ARE flows: they sum to
+  // exactly the categorized rows behind them under the P1 filter, so (unlike
+  // net worth) these open the real drill-down. `wealthPnlOnly` only applies
+  // to the income/expenses report -- cash flow counts raw ledger movement
+  // (including transfers/investments), not the P1 income/expense definition.
+  const openFlowComposition = (item: { key?: string; group?: string; children?: { key?: string }[] }, title: string) => {
+    const ids = compositionItemIds(item)
+    const categoryIds: string[] = []
+    const accountIds: string[] = []
+    for (const id of ids) {
+      const accId = accountIdFromKey(id)
+      if (accId) accountIds.push(accId)
+      else {
+        const catId = categoryIdFromKey(id)
+        if (catId) categoryIds.push(catId)
+      }
+    }
+    const type = groupFlowType(item.group)
+    const wealthPnlOnly = meta?.type === 'income_expenses'
+    const from = meta?.window_from ?? ''
+    const to = meta?.window_to ?? ''
+    if (categoryIds.length === 0 && accountIds.length === 0) {
+      // No ids at all: an inner-ring "whole lane" slice (income/expenses
+      // totals). income/expenses are exact under the P1 filter -- every row
+      // IS that `type` -- so `exact` reflects that rather than defaulting
+      // to the ids-didn't-survive fallback meaning.
+      openResolution({ kind: 'lane', exact: type !== undefined, type, wealthPnlOnly, from, to }, title)
+      return
+    }
+    openResolution(resolveChartClick({ categoryIds, accountIds, window: { from, to }, type, wealthPnlOnly }), title)
+  }
+
+  // An income/expenses period bar (plan S6): income/expenses are exact
+  // under the P1 filter, so this is a real lane, not a best-effort stand-in.
+  const openPeriodFlow = (label: string, type: 'credit' | 'debit') => {
+    const win = periodWindow(label, interval)
+    const title = `${t(type === 'credit' ? 'reports.income' : 'reports.expenses')} · ${label}`
+    openResolution(
+      resolveChartClick({ categoryIds: [], accountIds: [], window: win, type, wealthPnlOnly: true, exact: true }),
+      title,
+    )
+  }
+
+  // A category trend sparkline, for a specific period (a clicked point) or
+  // the whole report window (the card's own keyboard path) -- plan S6.
+  // `category_trend`'s "uncategorized"/"other" keys carry no real category
+  // id (`other` folds several small categories the series doesn't name), so
+  // each gets its own honest fallback rather than a silently-wrong filter.
+  const openCategoryPeriod = (item: { key: string; label: string; group: string }, from: string, to: string) => {
+    const type = groupFlowType(item.group)
+    const title = `${item.label} · ${from}`
+    if (item.key === 'uncategorized') {
+      setDrillFilter({ title, uncategorized: true, type, wealthPnlOnly: true, from, to })
+      return
+    }
+    if (item.key === 'other') {
+      openResolution({ kind: 'lane', exact: false, type, wealthPnlOnly: true, from, to }, title)
+      return
+    }
+    openResolution(
+      resolveChartClick({ categoryIds: [item.key], accountIds: [], window: { from, to }, type, wealthPnlOnly: true }),
+      title,
+    )
+  }
+
+  // One dispatcher for every composition donut slice (inner whole-lane ring
+  // and outer per-item ring alike): net worth is a balance (see
+  // `openNetWorthTarget`'s own comment), everything else is a flow.
+  const handleCompositionClick = (entry: {
+    name: string
+    group?: string
+    key?: string
+    children?: { key?: string; group?: string }[]
+  }) => {
+    if (meta?.type === 'net_worth') {
+      openNetWorthTarget(compositionItemIds(entry), entry.group ?? entry.children?.[0]?.group)
+      return
+    }
+    openFlowComposition(entry, entry.name)
+  }
 
   // For cash flow we split the line at `forecast_start_date` so the past
   // section renders solid and the forward projection renders dashed.
@@ -301,6 +501,13 @@ export default function ReportsPage() {
       ...breakdowns,
     } as Record<string, string | number | null>
   })
+
+  // "Compare with previous period" overlay (plan S6): aligned by POSITION
+  // (period 1 against period 1), never by date -- the previous window's own
+  // dates don't line up with the current one's.
+  const chartDataWithPrevious = comparePrevious && previousData
+    ? chartData.map((d, i) => ({ ...d, prevValue: previousData.trend[i]?.value ?? null }))
+    : chartData
 
   const allBreakdowns = summary?.breakdowns ?? []
   const breakdownData = allBreakdowns.filter((b) => b.value > 0)
@@ -381,6 +588,9 @@ export default function ReportsPage() {
         name: t(`reports.${b.key}`, { defaultValue: b.label }),
         value: b.value,
         color: b.color,
+        // The breakdown GROUP this slice totals (plan S6): a whole-lane
+        // click, never a single id — `income`/`expenses`/`accounts`/etc.
+        group: groupOf(b.key),
       }))
   })()
 
@@ -452,6 +662,10 @@ export default function ReportsPage() {
         value: c.value,
         color: activeTab === 'net_worth' ? (netWorthColorMap.get(c.key) ?? OTHER_SLICE_COLOR) : c.color,
         group: c.group,
+        // The real category/account/asset id behind this slice (plan S6's
+        // chart click handlers) — kept alongside the display fields above
+        // rather than looked up again from `activeComposition` by name.
+        key: c.key,
       }))
   })()
 
@@ -496,7 +710,9 @@ export default function ReportsPage() {
       name: string
       value: number
       color: string
-      children?: { name: string; value: number; color: string }[]
+      key?: string
+      group?: string
+      children?: { name: string; value: number; color: string; key?: string; group?: string }[]
     }[] = []
 
     for (const g of innerGroups) {
@@ -515,6 +731,7 @@ export default function ReportsPage() {
             name: otherLabel(g),
             value: otherValue,
             color: OTHER_SLICE_COLOR,
+            group: g,
             children: rest.length > 0 ? rest : undefined,
           })
         }
@@ -622,10 +839,12 @@ export default function ReportsPage() {
       />
 
       {/* Tab Bar */}
-      <div className="flex items-center gap-1 mb-5 border-b border-border">
+      <div role="tablist" aria-label={t('reports.tabsAriaLabel')} className="flex items-center gap-1 mb-5 border-b border-border">
         {REPORT_TABS.map((tab) => (
           <button
             key={tab.key}
+            role="tab"
+            aria-selected={activeTab === tab.key}
             onClick={() => { if (tab.enabled) handleSelectTab(tab.key) }}
             disabled={!tab.enabled}
             className={`relative px-4 py-2.5 text-sm font-medium transition-colors ${
@@ -774,7 +993,7 @@ export default function ReportsPage() {
             {t(currentTab.labelKey)} · {t('reports.trend')}
           </p>
           {meta && (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap justify-end">
               {meta.type === 'net_worth' ? (
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#6366F1' }} />
@@ -811,6 +1030,42 @@ export default function ReportsPage() {
                   </span>
                 </div>
               )}
+              {meta.type === 'income_expenses' && (
+                <button
+                  type="button"
+                  onClick={() => setComparePrevious((v) => !v)}
+                  aria-pressed={comparePrevious}
+                  className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+                    comparePrevious
+                      ? 'border-primary/40 bg-primary/10 text-primary'
+                      : 'border-border text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <span
+                    className={`relative inline-flex h-3 w-5 shrink-0 items-center rounded-full transition-colors ${
+                      comparePrevious ? 'bg-primary' : 'bg-muted'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform ${
+                        comparePrevious ? 'translate-x-2.5' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </span>
+                  {t('reports.comparePreviousPeriod')}
+                </button>
+              )}
+              {meta.type === 'income_expenses' && comparePrevious && previousData?.meta?.window_from && previousData?.meta?.window_to && (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-0 border-t-2 border-dashed" style={{ borderColor: 'var(--muted-foreground)' }} />
+                  <span className="text-[11px] text-muted-foreground">
+                    {t('reports.previousPeriodLabel', {
+                      from: formatPeriodDate(previousData.meta.window_from, locale),
+                      to: formatPeriodDate(previousData.meta.window_to, locale),
+                    })}
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -822,9 +1077,41 @@ export default function ReportsPage() {
           ) : chartData.length > 0 ? (
             meta?.type === 'cash_flow' ? (() => {
               const startingBalance = summary?.breakdowns.find((b) => b.key === 'startingBalance')?.value ?? 0
+              // Unlike net worth, each point here IS a flow (that period's
+              // inflow/outflow) -- a period opens that period's window
+              // (plan S6). It mixes credits and debits, so no `type` is
+              // set, and it's raw ledger movement rather than the P1
+              // income/expense definition, so no `wealthPnlOnly` either.
+              const openPeriod = (label: string) => {
+                openResolution(
+                  resolveChartClick({ categoryIds: [], accountIds: [], window: periodWindow(label, interval) }),
+                  label,
+                )
+              }
+              const latestLabel = chartData.at(-1)?.date as string | undefined
               return (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label={t('reports.viewLatestPeriodAria')}
+                  className="h-full w-full cursor-pointer"
+                  onKeyDown={(e: ReactKeyboardEvent) => {
+                    if ((e.key === 'Enter' || e.key === ' ') && latestLabel) {
+                      e.preventDefault()
+                      openPeriod(latestLabel)
+                    }
+                  }}
+                >
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                  <AreaChart
+                    data={chartData}
+                    margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
+                    onClick={(state) => {
+                      const label = state?.activeLabel as string | undefined
+                      if (label) openPeriod(label)
+                    }}
+                    style={{ cursor: 'pointer' }}
+                  >
                     <defs>
                       <linearGradient id="cashFlowGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#6366F1" stopOpacity={0.2} />
@@ -924,10 +1211,11 @@ export default function ReportsPage() {
                     />
                   </AreaChart>
                 </ResponsiveContainer>
+                </div>
               )
             })() : meta?.type === 'income_expenses' ? (
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+              <ComposedChart data={chartDataWithPrevious} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
                 <XAxis
                   dataKey="date"
                   tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
@@ -958,10 +1246,39 @@ export default function ReportsPage() {
                   contentStyle={tooltipStyle}
                 />
                 <ReferenceLine y={0} stroke="var(--border)" strokeDasharray="3 3" />
-                  <Bar dataKey="income" fill="#10B981" radius={[4, 4, 0, 0]} maxBarSize={20} />
-                  <Bar dataKey="expenses" fill="#F43F5E" radius={[4, 4, 0, 0]} maxBarSize={20} />
-                  <Bar dataKey="projectedIncome" fill="#34D399" radius={[4, 4, 0, 0]} maxBarSize={20} fillOpacity={0.65} />
-                  <Bar dataKey="projectedExpenses" fill="#FB7185" radius={[4, 4, 0, 0]} maxBarSize={20} fillOpacity={0.65} />
+                  {([
+                    ['income', '#10B981', 'credit' as const, 1],
+                    ['expenses', '#F43F5E', 'debit' as const, 1],
+                    ['projectedIncome', '#34D399', 'credit' as const, 0.65],
+                    ['projectedExpenses', '#FB7185', 'debit' as const, 0.65],
+                  ] as const).map(([key, color, type, opacity]) => (
+                    <Bar key={key} dataKey={key} fill={color} radius={[4, 4, 0, 0]} maxBarSize={20} fillOpacity={opacity} isAnimationActive={false}>
+                      {chartData.map((d) => {
+                        const value = d[key]
+                        const clickable = typeof value === 'number' && value !== 0 && typeof d.date === 'string'
+                        return (
+                          <Cell
+                            key={d.date as string}
+                            fill={color}
+                            tabIndex={clickable ? 0 : undefined}
+                            role={clickable ? 'button' : undefined}
+                            aria-label={clickable ? t('reports.sankeyNodeAriaLabel', {
+                              label: `${t(`reports.${key}`)} · ${d.date}`,
+                              amount: privacyMode ? MASK : formatCurrency(value as number, userCurrency, locale),
+                            }) : undefined}
+                            className={clickable ? 'cursor-pointer focus:outline-none focus-visible:opacity-80' : undefined}
+                            onClick={clickable ? () => openPeriodFlow(d.date as string, type) : undefined}
+                            onKeyDown={clickable ? (e: ReactKeyboardEvent) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                openPeriodFlow(d.date as string, type)
+                              }
+                            } : undefined}
+                          />
+                        )
+                      })}
+                    </Bar>
+                  ))}
                 <Line
                   type="monotone"
                   dataKey="value"
@@ -971,9 +1288,43 @@ export default function ReportsPage() {
                   dot={false}
                   activeDot={{ r: 4, fill: '#6366F1' }}
                 />
+                {comparePrevious && previousData && (
+                  <Line
+                    type="monotone"
+                    dataKey="prevValue"
+                    name={t('reports.previousPeriod')}
+                    stroke="var(--muted-foreground)"
+                    strokeWidth={1.5}
+                    strokeDasharray="4 4"
+                    strokeOpacity={0.5}
+                    dot={false}
+                    activeDot={false}
+                    isAnimationActive={false}
+                    connectNulls
+                    legendType="none"
+                  />
+                )}
               </ComposedChart>
             </ResponsiveContainer>
             ) : (
+            // Net worth is a balance, not a flow (plan S6): no set of
+            // transactions sums to a point on this line, so the whole chart
+            // is one click target, to the Accounts list, rather than a
+            // per-point drill-down that would imply a reconciliation that
+            // doesn't exist. See `openNetWorthTarget`'s own comment.
+            <div
+              role="button"
+              tabIndex={0}
+              aria-label={t('reports.viewAccountsAria')}
+              className="h-full w-full cursor-pointer"
+              onClick={() => navigate('/accounts')}
+              onKeyDown={(e: ReactKeyboardEvent) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  navigate('/accounts')
+                }
+              }}
+            >
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
                 <defs>
@@ -1037,6 +1388,7 @@ export default function ReportsPage() {
                 />
               </AreaChart>
             </ResponsiveContainer>
+            </div>
             )
           ) : (
             <p className="text-muted-foreground text-sm text-center py-16">
@@ -1114,9 +1466,19 @@ export default function ReportsPage() {
                               dataKey="value"
                               stroke="var(--card)"
                               strokeWidth={hasOuter ? 2 : 0}
+                              isAnimationActive={false}
+                              // recharts 3.7: a Cell's own onClick/tabIndex is
+                              // dropped by Pie's sector rendering (the click
+                              // handler only exists on the Pie element itself,
+                              // and the sector shape is hard-coded to
+                              // tabIndex=-1) -- see PieSectors in
+                              // recharts/es6/polar/Pie.js. The legend chips
+                              // below (and the "+N more" popover) are the real
+                              // keyboard path for every slice (plan S6).
+                              onClick={(_data, index) => handleCompositionClick(innerDonutData[index])}
                             >
                               {innerDonutData.map((entry, idx) => (
-                                <Cell key={idx} fill={entry.color} />
+                                <Cell key={idx} fill={entry.color} className="cursor-pointer" />
                               ))}
                             </Pie>
                             {hasOuter && (
@@ -1130,9 +1492,11 @@ export default function ReportsPage() {
                                 dataKey="value"
                                 stroke="var(--card)"
                                 strokeWidth={2}
+                                isAnimationActive={false}
+                                onClick={(_data, index) => handleCompositionClick(outerDonutData[index])}
                               >
                                 {outerDonutData.map((entry, idx) => (
-                                  <Cell key={idx} fill={entry.color} />
+                                  <Cell key={idx} fill={entry.color} className="cursor-pointer" />
                                 ))}
                               </Pie>
                             )}
@@ -1208,12 +1572,17 @@ export default function ReportsPage() {
                       <div key={compositionView} className="flex flex-col items-center gap-1 px-3 mt-1 w-full">
                         <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
                           {innerDonutData.map((d, i) => (
-                            <div key={`${i}-${d.name}`} className="flex items-center gap-1.5">
+                            <button
+                              key={`${i}-${d.name}`}
+                              type="button"
+                              onClick={() => handleCompositionClick(d)}
+                              className="flex items-center gap-1.5 rounded hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                            >
                               <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
                               <span className="text-[11px] text-muted-foreground whitespace-nowrap">
                                 {d.name.length > 30 ? d.name.slice(0, 27) + '…' : d.name}
                               </span>
-                            </div>
+                            </button>
                           ))}
                         </div>
                         {hasOuter && (() => {
@@ -1222,12 +1591,17 @@ export default function ReportsPage() {
                           return (
                             <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 items-center">
                               {visible.map((d, i) => (
-                                <div key={`${i}-${d.name}`} className="flex items-center gap-1.5">
+                                <button
+                                  key={`${i}-${d.name}`}
+                                  type="button"
+                                  onClick={() => handleCompositionClick(d)}
+                                  className="flex items-center gap-1.5 rounded hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                                >
                                   <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
                                   <span className="text-[11px] text-muted-foreground whitespace-nowrap">
                                     {d.name.length > 30 ? d.name.slice(0, 27) + '…' : d.name}
                                   </span>
-                                </div>
+                                </button>
                               ))}
                               {hiddenCount > 0 && (
                                 <Popover>
@@ -1247,15 +1621,20 @@ export default function ReportsPage() {
                                       {compositionDetail.map((d, i) => {
                                         const pct = donutTotal > 0 ? ((d.value / donutTotal) * 100).toFixed(1) : '0'
                                         return (
-                                          <div key={`${i}-${d.name}`} className="flex items-center gap-2">
+                                          <button
+                                            key={`${i}-${d.name}`}
+                                            type="button"
+                                            onClick={() => handleCompositionClick(d)}
+                                            className="flex items-center gap-2 w-full rounded hover:bg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                                          >
                                             <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
-                                            <span className="text-[11px] text-muted-foreground flex-1 truncate">
+                                            <span className="text-[11px] text-muted-foreground flex-1 truncate text-left">
                                               {d.name.length > 25 ? d.name.slice(0, 22) + '…' : d.name}
                                             </span>
                                             <span className="text-xs text-muted-foreground shrink-0">
                                               {privacyMode ? MASK : `${formatCurrency(d.value, userCurrency, locale)} (${pct}%)`}
                                             </span>
-                                          </div>
+                                          </button>
                                         )
                                       })}
                                     </div>
@@ -1384,10 +1763,22 @@ export default function ReportsPage() {
                         {pageItems.map((item) => {
                           const sparkData = item.series.map((s) => ({ date: s.date, v: s.value }))
                           const gradId = `grad-${item.key}-${item.group}-p${pageIdx}`
+                          const fullWindowFrom = meta?.window_from ?? ''
+                          const fullWindowTo = meta?.window_to ?? ''
                           return (
                             <div
                               key={`${item.key}-${item.group}`}
-                              className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2"
+                              role="button"
+                              tabIndex={0}
+                              aria-label={t('reports.categorySparklineAria', { category: item.label })}
+                              className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2 cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                              onClick={() => openCategoryPeriod(item, fullWindowFrom, fullWindowTo)}
+                              onKeyDown={(e: ReactKeyboardEvent) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault()
+                                  openCategoryPeriod(item, fullWindowFrom, fullWindowTo)
+                                }
+                              }}
                             >
                               <div className="flex items-center gap-1.5 mb-0.5">
                                 <div
@@ -1403,7 +1794,19 @@ export default function ReportsPage() {
                               </p>
                               <div style={{ height: 48 }}>
                                 <ResponsiveContainer width="100%" height="100%">
-                                  <AreaChart data={sparkData} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
+                                  <AreaChart
+                                    data={sparkData}
+                                    margin={{ top: 2, right: 0, left: 0, bottom: 0 }}
+                                    onClick={(state, event) => {
+                                      // Stop the click reaching the card's own
+                                      // onClick (the whole-window fallback) --
+                                      // a specific point always wins over it.
+                                      event.stopPropagation()
+                                      const label = state?.activeLabel as string | undefined
+                                      if (!label) return
+                                      openCategoryPeriod(item, periodWindow(label, interval).from, periodWindow(label, interval).to)
+                                    }}
+                                  >
                                     <defs>
                                       <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
                                         <stop offset="5%" stopColor={item.color} stopOpacity={0.3} />
@@ -1525,6 +1928,15 @@ export default function ReportsPage() {
                       } else if (key === lastPositiveKey) {
                         radius = [4, 4, 0, 0]
                       }
+                      // Cash flow's inflow/outflow bars ARE flows -- a
+                      // period opens that period's window (plan S6), same
+                      // rule as the main chart above. Net worth's bucket
+                      // bars are balances, so they keep their existing,
+                      // click-free behaviour (only the date-snapshot
+                      // highlight below, no transactions link).
+                      const isCashFlowFlow = meta.type === 'cash_flow'
+                      const flowType: 'credit' | 'debit' | undefined =
+                        key === 'inflow' ? 'credit' : key === 'outflow' ? 'debit' : undefined
                       return (
                         <Bar
                           key={key}
@@ -1533,14 +1945,58 @@ export default function ReportsPage() {
                           fill={color}
                           radius={radius}
                           maxBarSize={32}
+                          isAnimationActive={false}
                         >
-                          {selectedDate && chartData.map((d) => (
-                            <Cell
-                              key={d.date}
-                              fill={color}
-                              fillOpacity={d.date === selectedDate ? 1 : 0.4}
-                            />
-                          ))}
+                          {isCashFlowFlow
+                            ? chartData.map((d) => {
+                                const value = d[key]
+                                const clickable = typeof value === 'number' && value !== 0 && typeof d.date === 'string' && !!flowType
+                                return (
+                                  <Cell
+                                    key={d.date as string}
+                                    fill={color}
+                                    fillOpacity={selectedDate ? (d.date === selectedDate ? 1 : 0.4) : 1}
+                                    tabIndex={clickable ? 0 : undefined}
+                                    role={clickable ? 'button' : undefined}
+                                    aria-label={clickable ? t('reports.sankeyNodeAriaLabel', {
+                                      label: `${t(`reports.${key}`)} · ${d.date}`,
+                                      amount: privacyMode ? MASK : formatCurrency(value as number, userCurrency, locale),
+                                    }) : undefined}
+                                    className={clickable ? 'cursor-pointer focus:outline-none focus-visible:opacity-80' : undefined}
+                                    onClick={clickable ? (event: ReactMouseEvent) => {
+                                      event.stopPropagation()
+                                      openResolution(
+                                        resolveChartClick({
+                                          categoryIds: [], accountIds: [],
+                                          window: periodWindow(d.date as string, interval),
+                                          type: flowType,
+                                        }),
+                                        `${t(`reports.${key}`)} · ${d.date}`,
+                                      )
+                                    } : undefined}
+                                    onKeyDown={clickable ? (e: ReactKeyboardEvent) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault()
+                                        openResolution(
+                                          resolveChartClick({
+                                            categoryIds: [], accountIds: [],
+                                            window: periodWindow(d.date as string, interval),
+                                            type: flowType,
+                                          }),
+                                          `${t(`reports.${key}`)} · ${d.date}`,
+                                        )
+                                      }
+                                    } : undefined}
+                                  />
+                                )
+                              })
+                            : selectedDate && chartData.map((d) => (
+                                <Cell
+                                  key={d.date}
+                                  fill={color}
+                                  fillOpacity={d.date === selectedDate ? 1 : 0.4}
+                                />
+                              ))}
                         </Bar>
                       )
                     })
@@ -1569,10 +2025,27 @@ export default function ReportsPage() {
           )}
         </div>
       </div>
-      </>
+
+      {/* "Categories creeping up" (plan R2/S6; critique S13) */}
+      {meta?.type === 'income_expenses' && !isLoading && (
+        <CategoriesCreepingUp
+          categoryTrend={data?.category_trend ?? []}
+          interval={interval}
+          currentMonth={currentMonth}
+          currency={userCurrency}
+          locale={locale}
+          onSwitchToMonthly={() => setInterval('monthly')}
+          onSelect={(selection) => {
+            const win = monthWindow(selection.month)
+            openCategoryPeriod({ key: selection.key, label: selection.label, group: 'expenses' }, win.from, win.to)
+          }}
+        />
       )}
       </>
       )}
+      </>
+      )}
+      <TransactionDrillDown filter={drillFilter} onClose={() => setDrillFilter(null)} />
     </div>
   )
 }

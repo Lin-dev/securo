@@ -1,8 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
+import { useSearchParams } from 'react-router-dom'
 
 import ReportsPage from '@/pages/reports'
 import { renderWithProviders, t } from '@/test/utils'
+import { previousWindow } from '@/lib/chart-period'
 import type { ReportResponse } from '@/types'
 
 const api = vi.hoisted(() => ({
@@ -11,9 +13,31 @@ const api = vi.hoisted(() => ({
     incomeExpenses: vi.fn(),
     cashFlow: vi.fn(),
   },
+  transactions: { list: vi.fn() },
+  dashboard: { projectedTransactions: vi.fn() },
+  admin: { accountingMode: vi.fn() },
 }))
 
-vi.mock('@/lib/api', () => ({ reports: api.reports }))
+const navigateMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@/lib/api', () => ({
+  reports: api.reports,
+  transactions: api.transactions,
+  dashboard: api.dashboard,
+  admin: api.admin,
+}))
+
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>()
+  return { ...actual, useNavigate: () => navigateMock }
+})
+
+/** Exposes the current `?tab=` (and the rest of the query string) so tests
+ * can assert on what the page WROTE to the URL, not just what it reads. */
+function SearchParamsProbe() {
+  const [params] = useSearchParams()
+  return <div data-testid="search-params">{params.toString()}</div>
+}
 
 vi.mock('@/hooks/use-display-locale', () => ({
   useDisplayLocale: () => 'en-US',
@@ -30,6 +54,10 @@ vi.mock('@/contexts/collection-filter-context', () => ({
 
 vi.mock('@/hooks/use-privacy-mode', () => ({
   usePrivacyMode: () => ({ mask: (value: string) => value, privacyMode: false, MASK: '••••' }),
+}))
+
+vi.mock('@/hooks/use-timezone', () => ({
+  useEffectiveTimezone: () => undefined,
 }))
 
 function emptyReport(type: string): ReportResponse {
@@ -49,6 +77,9 @@ beforeEach(() => {
   api.reports.netWorth.mockResolvedValue(emptyReport('net_worth'))
   api.reports.incomeExpenses.mockResolvedValue(emptyReport('income_expenses'))
   api.reports.cashFlow.mockResolvedValue(emptyReport('cash_flow'))
+  api.transactions.list.mockResolvedValue({ items: [] })
+  api.dashboard.projectedTransactions.mockResolvedValue([])
+  api.admin.accountingMode.mockResolvedValue({ mode: 'cash' })
 })
 
 afterEach(() => vi.useRealTimers())
@@ -96,7 +127,7 @@ describe('Reports page — Custom range segment', () => {
     const { user } = renderWithProviders(<ReportsPage />)
     await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalled())
 
-    await user.click(screen.getByRole('button', { name: t('reports.cashFlow') }))
+    await user.click(screen.getByRole('tab', { name: t('reports.cashFlow') }))
 
     await waitFor(() => expect(api.reports.cashFlow).toHaveBeenCalled())
     expect(screen.queryByRole('button', { name: t('reports.customRange') })).not.toBeInTheDocument()
@@ -136,7 +167,7 @@ it.each([
 ] as const)('Reset then Apply restores the fallback for %s', async (tab, fallback, months) => {
   const { user } = renderWithProviders(<ReportsPage />)
   if (tab !== 'reports.netWorth') {
-    await user.click(screen.getByRole('button', { name: t(tab) }))
+    await user.click(screen.getByRole('tab', { name: t(tab) }))
   }
   const custom = screen.getByRole('button', { name: t('reports.customRange') })
   await user.click(custom)
@@ -162,7 +193,7 @@ it('preserves saved custom dates across supported tabs and preset dismissal', as
   await user.click(custom)
   await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
   for (const tab of ['reports.incomeExpenses', 'reports.moneyMap']) {
-    await user.click(screen.getByRole('button', { name: t(tab) }))
+    await user.click(screen.getByRole('tab', { name: t(tab) }))
     await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
       .toEqual(['2026-01-01', '2026-09-12']))
     expect(custom).toHaveClass('bg-primary')
@@ -180,11 +211,11 @@ it('preserves saved custom dates across supported tabs and preset dismissal', as
   await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
   await waitFor(() => expect(api.reports.incomeExpenses.mock.calls.at(-1)?.slice(-2))
     .toEqual(['2026-01-01', '2026-09-12']))
-  await user.click(screen.getByRole('button', { name: t('reports.cashFlow') }))
+  await user.click(screen.getByRole('tab', { name: t('reports.cashFlow') }))
   await waitFor(() => expect(api.reports.cashFlow).toHaveBeenCalled())
   expect(screen.queryByRole('button', { name: t('reports.customRange') })).not.toBeInTheDocument()
   expect(api.reports.cashFlow.mock.calls.at(-1)?.[0]).toBe(6)
-  await user.click(screen.getByRole('button', { name: t('reports.netWorth') }))
+  await user.click(screen.getByRole('tab', { name: t('reports.netWorth') }))
   await user.click(screen.getByRole('button', { name: t('reports.customRange') }))
   await user.click(screen.getByRole('button', { name: t('transactions.filtersBar.apply') }))
   await waitFor(() => expect(api.reports.netWorth.mock.calls.at(-1)?.slice(-2))
@@ -236,5 +267,188 @@ describe('Reports page — query failure', () => {
     await user.click(screen.getByRole('button', { name: t('reports.range6m') }))
     await waitFor(() => expect(screen.queryByText('end_date must be on or before today')).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: t('reports.range6m') })).toHaveClass('bg-primary')
+  })
+})
+
+describe('Reports page — tabs in the URL (plan S6)', () => {
+  it('reads the active tab from ?tab= on load', async () => {
+    renderWithProviders(<ReportsPage />, { route: '/reports?tab=income_expenses' })
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+    expect(screen.getByRole('tab', { name: t('reports.incomeExpenses') })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('falls back to the first enabled tab for an unknown ?tab=', async () => {
+    renderWithProviders(<ReportsPage />, { route: '/reports?tab=bogus' })
+    await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalled())
+    expect(screen.getByRole('tab', { name: t('reports.netWorth') })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('a reload at a tab URL lands on that same tab (round trip)', async () => {
+    renderWithProviders(<ReportsPage />, { route: '/reports?tab=cash_flow' })
+    await waitFor(() => expect(api.reports.cashFlow).toHaveBeenCalled())
+    expect(screen.getByRole('tab', { name: t('reports.cashFlow') })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('writes the active tab to ?tab= on selection, with replace, keeping other params', async () => {
+    const { user } = renderWithProviders(
+      <>
+        <ReportsPage />
+        <SearchParamsProbe />
+      </>,
+      { route: '/reports?foo=bar' },
+    )
+    await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalled())
+    expect(screen.getByTestId('search-params')).toHaveTextContent('foo=bar')
+
+    await user.click(screen.getByRole('tab', { name: t('reports.incomeExpenses') }))
+
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+    expect(screen.getByTestId('search-params').textContent).toContain('tab=income_expenses')
+    expect(screen.getByTestId('search-params').textContent).toContain('foo=bar')
+  })
+})
+
+describe('Reports page — chart click-through (plan S6)', () => {
+  function incomeExpensesWithBars(): ReportResponse {
+    return {
+      summary: {
+        primary_value: 400, change_amount: 400, change_percent: null,
+        breakdowns: [
+          { key: 'income', label: 'Income', value: 1000, color: '#10B981' },
+          { key: 'expenses', label: 'Expenses', value: 600, color: '#F43F5E' },
+        ],
+      },
+      trend: [
+        { date: '2026-07', value: 400, breakdowns: { income: 1000, expenses: 600 }, change: null },
+      ],
+      meta: {
+        type: 'income_expenses', series_keys: ['income', 'expenses'], currency: 'USD', interval: 'monthly',
+        window_from: '2026-07-01', window_to: '2026-07-31',
+      },
+      composition: [
+        { key: 'groceries', label: 'Groceries', value: 600, color: '#F43F5E', group: 'expenses' },
+      ],
+      category_trend: [],
+    }
+  }
+
+  it('an income bar click opens the drill-down over that period window, typed credit, wealth P&L only', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(incomeExpensesWithBars())
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?tab=income_expenses' })
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+
+    const incomeBar = await screen.findByRole('button', { name: /Income · 2026-07/ })
+    await user.click(incomeBar)
+
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'credit', from: '2026-07-01', to: '2026-07-31', user_pnl_only: true,
+    })))
+    const link = await screen.findByRole('link', { name: t('dashboard.viewInTransactions') })
+    expect(link.getAttribute('href')).toContain('wealth_pnl_only=1')
+    expect(link.getAttribute('href')).toContain('type=credit')
+  })
+
+  it('an expense bar click opens the drill-down typed debit', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(incomeExpensesWithBars())
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?tab=income_expenses' })
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+
+    const expenseBar = await screen.findByRole('button', { name: /Expenses · 2026-07/ })
+    await user.click(expenseBar)
+
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'debit', from: '2026-07-01', to: '2026-07-31', user_pnl_only: true,
+    })))
+  })
+
+  it('a donut slice click opens its category over meta.window_from/to', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(incomeExpensesWithBars())
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?tab=income_expenses' })
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+
+    const slice = await screen.findByRole('button', { name: /Groceries/ })
+    await user.click(slice)
+
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      category_id: 'groceries', type: 'debit', from: '2026-07-01', to: '2026-07-31', user_pnl_only: true,
+    })))
+  })
+
+  it('a net worth trend click never opens Transactions — it goes to the Accounts list (a balance, not a flow)', async () => {
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?tab=net_worth' })
+    await waitFor(() => expect(api.reports.netWorth).toHaveBeenCalled())
+
+    await user.click(await screen.findByRole('button', { name: t('reports.viewAccountsAria') }))
+
+    expect(navigateMock).toHaveBeenCalledWith('/accounts')
+    expect(api.transactions.list).not.toHaveBeenCalled()
+  })
+})
+
+describe('Reports page — compare with previous period (plan S6)', () => {
+  it('fetches the previous window with exact start_date/end_date and labels it', async () => {
+    const current: ReportResponse = {
+      summary: { primary_value: 400, change_amount: 400, change_percent: null, breakdowns: [] },
+      trend: [{ date: '2026-07', value: 400, breakdowns: {}, change: null }],
+      meta: { type: 'income_expenses', series_keys: [], currency: 'USD', interval: 'monthly', window_from: '2026-07-01', window_to: '2026-07-31' },
+      composition: [],
+      category_trend: [],
+    }
+    api.reports.incomeExpenses.mockResolvedValue(current)
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?tab=income_expenses' })
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalledTimes(1))
+
+    const expectedPrevious = previousWindow('2026-07-01', '2026-07-31')
+    const previous: ReportResponse = {
+      ...current,
+      meta: { ...current.meta, window_from: expectedPrevious.from, window_to: expectedPrevious.to },
+      trend: [{ date: '2026-06', value: 200, breakdowns: {}, change: null }],
+    }
+    api.reports.incomeExpenses.mockResolvedValueOnce(previous)
+
+    await user.click(await screen.findByRole('button', { name: t('reports.comparePreviousPeriod') }))
+
+    await waitFor(() => {
+      const call = api.reports.incomeExpenses.mock.calls.at(-1)!
+      expect(call.slice(-2)).toEqual([expectedPrevious.from, expectedPrevious.to])
+    })
+
+    const fmt = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    expect(await screen.findByText(
+      t('reports.previousPeriodLabel', { from: fmt(expectedPrevious.from), to: fmt(expectedPrevious.to) }),
+    )).toBeInTheDocument()
+  })
+})
+
+describe('Reports page — categories creeping up (plan R2/S6)', () => {
+  function incomeExpensesWithCreepingCategory(): ReportResponse {
+    const baselineMonths = ['2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07']
+    const series = [
+      ...baselineMonths.map((date) => ({ date, value: 400, breakdowns: {}, change: null })),
+      { date: '2026-08', value: 604, breakdowns: {}, change: null },
+    ]
+    return {
+      summary: { primary_value: 400, change_amount: 400, change_percent: null, breakdowns: [] },
+      trend: [{ date: '2026-08', value: 400, breakdowns: {}, change: null }],
+      meta: { type: 'income_expenses', series_keys: [], currency: 'USD', interval: 'monthly', window_from: '2026-02-01', window_to: '2026-08-31' },
+      composition: [],
+      category_trend: [
+        { key: 'travel', label: 'Travel', color: '#F43F5E', total: 604, group: 'expenses', series },
+      ],
+    }
+  }
+
+  it('shows a creeping-up category and drills into its exact month on click', async () => {
+    api.reports.incomeExpenses.mockResolvedValue(incomeExpensesWithCreepingCategory())
+    const { user } = renderWithProviders(<ReportsPage />, { route: '/reports?tab=income_expenses' })
+    await waitFor(() => expect(api.reports.incomeExpenses).toHaveBeenCalled())
+
+    expect(await screen.findByText(t('reports.creepingUp'))).toBeInTheDocument()
+    const row = screen.getByRole('button', { name: /Travel.*over usual/ })
+    await user.click(row)
+
+    await waitFor(() => expect(api.transactions.list).toHaveBeenCalledWith(expect.objectContaining({
+      category_id: 'travel', type: 'debit', from: '2026-08-01', to: '2026-08-31', user_pnl_only: true,
+    })))
   })
 })
